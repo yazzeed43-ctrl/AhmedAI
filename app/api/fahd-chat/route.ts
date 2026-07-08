@@ -22,79 +22,58 @@ async function getQuote(symbol: string, apiKey: string) {
   }
 }
 
-// حساب EMA
-function calcEMA(closes: number[], period: number): number | null {
-  if (closes.length < period) return null;
-  const k = 2 / (period + 1);
-  let ema = closes.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  for (let i = period; i < closes.length; i++) {
-    ema = closes[i] * k + ema * (1 - k);
-  }
-  return ema;
-}
-
-// حساب SMA
-function calcSMA(closes: number[], period: number): number | null {
-  if (closes.length < period) return null;
-  const slice = closes.slice(-period);
-  return slice.reduce((a, b) => a + b, 0) / period;
-}
-
-// حساب RSI 14
-function calcRSI(closes: number[], period = 14): number | null {
-  if (closes.length < period + 1) return null;
-  let gains = 0, losses = 0;
-  for (let i = closes.length - period; i < closes.length; i++) {
-    const diff = closes[i] - closes[i - 1];
-    if (diff > 0) gains += diff;
-    else losses -= diff;
-  }
-  if (losses === 0) return 100;
-  const rs = gains / losses;
-  return 100 - 100 / (1 + rs);
-}
-
-// يجيب الشموع التاريخية ويحسب المؤشرات
-async function getTechnicals(symbol: string, apiKey: string) {
+// حفظ تلقائي: يسأل Claude إذا كانت رسالة يزيد تحتوي معلومة تستحق الحفظ الدائم
+async function autoSaveMemory(userMessage: string, assistantReply: string) {
   try {
-    const now = Math.floor(Date.now() / 1000);
-    const from = now - 200 * 24 * 60 * 60; // آخر 200 يوم لدقة SMA 50
-    const res = await fetch(
-      `${FINNHUB_BASE}/stock/candle?symbol=${symbol}&resolution=D&from=${from}&to=${now}&token=${apiKey}`,
-      { cache: 'no-store' }
-    );
-    if (!res.ok) return null;
-    const d = await res.json();
-    if (d.s !== 'ok' || !d.c || d.c.length < 20) return null;
+    const checkRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY!,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 300,
+        system: `أنت نظام فرز للذاكرة طويلة المدى لمساعد تداول. مهمتك: تحديد إذا كانت رسالة المستخدم تحتوي معلومة تستحق الحفظ الدائم.
 
-    const closes: number[] = d.c;
-    const highs: number[] = d.h;
-    const lows: number[] = d.l;
-    const volumes: number[] = d.v;
+يستحق الحفظ فقط:
+- صفقة فعلية (دخول/خروج بسعر محدد)
+- قاعدة تداول شخصية ("ما أدخل قبل FOMC")
+- درس مستفاد من خطأ أو نجاح
+- تفضيل دائم (أسهم معينة، أسلوب معين، حجم مخاطرة)
+- معلومة شخصية مهمة تؤثر على التداول
 
-    const last30High = Math.max(...highs.slice(-30));
-    const last30Low = Math.min(...lows.slice(-30));
-    const ema9 = calcEMA(closes, 9);
-    const ema21 = calcEMA(closes, 21);
-    const sma50 = calcSMA(closes, 50);
-    const rsi = calcRSI(closes);
-    const avgVol = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-    const lastVol = volumes[volumes.length - 1];
-    const rvol = avgVol > 0 ? lastVol / avgVol : null;
-    const current = closes[closes.length - 1];
+لا يستحق الحفظ: أسئلة عامة، طلبات تحليل، دردشة، معلومات مؤقتة.
 
-    const lines = [`# المؤشرات الفنية لـ ${symbol} (محسوبة من بيانات ${closes.length} يوم):`];
-    if (ema9) lines.push(`- EMA 9: $${ema9.toFixed(2)} (السعر ${current > ema9 ? 'فوقه ✅' : 'تحته ⚠️'})`);
-    if (ema21) lines.push(`- EMA 21: $${ema21.toFixed(2)} (السعر ${current > ema21 ? 'فوقه ✅' : 'تحته ⚠️'})`);
-    if (sma50) lines.push(`- SMA 50: $${sma50.toFixed(2)} (السعر ${current > sma50 ? 'فوقه ✅' : 'تحته ⚠️'})`);
-    if (rsi) lines.push(`- RSI 14: ${rsi.toFixed(1)} ${rsi > 70 ? '(تشبع شرائي ⚠️)' : rsi < 30 ? '(تشبع بيعي)' : '(محايد)'}`);
-    lines.push(`- أعلى 30 يوم (مقاومة تقريبية): $${last30High.toFixed(2)}`);
-    lines.push(`- أدنى 30 يوم (دعم تقريبي): $${last30Low.toFixed(2)}`);
-    if (rvol) lines.push(`- الحجم النسبي RVOL: ${rvol.toFixed(2)} ${rvol > 1.5 ? '(حجم أعلى من المعتاد - اهتمام قوي)' : rvol < 0.7 ? '(حجم ضعيف)' : '(طبيعي)'}`);
+إذا وجدت معلومة تستحق الحفظ، رد بصيغة JSON فقط:
+{"save": true, "key": "عنوان_مختصر_بالعربي", "value": "المعلومة كاملة بجملة واضحة"}
 
-    return lines.join('\n');
+إذا لا يوجد شيء يستحق:
+{"save": false}
+
+رد بـ JSON فقط بدون أي نص إضافي.`,
+        messages: [
+          { role: 'user', content: `رسالة يزيد: "${userMessage}"` },
+        ],
+      }),
+    });
+    if (!checkRes.ok) return;
+    const checkData = await checkRes.json();
+    const rawText = checkData.content
+      .filter((b: { type: string }) => b.type === 'text')
+      .map((b: { text: string }) => b.text)
+      .join('');
+    const cleaned = rawText.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    if (parsed.save && parsed.key && parsed.value) {
+      await supabase.from('fahd_memory').insert({
+        key: parsed.key,
+        value: parsed.value,
+      });
+    }
   } catch {
-    return null;
+    // فشل الحفظ التلقائي لا يوقف المحادثة
   }
 }
 
@@ -108,7 +87,8 @@ export async function POST(req: NextRequest) {
     const { data: memoryRows } = await supabase
       .from('fahd_memory')
       .select('key, value')
-      .order('updated_at', { ascending: false });
+      .order('updated_at', { ascending: false })
+      .limit(50);
     const memoryContext = (memoryRows || [])
       .map((row) => `- ${row.key}: ${row.value}`)
       .join('\n');
@@ -127,22 +107,14 @@ export async function POST(req: NextRequest) {
       const quoteSymbols = [...new Set(['SPY', 'QQQ', ...tickers])];
       const quoteResults = await Promise.all(quoteSymbols.map((s) => getQuote(s, finnhubKey)));
       const quoteLines = quoteResults.filter(Boolean);
-
-      // المؤشرات الفنية للأسهم المذكورة فقط (مو المؤشرات العامة)
-      const techResults = await Promise.all(tickers.map((s) => getTechnicals(s, finnhubKey)));
-      const techLines = techResults.filter(Boolean);
-
-      if (quoteLines.length > 0 || techLines.length > 0) {
+      if (quoteLines.length > 0) {
         marketData = `\n\n# بيانات السوق الحية (من Finnhub - محدثة الآن):\n(ملاحظة: SPY يمثل S&P 500 و QQQ يمثل NASDAQ 100)\n${quoteLines.join('\n')}`;
-        if (techLines.length > 0) {
-          marketData += `\n\n${techLines.join('\n\n')}`;
-        }
       }
     }
 
     let fullSystemPrompt = FAHD_SYSTEM_PROMPT;
     if (memoryContext) {
-      fullSystemPrompt += `\n\n# معلومات محفوظة عن تداولات يزيد:\n${memoryContext}`;
+      fullSystemPrompt += `\n\n# ذاكرتك طويلة المدى عن يزيد وتداولاته:\n${memoryContext}`;
     }
     if (marketData) {
       fullSystemPrompt += marketData;
@@ -185,6 +157,9 @@ export async function POST(req: NextRequest) {
       { role: 'user', content: message },
       { role: 'assistant', content: assistantText },
     ]);
+
+    // الحفظ التلقائي للذاكرة طويلة المدى (بدون انتظار)
+    autoSaveMemory(message, assistantText);
 
     return NextResponse.json({ reply: assistantText });
   } catch (error) {
