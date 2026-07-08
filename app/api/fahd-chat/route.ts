@@ -159,7 +159,7 @@ export async function POST(req: NextRequest) {
     ]);
 
     // الحفظ التلقائي للذاكرة طويلة المدى (بدون انتظار)
-    autoSaveMemory(message, assistantText);
+    await autoSaveMemory(message, assistantText);
 
     return NextResponse.json({ reply: assistantText });
   } catch (error) {
