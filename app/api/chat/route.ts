@@ -6,8 +6,8 @@ import { AHMED_SYSTEM_PROMPT } from '@/lib/system-prompt';
 // أداة رهف: تنفيذ عقاري كامل عبر Edge Function
 // ============================================
 const RAHAF_EDGE_FUNCTION_URL =
-  'https://mxjwwdedtfbksitobjhj.supabase.co/functions/v1/staging-data';
-const RAHAF_ANON_KEY = 'sb_publishable_bpcBIkH46LP9h9nBpwCqOg_PD3XWhrJ';
+  'https://bbxbyuygtazscfhbonls.supabase.co/functions/v1/real-estate-data';
+const RAHAF_ANON_KEY = 'sb_publishable_N_fXUP0itTgL2YZBwFltpw_djo3Aqg0';
 
 const RAHAF_TOOL = {
   name: 'query_real_estate',
@@ -83,7 +83,7 @@ export async function POST(req: NextRequest) {
 
     // 3. حلقة الاتصال بـ Claude (تدعم استدعاء الأدوات)
     let assistantText = '';
-    let toolRoundsRemaining = 3; // حد أقصى لعدد استدعاءات الأدوات المتتالية
+    let toolRoundsRemaining = 3;
 
     while (toolRoundsRemaining > 0) {
       const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -114,7 +114,6 @@ export async function POST(req: NextRequest) {
         (block: { type: string }) => block.type === 'tool_use'
       );
 
-      // لو ما فيه استدعاء أداة، خلصنا — هذا الرد النهائي
       if (toolUseBlocks.length === 0) {
         assistantText = data.content
           .filter((block: { type: string }) => block.type === 'text')
@@ -123,7 +122,6 @@ export async function POST(req: NextRequest) {
         break;
       }
 
-      // نفذ استدعاءات الأداة (رهف) ورجع النتائج لـ Claude
       messages.push({ role: 'assistant', content: data.content });
 
       const toolResults = await Promise.all(
