@@ -7,7 +7,53 @@ import { AHMED_SYSTEM_PROMPT } from '@/lib/system-prompt';
 // ============================================
 const RAHAF_EDGE_FUNCTION_URL =
   'https://bbxbyuygtazscfhbonls.supabase.co/functions/v1/real-estate-data';
-const RAHAF_ANON_KEY = process.env.RAHAF_ANON_KEY!;
+const RAHAF_ANON_KEY = 'sb_publishable_N_fXUP0itTgL2YZBwFltpw_djo3Aqg0';
+
+const NOURA_EDGE_FUNCTION_URL =
+  'https://bbxbyuygtazscfhbonls.supabase.co/functions/v1/noura-data';
+const NOURA_ANON_KEY = 'sb_publishable_N_fXUP0itTgL2YZBwFltpw_djo3Aqg0';
+
+const NOURA_TOOL = {
+  name: 'manage_leads',
+  description:
+    'استدعِ نورة لتسجيل عميل مهتم جديد (من تعليقات أو رسائل تيك توك/انستقرام)، أو عرض قائمة العملاء الحاليين، أو تحديث حالة عميل موجود.',
+  input_schema: {
+    type: 'object' as const,
+    properties: {
+      table: {
+        type: 'string',
+        enum: ['leads', 'noura_memory', 'shared_context'],
+        description: 'الجدول المطلوب',
+      },
+      action: {
+        type: 'string',
+        enum: ['select', 'insert', 'update'],
+        description: 'العملية: select للعرض، insert لتسجيل عميل جديد، update لتحديث حالة',
+      },
+      data: {
+        type: 'object',
+        description: 'بيانات العميل عند insert/update، مثال: {"name": "...", "interest": "...", "notes": "...", "status": "..."}',
+      },
+      filters: {
+        type: 'object',
+        description: 'فلاتر اختيارية للبحث أو التحديث، مثال: {"id": "..."}',
+      },
+    },
+    required: ['table', 'action'],
+  },
+};
+
+async function callNoura(action: string, table: string, data?: any, filters?: Record<string, string>) {
+  const res = await fetch(NOURA_EDGE_FUNCTION_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${NOURA_ANON_KEY}`,
+    },
+    body: JSON.stringify({ action, table, data, filters }),
+  });
+  return res.json();
+}
 
 const RAHAF_TOOL = {
   name: 'query_real_estate',
@@ -83,7 +129,7 @@ export async function POST(req: NextRequest) {
 
     // 3. حلقة الاتصال بـ Claude (تدعم استدعاء الأدوات)
     let assistantText = '';
-    let toolRoundsRemaining = 3;
+    let toolRoundsRemaining = 3; // حد أقصى لعدد استدعاءات الأدوات المتتالية
 
     while (toolRoundsRemaining > 0) {
       const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -98,7 +144,7 @@ export async function POST(req: NextRequest) {
           max_tokens: 1024,
           system: fullSystemPrompt,
           messages,
-          tools: [RAHAF_TOOL],
+          tools: [RAHAF_TOOL, NOURA_TOOL],
         }),
       });
 
@@ -114,6 +160,7 @@ export async function POST(req: NextRequest) {
         (block: { type: string }) => block.type === 'tool_use'
       );
 
+      // لو ما فيه استدعاء أداة، خلصنا — هذا الرد النهائي
       if (toolUseBlocks.length === 0) {
         assistantText = data.content
           .filter((block: { type: string }) => block.type === 'text')
@@ -122,16 +169,25 @@ export async function POST(req: NextRequest) {
         break;
       }
 
+      // نفذ استدعاءات الأداة (رهف) ورجع النتائج لـ Claude
       messages.push({ role: 'assistant', content: data.content });
 
       const toolResults = await Promise.all(
         toolUseBlocks.map(async (block: any) => {
-          const { table, filters } = block.input;
-          const rahafResult = await callRahaf(table, filters);
+          let toolResult;
+          if (block.name === 'query_real_estate') {
+            const { table, filters } = block.input;
+            toolResult = await callRahaf(table, filters);
+          } else if (block.name === 'manage_leads') {
+            const { table, action, data, filters } = block.input;
+            toolResult = await callNoura(action, table, data, filters);
+          } else {
+            toolResult = { error: `أداة غير معروفة: ${block.name}` };
+          }
           return {
             type: 'tool_result',
             tool_use_id: block.id,
-            content: JSON.stringify(rahafResult),
+            content: JSON.stringify(toolResult),
           };
         })
       );
