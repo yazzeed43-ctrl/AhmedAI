@@ -7,7 +7,7 @@ import { AHMED_SYSTEM_PROMPT } from '@/lib/system-prompt';
 // ============================================
 const RAHAF_EDGE_FUNCTION_URL =
   'https://bbxbyuygtazscfhbonls.supabase.co/functions/v1/real-estate-data';
-const RAHAF_ANON_KEY = 'sb_publishable_N_fXUP0itTgL2YZBwFltpw_djo3Aqg0';
+const RAHAF_ANON_KEY = process.env.RAHAF_ANON_KEY!;
 
 const RAHAF_TOOL = {
   name: 'query_real_estate',

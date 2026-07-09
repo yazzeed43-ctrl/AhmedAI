@@ -56,9 +56,14 @@
 
 | المتغير | القيمة |
 |---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` | `https://ltvyevadhyxtdfvxeqkd.supabase.co` |
-| `SUPABASE_ANON_KEY` | `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx0dnlldmFkaHl4dGRmdnhlcWtkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM0MzYwMTUsImV4cCI6MjA5OTAxMjAxNX0.69ALrYpgTeDgJMAe6Ojzxw95_7ITg2eKIFp-6fXCjhw` |
+| `NEXT_PUBLIC_SUPABASE_URL` | *(رابط مشروع Supabase الرئيسي، من Settings → API)* |
+| `SUPABASE_ANON_KEY` | *(anon key لمشروع Supabase الرئيسي، من Settings → API)* |
 | `ANTHROPIC_API_KEY` | *(من حسابك في console.anthropic.com → API Keys)* |
+| `FINNHUB_API_KEY` | *(من حسابك في finnhub.io)* |
+| `RAHAF_ANON_KEY` | *(anon key لمشروع Supabase الخاص برهف: bbxbyuygtazscfhbonls)* |
+| `STAGING_ANON_KEY` | *(anon key لمشروع Supabase الخاص بـ staging-data: mxjwwdedtfbksitobjhj)* |
+
+> القيم الفعلية موجودة في ملف `.env.local` عندك محلياً (غير مرفوع لـ GitHub) أو في لوحة تحكم كل مشروع Supabase تحت Settings → API.
 
 4. اضغط **Deploy**
 
