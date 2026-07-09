@@ -2,12 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 
 // ============================================
 // يستدعي Supabase Edge Function بدل الاتصال المباشر
-// لا حاجة لأي مفتاح سري (service_role) هنا إطلاقًا
-// الصلاحية الكاملة موجودة داخل الـ Edge Function نفسها
+// لا حاجة لأي مفتاح سري هنا إطلاقًا
+// المفتاح أدناه هو anon/publishable — آمن بطبيعته، مصمم للكشف العلني
 // ============================================
 
 const EDGE_FUNCTION_URL = 'https://mxjwwdedtfbksitobjhj.supabase.co/functions/v1/staging-data';
-const STAGING_ANON_KEY = process.env.SUPABASE_STAGING_ANON_KEY!;
+const STAGING_ANON_KEY = 'sb_publishable_bpcBIkH46LP9h9nBpwCqOg_PD3XWhrJ';
 
 export async function POST(req: NextRequest) {
   try {
