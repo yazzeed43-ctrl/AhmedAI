@@ -32,7 +32,7 @@ const NOURA_TOOL = {
       },
       data: {
         type: 'object',
-        description: 'بيانات العميل عند insert/update، مثال: {"name": "...", "interest": "...", "notes": "...", "status": "..."}',
+        description: 'بيانات العميل عند insert/update، مثال: {"name": "...", "mobile": "...", "interest": "...", "notes": "...", "status": "..."}',
       },
       filters: {
         type: 'object',
