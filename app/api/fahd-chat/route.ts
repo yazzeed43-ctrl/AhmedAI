@@ -187,7 +187,16 @@ export async function POST(req: NextRequest) {
     let marketData = '';
     const finnhubKey = process.env.FINNHUB_API_KEY;
     if (finnhubKey) {
-      const tickers = extractTickers(message);
+      // نشمل آخر رسائل يزيد بالبحث عن الرمز، مو بس الرسالة الحالية،
+      // عشان لو سأل بالسياق ("وش سعره؟") بعد ما ذكر الرمز برسالة سابقة
+      const recentUserText = conversationHistory
+        .filter((m: { role: string; content: string }) => m.role === 'user')
+        .slice(-4)
+        .map((m: { content: string }) => m.content)
+        .join(' ');
+      const currentTickers = extractTickers(message);
+      const historyTickers = extractTickers(recentUserText).filter((t) => !currentTickers.includes(t));
+      const tickers = [...currentTickers, ...historyTickers].slice(0, 3);
       const quoteSymbols = [...new Set(['SPY', 'QQQ', ...tickers])];
       const quoteResults = await Promise.all(quoteSymbols.map((s) => getQuote(s, finnhubKey)));
       const quoteLines = quoteResults.filter(Boolean);
