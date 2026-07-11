@@ -19,7 +19,8 @@ export interface Trade {
   exitDate: string;
   exitPrice: number;
   returnPct: number;
-  reason: string; // سبب الدخول
+  reason: string; // سبب الدخول أو الخروج
+  autoClosedAtEnd?: boolean; // true لو الصفقة أُغلقت افتراضياً لانتهاء البيانات، مو بإشارة خروج حقيقية
 }
 
 export interface BacktestParams {
@@ -27,6 +28,7 @@ export interface BacktestParams {
   emaSlowLen?: number;
   volAvgLen?: number;
   volMult?: number;
+  costPct?: number; // عمولة + انزلاق سعري تقديري لكل جهة (دخول/خروج)، كنسبة مئوية. افتراضي 0.05%
 }
 
 export interface BacktestResult {
@@ -95,6 +97,7 @@ export function runBacktest(
   const emaSlowLen = params.emaSlowLen ?? 21;
   const volAvgLen = params.volAvgLen ?? 20;
   const volMult = params.volMult ?? 1.5;
+  const costPct = params.costPct ?? 0.05; // 0.05% لكل جهة (دخول أو خروج) - تقدير عمولة + سبريد/انزلاق
 
   if (candles.length < Math.max(emaSlowLen, volAvgLen) + 2) {
     return {
@@ -144,7 +147,9 @@ export function runBacktest(
       entryDate = candles[i].timestamp;
     } else if (inPosition && sellSignal) {
       const exitPrice = closes[i];
-      const returnPct = ((exitPrice - entryPrice) / entryPrice) * 100;
+      // نطرح تكلفة الدخول والخروج (عمولة + انزلاق سعري تقديري) من العائد
+      const rawReturnPct = ((exitPrice - entryPrice) / entryPrice) * 100;
+      const returnPct = rawReturnPct - costPct * 2;
 
       trades.push({
         entryDate,
@@ -162,6 +167,30 @@ export function runBacktest(
 
       inPosition = false;
     }
+  }
+
+  // لو انتهت البيانات وفيه صفقة لسه مفتوحة، نقفلها افتراضياً على آخر شمعة
+  // بدل ما نتجاهلها بالكامل - هذا يمنع تجميل النتيجة بإسقاط صفقة خاسرة لم تُغلق بعد
+  if (inPosition) {
+    const lastCandle = candles[candles.length - 1];
+    const exitPrice = lastCandle.close;
+    const rawReturnPct = ((exitPrice - entryPrice) / entryPrice) * 100;
+    const returnPct = rawReturnPct - costPct * 2;
+
+    trades.push({
+      entryDate,
+      entryPrice,
+      exitDate: lastCandle.timestamp,
+      exitPrice,
+      returnPct,
+      reason: "إغلاق افتراضي - نهاية بيانات الفترة (ما فيه إشارة خروج بعد)",
+      autoClosedAtEnd: true,
+    });
+
+    equity *= 1 + returnPct / 100;
+    peakEquity = Math.max(peakEquity, equity);
+    const drawdown = ((peakEquity - equity) / peakEquity) * 100;
+    maxDrawdown = Math.max(maxDrawdown, drawdown);
   }
 
   const winningTrades = trades.filter((t) => t.returnPct > 0).length;
