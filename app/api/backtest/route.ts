@@ -3,8 +3,8 @@ import { createClient } from '@supabase/supabase-js';
 import { runBacktest, Candle } from '@/lib/backtest-engine';
 
 const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_ANON_KEY!
 );
 
 const FINNHUB_TOKEN = process.env.FINNHUB_API_KEY!;
