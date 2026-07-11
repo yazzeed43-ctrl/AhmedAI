@@ -12,6 +12,7 @@ export interface RunBacktestInput {
   emaSlowLen?: number;
   volAvgLen?: number;
   volMult?: number;
+  costPct?: number;
 }
 
 // ============================================
@@ -61,7 +62,24 @@ export async function executeBacktest(input: RunBacktestInput) {
   let candles: Candle[];
   const expectedMinRows = 30;
 
-  if (!cached || cached.length < expectedMinRows) {
+  // نحدد أقصى فجوة زمنية مقبولة بين آخر شمعة مخزنة والآن، حسب نوع الفريم
+  // (نتساهل أكثر مع الفريمات الكبيرة لأنها أصلاً تتحدث بفاصل أطول)
+  const staleThresholdMs = isIntraday
+    ? 2 * 24 * 60 * 60 * 1000 // يومين (يغطي عطلة نهاية الأسبوع)
+    : interval === '1day'
+    ? 4 * 24 * 60 * 60 * 1000
+    : interval === '1week'
+    ? 10 * 24 * 60 * 60 * 1000
+    : 40 * 24 * 60 * 60 * 1000;
+
+  let isStale = false;
+  if (cached && cached.length >= expectedMinRows) {
+    const lastCachedTime = new Date(cached[cached.length - 1].timestamp).getTime();
+    const gap = toDate.getTime() - lastCachedTime;
+    isStale = gap > staleThresholdMs;
+  }
+
+  if (!cached || cached.length < expectedMinRows || isStale) {
     const startDateStr = fromDate.toISOString().split('T')[0];
     const endDateStr = toDate.toISOString().split('T')[0];
 
@@ -116,6 +134,7 @@ export async function executeBacktest(input: RunBacktestInput) {
     emaSlowLen: input.emaSlowLen,
     volAvgLen: input.volAvgLen,
     volMult: input.volMult,
+    costPct: input.costPct,
   };
   const result = runBacktest(candles, params);
 
