@@ -3,6 +3,7 @@ import { supabase } from '@/lib/supabase';
 import { FAHD_SYSTEM_PROMPT } from '@/lib/fahd-system-prompt';
 import { executeBacktest } from '@/lib/run-backtest';
 import { getOptionsExpirations, getOptionsChain } from '@/lib/tradier';
+import { getTechnicalIndicators } from '@/lib/market-indicators';
 
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 
@@ -81,10 +82,70 @@ async function getUpcomingEarnings(symbol: string, apiKey: string) {
   }
 }
 
+// أخبار السوق العامة (اقتصاد كلي، لا ترتبط بسهم معين) - آخر 4 عناوين
+async function getGeneralMarketNews(apiKey: string) {
+  try {
+    const res = await fetch(`${FINNHUB_BASE}/news?category=general&token=${apiKey}`, { cache: 'no-store' });
+    if (!res.ok) return null;
+    const items = await res.json();
+    if (!Array.isArray(items) || items.length === 0) return null;
+    const top = items.slice(0, 4);
+    const lines = top.map((n: any) => {
+      const date = new Date(n.datetime * 1000).toISOString().split('T')[0];
+      return `  - [${date}] ${n.headline} (${n.source})`;
+    });
+    return `أخبار السوق العامة (اقتصاد كلي):\n${lines.join('\n')}`;
+  } catch (e: any) {
+    console.error(`Finnhub general news fetch threw: ${e?.message || e}`);
+    return null;
+  }
+}
+
+// أحداث اقتصادية مهمة قادمة خلال 7 أيام (فائدة، تضخم، وظائف...الخ)
+async function getEconomicCalendar(apiKey: string) {
+  try {
+    const from = new Date();
+    const to = new Date(from.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const res = await fetch(
+      `${FINNHUB_BASE}/calendar/economic?from=${formatDate(from)}&to=${formatDate(to)}&token=${apiKey}`,
+      { cache: 'no-store' }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const items = data?.economicCalendar;
+    if (!Array.isArray(items) || items.length === 0) return null;
+    // نركز بس على الأحداث عالية التأثير (impact = 2 أو 3 عادة بمقياس Finnhub)
+    const important = items.filter((e: any) => (e.impact ?? 0) >= 2).slice(0, 5);
+    if (important.length === 0) return null;
+    const lines = important.map((e: any) => `  - [${e.date}] ${e.event} (${e.country || ''})`);
+    return `أحداث اقتصادية مهمة قادمة (7 أيام):\n${lines.join('\n')}`;
+  } catch (e: any) {
+    console.error(`Finnhub economic calendar fetch threw: ${e?.message || e}`);
+    return null;
+  }
+}
+
 // ============================================
 // أداة الباك-تست: تعريف الأداة اللي فهد يقدر يستدعيها بنفسه
 // ============================================
 const TOOLS = [
+  {
+    name: 'get_technical_indicators',
+    description:
+      'يحسب مؤشرات فنية لسهم معين: RSI (تشبع شرائي/بيعي)، MACD (زخم واتجاه)، Bollinger Bands (تذبذب)، ومستويات دعم/مقاومة تقريبية. استخدمها لما يزيد يسأل عن تحليل فني، أو يسأل عن مؤشر محدد (RSI، MACD، دعم، مقاومة) لسهم.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'رمز السهم الأمريكي، مثل AAPL أو TSLA' },
+        timeframe: {
+          type: 'string',
+          description: 'الفريم الزمني. الافتراضي 1day (يومي).',
+          enum: ['15min', '1h', '4h', '1day', '1week'],
+        },
+      },
+      required: ['symbol'],
+    },
+  },
   {
     name: 'run_backtest',
     description:
@@ -278,12 +339,22 @@ export async function POST(req: NextRequest) {
           marketData += `\n\n# تنبيهات أرباح قريبة:\n${earningsLines.join('\n')}`;
         }
       }
+
+      // أخبار كلية وتقويم اقتصادي - دائماً، بغض النظر عن السهم المذكور
+      const [generalNews, econCalendar] = await Promise.all([
+        getGeneralMarketNews(finnhubKey),
+        getEconomicCalendar(finnhubKey),
+      ]);
+      if (generalNews) marketData += `\n\n# ${generalNews}`;
+      if (econCalendar) marketData += `\n\n# ${econCalendar}`;
     } else {
       console.error('FINNHUB_API_KEY is missing from environment variables');
     }
 
     let fullSystemPrompt = FAHD_SYSTEM_PROMPT;
     fullSystemPrompt += `\n\n# قدرة إضافية: الأخبار وتقويم الأرباح\nلو وصلتك أخبار حديثة أو تنبيه أرباح قريبة عن سهم يزيد يسأل عنه، اذكرها له مختصرة ضمن تحليلك - خصوصاً تنبيه الأرباح، لأنه مهم جداً لمتداولي الخيارات (التقلب يرتفع كثير حول تاريخ الإعلان). لا تتجاهلها حتى لو ما سأل عنها صراحة.`;
+    fullSystemPrompt += `\n\n# قدرة إضافية: المؤشرات الفنية\nعندك أداة get_technical_indicators تحسب RSI وMACD وBollinger Bands ودعم/مقاومة لأي سهم. استخدمها لما يزيد يسأل عن تحليل فني أو مؤشر محدد. اشرح له الإشارات بالعربي البسيط (مثلاً: RSI فوق 70 يعني تشبع شرائي، ممكن يصحح). لا تعتبر إشارة واحدة كافية للقرار - اربطها بسياق باقي التحليل.`;
+    fullSystemPrompt += `\n\n# قدرة إضافية: الأخبار الكلية والتقويم الاقتصادي\nبيوصلك بمعلومات السوق تلقائياً أخبار اقتصادية عامة وأحداث اقتصادية مهمة قادمة (فائدة، تضخم، وظائف). اذكرها لما تكون مرتبطة بسؤال يزيد أو مؤثرة على قراره، خصوصاً لو فيه حدث كبير قريب (زي قرار فائدة) قد يفجّر تقلب السوق كامل.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: اختبار الاستراتيجيات (Backtest)\nعندك أداة run_backtest تقدر تستدعيها لما يزيد يسأل عن أداء استراتيجية أو نتيجة باك-تست لسهم معين. بعد ما ترجع النتيجة، لخّصها له بالعربي بشكل واضح: عدد الصفقات، نسبة النجاح، العائد الكلي، وأقصى انخفاض. ذكّره دائماً إن العينات الصغيرة (أقل من 20-30 صفقة) مؤشر ضعيف الموثوقية. ملاحظتين مهمتين: (1) العائد المحسوب يخصم تقديرياً عمولة وانزلاق سعري بسيط، فهو أقرب للواقع مو مثالي 100%. (2) لو آخر صفقة فيها autoClosedAtEnd=true، وضّح له إنها أُغلقت افتراضياً لانتهاء بيانات الفترة مو بإشارة خروج حقيقية، وممكن نتيجتها تختلف لو مدّينا الفترة.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: تقييم عقود الخيارات (Options)\nعندك أداتين: get_options_expirations وget_options_chain. قواعد صارمة يجب اتباعها دائماً:\n1. البيانات من Sandbox متأخرة 15 دقيقة - ذكّر يزيد بهذا في كل مرة تعرض فيها بيانات خيارات.\n2. أنت لا تُوصي بالدخول مباشرة أبداً (لا تقول "ادخل" أو "اشتري الآن"). دورك تقييمي فقط: تعرض جودة العقد، السيولة، المخاطر، وتترك القرار ليزيد بالكامل.\n3. كل عقد يرجع من get_options_chain فيه حقل liquidity_quality وliquidity_reason - اعرضهم دائماً. لو العقد "ضعيف - احذر"، نبّه يزيد بوضوح إنه ممكن يصعب الخروج منه حتى لو التحليل الفني يبدو جيد.\n4. لا تقترح عقداً بسبريد واسع أو سيولة ضعيفة كخيار أساسي - إذا كل العقود بهالتاريخ ضعيفة السيولة، قول ذلك صراحة واقترح تاريخ استحقاق ثاني أو انتظار.`;
     fullSystemPrompt += `\n\n# ملاحظة مهمة عن طريقة الرد بعد استخدام الأدوات\nواجهة يزيد تعرض تلقائياً بطاقة مرئية منسقة بكل الأرقام والتفاصيل بعد أي استدعاء لـ run_backtest أو get_options_chain. لذلك لا تكرر الجدول أو كل الأرقام نصياً في ردك - اكتفِ بتعليق قصير (سطرين إلى ثلاثة أسطر) يعطي رأيك أو أهم ملاحظة، والباقي يزيد بيشوفه بالبطاقة.`;
@@ -328,7 +399,15 @@ export async function POST(req: NextRequest) {
       // نفّذ كل أداة مطلوبة
       const toolResults = [];
       for (const block of toolUseBlocks) {
-        if (block.name === 'run_backtest') {
+        if (block.name === 'get_technical_indicators') {
+          const output = await getTechnicalIndicators(block.input.symbol, block.input.timeframe);
+          collectedToolResults.push({ name: 'get_technical_indicators', input: block.input, output });
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: block.id,
+            content: JSON.stringify(output),
+          });
+        } else if (block.name === 'run_backtest') {
           const result = await executeBacktest(block.input);
           collectedToolResults.push({ name: 'run_backtest', input: block.input, output: result });
           toolResults.push({
