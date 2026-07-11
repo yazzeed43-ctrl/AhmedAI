@@ -82,8 +82,17 @@ async function getUpcomingEarnings(symbol: string, apiKey: string) {
   }
 }
 
+// كاش بسيط بالذاكرة (15 دقيقة) للأخبار الكلية والتقويم الاقتصادي
+// عشان ما نستهلك حد Finnhub بكل رسالة - هذي البيانات ما تتغير بالثانية أصلاً
+const CACHE_TTL_MS = 15 * 60 * 1000;
+let generalNewsCache: { data: string | null; expiresAt: number } | null = null;
+let econCalendarCache: { data: string | null; expiresAt: number } | null = null;
+
 // أخبار السوق العامة (اقتصاد كلي، لا ترتبط بسهم معين) - آخر 4 عناوين
 async function getGeneralMarketNews(apiKey: string) {
+  if (generalNewsCache && generalNewsCache.expiresAt > Date.now()) {
+    return generalNewsCache.data;
+  }
   try {
     const res = await fetch(`${FINNHUB_BASE}/news?category=general&token=${apiKey}`, { cache: 'no-store' });
     if (!res.ok) return null;
@@ -94,7 +103,9 @@ async function getGeneralMarketNews(apiKey: string) {
       const date = new Date(n.datetime * 1000).toISOString().split('T')[0];
       return `  - [${date}] ${n.headline} (${n.source})`;
     });
-    return `أخبار السوق العامة (اقتصاد كلي):\n${lines.join('\n')}`;
+    const result = `أخبار السوق العامة (اقتصاد كلي):\n${lines.join('\n')}`;
+    generalNewsCache = { data: result, expiresAt: Date.now() + CACHE_TTL_MS };
+    return result;
   } catch (e: any) {
     console.error(`Finnhub general news fetch threw: ${e?.message || e}`);
     return null;
@@ -103,6 +114,9 @@ async function getGeneralMarketNews(apiKey: string) {
 
 // أحداث اقتصادية مهمة قادمة خلال 7 أيام (فائدة، تضخم، وظائف...الخ)
 async function getEconomicCalendar(apiKey: string) {
+  if (econCalendarCache && econCalendarCache.expiresAt > Date.now()) {
+    return econCalendarCache.data;
+  }
   try {
     const from = new Date();
     const to = new Date(from.getTime() + 7 * 24 * 60 * 60 * 1000);
@@ -116,9 +130,14 @@ async function getEconomicCalendar(apiKey: string) {
     if (!Array.isArray(items) || items.length === 0) return null;
     // نركز بس على الأحداث عالية التأثير (impact = 2 أو 3 عادة بمقياس Finnhub)
     const important = items.filter((e: any) => (e.impact ?? 0) >= 2).slice(0, 5);
-    if (important.length === 0) return null;
+    if (important.length === 0) {
+      econCalendarCache = { data: null, expiresAt: Date.now() + CACHE_TTL_MS };
+      return null;
+    }
     const lines = important.map((e: any) => `  - [${e.date}] ${e.event} (${e.country || ''})`);
-    return `أحداث اقتصادية مهمة قادمة (7 أيام):\n${lines.join('\n')}`;
+    const result = `أحداث اقتصادية مهمة قادمة (7 أيام):\n${lines.join('\n')}`;
+    econCalendarCache = { data: result, expiresAt: Date.now() + CACHE_TTL_MS };
+    return result;
   } catch (e: any) {
     console.error(`Finnhub economic calendar fetch threw: ${e?.message || e}`);
     return null;
@@ -353,7 +372,7 @@ export async function POST(req: NextRequest) {
 
     let fullSystemPrompt = FAHD_SYSTEM_PROMPT;
     fullSystemPrompt += `\n\n# قدرة إضافية: الأخبار وتقويم الأرباح\nلو وصلتك أخبار حديثة أو تنبيه أرباح قريبة عن سهم يزيد يسأل عنه، اذكرها له مختصرة ضمن تحليلك - خصوصاً تنبيه الأرباح، لأنه مهم جداً لمتداولي الخيارات (التقلب يرتفع كثير حول تاريخ الإعلان). لا تتجاهلها حتى لو ما سأل عنها صراحة.`;
-    fullSystemPrompt += `\n\n# قدرة إضافية: المؤشرات الفنية\nعندك أداة get_technical_indicators تحسب RSI وMACD وBollinger Bands ودعم/مقاومة لأي سهم. استخدمها لما يزيد يسأل عن تحليل فني أو مؤشر محدد. اشرح له الإشارات بالعربي البسيط (مثلاً: RSI فوق 70 يعني تشبع شرائي، ممكن يصحح). لا تعتبر إشارة واحدة كافية للقرار - اربطها بسياق باقي التحليل.`;
+    fullSystemPrompt += `\n\n# قدرة إضافية: المؤشرات الفنية\nعندك أداة get_technical_indicators تحسب RSI وMACD وBollinger Bands ودعم/مقاومة لأي سهم. استخدمها لما يزيد يسأل عن تحليل فني أو مؤشر محدد. اشرح له الإشارات بالعربي البسيط (مثلاً: RSI فوق 70 يعني تشبع شرائي، ممكن يصحح). لا تعتبر إشارة واحدة كافية للقرار - اربطها بسياق باقي التحليل. مستويات الدعم/المقاومة تقريبية (أعلى قمة/أدنى قاع بآخر 50 شمعة) مو نقاط ارتداد دقيقة - وضّح هذا لو سأل عنها بالتفصيل.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: الأخبار الكلية والتقويم الاقتصادي\nبيوصلك بمعلومات السوق تلقائياً أخبار اقتصادية عامة وأحداث اقتصادية مهمة قادمة (فائدة، تضخم، وظائف). اذكرها لما تكون مرتبطة بسؤال يزيد أو مؤثرة على قراره، خصوصاً لو فيه حدث كبير قريب (زي قرار فائدة) قد يفجّر تقلب السوق كامل.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: اختبار الاستراتيجيات (Backtest)\nعندك أداة run_backtest تقدر تستدعيها لما يزيد يسأل عن أداء استراتيجية أو نتيجة باك-تست لسهم معين. بعد ما ترجع النتيجة، لخّصها له بالعربي بشكل واضح: عدد الصفقات، نسبة النجاح، العائد الكلي، وأقصى انخفاض. ذكّره دائماً إن العينات الصغيرة (أقل من 20-30 صفقة) مؤشر ضعيف الموثوقية. ملاحظتين مهمتين: (1) العائد المحسوب يخصم تقديرياً عمولة وانزلاق سعري بسيط، فهو أقرب للواقع مو مثالي 100%. (2) لو آخر صفقة فيها autoClosedAtEnd=true، وضّح له إنها أُغلقت افتراضياً لانتهاء بيانات الفترة مو بإشارة خروج حقيقية، وممكن نتيجتها تختلف لو مدّينا الفترة.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: تقييم عقود الخيارات (Options)\nعندك أداتين: get_options_expirations وget_options_chain. قواعد صارمة يجب اتباعها دائماً:\n1. البيانات من Sandbox متأخرة 15 دقيقة - ذكّر يزيد بهذا في كل مرة تعرض فيها بيانات خيارات.\n2. أنت لا تُوصي بالدخول مباشرة أبداً (لا تقول "ادخل" أو "اشتري الآن"). دورك تقييمي فقط: تعرض جودة العقد، السيولة، المخاطر، وتترك القرار ليزيد بالكامل.\n3. كل عقد يرجع من get_options_chain فيه حقل liquidity_quality وliquidity_reason - اعرضهم دائماً. لو العقد "ضعيف - احذر"، نبّه يزيد بوضوح إنه ممكن يصعب الخروج منه حتى لو التحليل الفني يبدو جيد.\n4. لا تقترح عقداً بسبريد واسع أو سيولة ضعيفة كخيار أساسي - إذا كل العقود بهالتاريخ ضعيفة السيولة، قول ذلك صراحة واقترح تاريخ استحقاق ثاني أو انتظار.`;
