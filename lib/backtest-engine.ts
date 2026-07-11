@@ -52,12 +52,21 @@ function ema(values: number[], period: number): number[] {
   return result;
 }
 
-// VWAP تراكمي (يُعاد ضبطه يومياً لو البيانات يومية غالباً ما يلزم إعادة ضبط،
-// لكن هنا نحسبه تراكمي بسيط على كامل الفترة لتبسيط الباك-تست)
+// VWAP يومي: يُعاد ضبطه (reset) في بداية كل يوم تداول جديد
+// هذا يطابق الاستخدام الصحيح لـ VWAP كمرجع "سعر اليوم" وليس تراكمي على كل الفترة
 function vwapSeries(candles: Candle[]): number[] {
   let cumPV = 0;
   let cumVol = 0;
+  let currentDay = '';
+
   return candles.map((c) => {
+    const day = c.timestamp.split('T')[0]; // YYYY-MM-DD
+    if (day !== currentDay) {
+      // يوم تداول جديد: صفّر التراكم
+      currentDay = day;
+      cumPV = 0;
+      cumVol = 0;
+    }
     const typicalPrice = (c.high + c.low + c.close) / 3;
     cumPV += typicalPrice * c.volume;
     cumVol += c.volume;
