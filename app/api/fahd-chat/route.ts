@@ -15,11 +15,19 @@ function extractTickers(text: string): string[] {
 async function getQuote(symbol: string, apiKey: string) {
   try {
     const res = await fetch(`${FINNHUB_BASE}/quote?symbol=${symbol}&token=${apiKey}`, { cache: 'no-store' });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => '');
+      console.error(`Finnhub quote HTTP error for ${symbol}: status=${res.status} body=${bodyText}`);
+      return null;
+    }
     const d = await res.json();
-    if (!d.c || d.c === 0) return null;
+    if (!d.c || d.c === 0) {
+      console.error(`Finnhub quote empty/zero for ${symbol}: ${JSON.stringify(d)}`);
+      return null;
+    }
     return `${symbol}: السعر $${d.c} | التغير اليومي ${d.dp?.toFixed(2)}% | أعلى اليوم $${d.h} | أدنى اليوم $${d.l} | الافتتاح $${d.o} | إغلاق أمس $${d.pc}`;
-  } catch {
+  } catch (e: any) {
+    console.error(`Finnhub quote fetch threw for ${symbol}: ${e?.message || e}`);
     return null;
   }
 }
@@ -185,7 +193,11 @@ export async function POST(req: NextRequest) {
       const quoteLines = quoteResults.filter(Boolean);
       if (quoteLines.length > 0) {
         marketData = `\n\n# بيانات السوق الحية (من Finnhub - محدثة الآن):\n(ملاحظة: SPY يمثل S&P 500 و QQQ يمثل NASDAQ 100)\n${quoteLines.join('\n')}`;
+      } else {
+        console.error(`No quotes returned at all for symbols: ${quoteSymbols.join(',')}`);
       }
+    } else {
+      console.error('FINNHUB_API_KEY is missing from environment variables');
     }
 
     let fullSystemPrompt = FAHD_SYSTEM_PROMPT;
