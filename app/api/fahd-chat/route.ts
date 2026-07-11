@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { FAHD_SYSTEM_PROMPT } from '@/lib/fahd-system-prompt';
 import { executeBacktest } from '@/lib/run-backtest';
+import { getOptionsExpirations, getOptionsChain } from '@/lib/tradier';
 
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 
@@ -44,6 +45,31 @@ const TOOLS = [
         to: { type: 'string', description: 'تاريخ النهاية بصيغة YYYY-MM-DD (اختياري)' },
       },
       required: ['symbol'],
+    },
+  },
+  {
+    name: 'get_options_expirations',
+    description:
+      'يجيب تواريخ استحقاق عقود الخيارات المتاحة لسهم معين. استخدمها أول لما يزيد يسأل عن خيارات سهم ولا يحدد تاريخ استحقاق، عشان تعرف وش التواريخ المتاحة قبل ما تجيب السلسلة.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'رمز السهم الأمريكي، مثل AAPL أو TSLA' },
+      },
+      required: ['symbol'],
+    },
+  },
+  {
+    name: 'get_options_chain',
+    description:
+      'يجيب سلسلة خيارات كاملة (Calls وPuts) لسهم وتاريخ استحقاق معين، مع الأسعار وGreeks (Delta, Theta, Gamma, Vega, IV) وتقييم جودة السيولة لكل عقد (سبريد، Open Interest، الحجم). ⚠️ بيانات Sandbox متأخرة 15 دقيقة - للتقييم والتجربة فقط، مو لقرار دخول لحظي. لازم تستخدم get_options_expirations أول لو ما عندك تاريخ استحقاق محدد.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'رمز السهم الأمريكي' },
+        expiration: { type: 'string', description: 'تاريخ الاستحقاق بصيغة YYYY-MM-DD' },
+      },
+      required: ['symbol', 'expiration'],
     },
   },
 ];
@@ -164,6 +190,7 @@ export async function POST(req: NextRequest) {
 
     let fullSystemPrompt = FAHD_SYSTEM_PROMPT;
     fullSystemPrompt += `\n\n# قدرة إضافية: اختبار الاستراتيجيات (Backtest)\nعندك أداة run_backtest تقدر تستدعيها لما يزيد يسأل عن أداء استراتيجية أو نتيجة باك-تست لسهم معين. بعد ما ترجع النتيجة، لخّصها له بالعربي بشكل واضح: عدد الصفقات، نسبة النجاح، العائد الكلي، وأقصى انخفاض. ذكّره دائماً إن العينات الصغيرة (أقل من 20-30 صفقة) مؤشر ضعيف الموثوقية.`;
+    fullSystemPrompt += `\n\n# قدرة إضافية: تقييم عقود الخيارات (Options)\nعندك أداتين: get_options_expirations وget_options_chain. قواعد صارمة يجب اتباعها دائماً:\n1. البيانات من Sandbox متأخرة 15 دقيقة - ذكّر يزيد بهذا في كل مرة تعرض فيها بيانات خيارات.\n2. أنت لا تُوصي بالدخول مباشرة أبداً (لا تقول "ادخل" أو "اشتري الآن"). دورك تقييمي فقط: تعرض جودة العقد، السيولة، المخاطر، وتترك القرار ليزيد بالكامل.\n3. كل عقد يرجع من get_options_chain فيه حقل liquidity_quality وliquidity_reason - اعرضهم دائماً. لو العقد "ضعيف - احذر"، نبّه يزيد بوضوح إنه ممكن يصعب الخروج منه حتى لو التحليل الفني يبدو جيد.\n4. لا تقترح عقداً بسبريد واسع أو سيولة ضعيفة كخيار أساسي - إذا كل العقود بهالتاريخ ضعيفة السيولة، قول ذلك صراحة واقترح تاريخ استحقاق ثاني أو انتظار.`;
     if (memoryContext) {
       fullSystemPrompt += `\n\n# ذاكرتك طويلة المدى عن يزيد وتداولاته:\n${memoryContext}`;
     }
@@ -183,7 +210,7 @@ export async function POST(req: NextRequest) {
     // حلقة تنفيذ الأدوات: لغاية 3 جولات (نفس نمط أحمد)
     // ============================================
     let assistantText = '';
-    const maxRounds = 3;
+    const maxRounds = 4;
 
     for (let round = 0; round < maxRounds; round++) {
       const data = await callClaude(workingMessages, fullSystemPrompt);
@@ -211,6 +238,38 @@ export async function POST(req: NextRequest) {
             tool_use_id: block.id,
             content: JSON.stringify(result),
           });
+        } else if (block.name === 'get_options_expirations') {
+          try {
+            const dates = await getOptionsExpirations(block.input.symbol);
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify({ symbol: block.input.symbol, expirations: dates }),
+            });
+          } catch (e: any) {
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify({ error: e.message || 'فشل جلب تواريخ الاستحقاق' }),
+              is_error: true,
+            });
+          }
+        } else if (block.name === 'get_options_chain') {
+          try {
+            const chain = await getOptionsChain(block.input.symbol, block.input.expiration);
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify(chain),
+            });
+          } catch (e: any) {
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify({ error: e.message || 'فشل جلب سلسلة الخيارات' }),
+              is_error: true,
+            });
+          }
         } else {
           toolResults.push({
             type: 'tool_result',
