@@ -12,6 +12,7 @@ type BacktestTrade = {
   exitPrice: number;
   returnPct: number;
   reason: string;
+  autoClosedAtEnd?: boolean;
 };
 
 type BacktestOutput =
@@ -48,7 +49,14 @@ type OptionContract = {
 };
 
 type OptionsChainOutput =
-  | { symbol: string; expiration: string; contracts: OptionContract[]; dataDelayNote: string }
+  | {
+      symbol: string;
+      expiration: string;
+      spotPrice: number | null;
+      contracts: OptionContract[];
+      totalContractsAvailable: number;
+      dataDelayNote: string;
+    }
   | { error: string };
 
 type ToolResult = { name: string; input: any; output: any };
@@ -186,6 +194,11 @@ function BacktestCard({ output }: { output: BacktestOutput }) {
             >
               <span style={{ color: C.textMuted }}>
                 {new Date(t.entryDate).toLocaleDateString('ar')} ← {new Date(t.exitDate).toLocaleDateString('ar')}
+                {t.autoClosedAtEnd && (
+                  <span style={{ color: C.warn, marginRight: 6 }} title="أُغلقت افتراضياً - نهاية بيانات الفترة">
+                    ⚠️ إغلاق افتراضي
+                  </span>
+                )}
               </span>
               <span style={{ color: t.returnPct >= 0 ? C.gain : C.loss, fontWeight: 600 }}>
                 {t.returnPct >= 0 ? '+' : ''}
@@ -217,22 +230,30 @@ function OptionsChainCard({ output }: { output: OptionsChainOutput }) {
     );
   }
 
-  const { symbol, expiration, contracts } = output;
-  const sorted = [...contracts].sort((a, b) => a.strike - b.strike).slice(0, 12);
+  const { symbol, expiration, contracts, spotPrice, totalContractsAvailable } = output;
 
   return (
     <div style={{ background: C.panel2, border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden' }}>
       <div style={{ padding: '12px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `1px solid ${C.border}` }}>
         <span style={{ fontFamily: FONT_HEAD, fontWeight: 700, fontSize: 14 }}>
           {symbol} — {expiration}
+          {spotPrice !== null && (
+            <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: C.textMuted, fontWeight: 400 }}> · السعر ${spotPrice.toFixed(2)}</span>
+          )}
         </span>
         <span style={{ fontFamily: FONT_MONO, fontSize: 10, background: C.lossBg, color: C.loss, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(229,72,77,0.3)' }}>
           Sandbox متأخر 15د
         </span>
       </div>
 
+      {totalContractsAvailable > contracts.length && (
+        <div style={{ padding: '8px 14px 0', fontSize: 10.5, color: C.textMuted, fontFamily: FONT_AR }}>
+          عرض أقرب {contracts.length} عقد للسعر الحالي من أصل {totalContractsAvailable} عقد متاح
+        </div>
+      )}
+
       <div style={{ padding: '4px 14px 14px' }}>
-        {sorted.map((c, i) => {
+        {contracts.map((c, i) => {
           const liq = liquidityStyle(c.liquidity_quality);
           return (
             <div key={i} style={{ padding: '9px 0', borderTop: `1px solid ${C.border}` }}>
