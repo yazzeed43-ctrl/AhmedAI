@@ -9,7 +9,7 @@ export interface TechnicalIndicatorsResult {
   rsi: { value: number; signal: string };
   macd: { macdLine: number; signalLine: number; histogram: number; signal: string };
   bollingerBands: { upper: number; mid: number; lower: number; signal: string };
-  supportResistance: { support: number; resistance: number };
+  supportResistance: { support: number; resistance: number; note: string };
 }
 
 export async function getTechnicalIndicators(
@@ -32,8 +32,8 @@ export async function getTechnicalIndicators(
     const res = await fetch(tdUrl);
     const data = await res.json();
 
-    if (data.status === 'error' || !data.values || data.values.length < 30) {
-      return { error: `ما فيه بيانات كافية لحساب المؤشرات على ${sym}` };
+    if (data.status === 'error' || !data.values || data.values.length < 50) {
+      return { error: `ما فيه بيانات كافية لحساب المؤشرات بدقة على ${sym} (نحتاج 50 شمعة على الأقل)` };
     }
 
     const values = [...data.values].reverse();
@@ -90,6 +90,7 @@ export async function getTechnicalIndicators(
       supportResistance: {
         support: Number(sr.support.toFixed(2)),
         resistance: Number(sr.resistance.toFixed(2)),
+        note: 'أعلى قمة وأدنى قاع تقريبيين خلال آخر 50 شمعة - مستويات إرشادية أولية، مو نقاط ارتداد (Pivot) دقيقة',
       },
     };
   } catch (e: any) {
