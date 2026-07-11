@@ -83,6 +83,26 @@ function evaluateLiquidity(bid: number, ask: number, oi: number, volume: number)
   };
 }
 
+async function getUnderlyingSpotPrice(symbol: string): Promise<number | null> {
+  try {
+    const data = await tradierGet(`/markets/quotes?symbols=${encodeURIComponent(symbol.toUpperCase())}`);
+    const q = data?.quotes?.quote;
+    const quote = Array.isArray(q) ? q[0] : q;
+    return quote?.last ?? quote?.close ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ترتيب أولوية جودة السيولة، يُستخدم كمعيار ترتيب ثانوي
+function liquidityRank(q: 'جيد' | 'متوسط' | 'ضعيف - احذر'): number {
+  if (q === 'جيد') return 0;
+  if (q === 'متوسط') return 1;
+  return 2;
+}
+
+const MAX_RETURNED_CONTRACTS = 12; // نحد عدد العقود المرسلة للواجهة عشان الرد يبقى سريع وواضح
+
 export async function getOptionsExpirations(symbol: string): Promise<string[]> {
   const data = await tradierGet(
     `/markets/options/expirations?symbol=${encodeURIComponent(symbol.toUpperCase())}&includeAllRoots=true&strikes=false`
@@ -95,14 +115,23 @@ export async function getOptionsExpirations(symbol: string): Promise<string[]> {
 export async function getOptionsChain(
   symbol: string,
   expiration: string
-): Promise<{ symbol: string; expiration: string; contracts: OptionContract[]; dataDelayNote: string }> {
-  const data = await tradierGet(
-    `/markets/options/chains?symbol=${encodeURIComponent(symbol.toUpperCase())}&expiration=${expiration}&greeks=true`
-  );
+): Promise<{
+  symbol: string;
+  expiration: string;
+  spotPrice: number | null;
+  contracts: OptionContract[];
+  totalContractsAvailable: number;
+  dataDelayNote: string;
+}> {
+  const [data, spotPrice] = await Promise.all([
+    tradierGet(`/markets/options/chains?symbol=${encodeURIComponent(symbol.toUpperCase())}&expiration=${expiration}&greeks=true`),
+    getUnderlyingSpotPrice(symbol),
+  ]);
+
   const rawOptions = data?.options?.option;
   const list = rawOptions ? (Array.isArray(rawOptions) ? rawOptions : [rawOptions]) : [];
 
-  const contracts: OptionContract[] = list.map((o: any) => {
+  let contracts: OptionContract[] = list.map((o: any) => {
     const liquidity = evaluateLiquidity(
       o.bid ?? 0,
       o.ask ?? 0,
@@ -132,10 +161,32 @@ export async function getOptionsChain(
     };
   });
 
+  const totalContractsAvailable = contracts.length;
+
+  // الترتيب: الأقرب للسعر الحالي أول، وعند التساوي التقريبي تُفضّل جودة السيولة الأعلى
+  if (spotPrice !== null) {
+    contracts = contracts
+      .map((c) => ({ c, distance: Math.abs(c.strike - spotPrice) }))
+      .sort((a, b) => {
+        if (a.distance !== b.distance) return a.distance - b.distance;
+        const liqDiff = liquidityRank(a.c.liquidity_quality) - liquidityRank(b.c.liquidity_quality);
+        if (liqDiff !== 0) return liqDiff;
+        return (a.c.spread_pct ?? 999) - (b.c.spread_pct ?? 999);
+      })
+      .map((x) => x.c);
+  } else {
+    // لو ما قدرنا نجيب السعر الحالي لأي سبب، نرتب بالسيولة كخطة بديلة
+    contracts = contracts.sort((a, b) => liquidityRank(a.liquidity_quality) - liquidityRank(b.liquidity_quality));
+  }
+
+  contracts = contracts.slice(0, MAX_RETURNED_CONTRACTS);
+
   return {
     symbol: symbol.toUpperCase(),
     expiration,
+    spotPrice,
     contracts,
+    totalContractsAvailable,
     dataDelayNote:
       'بيانات Sandbox متأخرة 15 دقيقة - للتقييم والتجربة فقط، مو لقرار دخول لحظي بالسوق.',
   };
