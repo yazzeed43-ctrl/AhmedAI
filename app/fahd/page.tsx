@@ -67,7 +67,7 @@ type TechnicalIndicatorsOutput =
       rsi: { value: number; signal: string };
       macd: { macdLine: number; signalLine: number; histogram: number; signal: string };
       bollingerBands: { upper: number; mid: number; lower: number; signal: string };
-      supportResistance: { support: number; resistance: number };
+      supportResistance: { support: number; resistance: number; note: string };
     }
   | { error: string };
 
@@ -329,7 +329,7 @@ function IndicatorsCard({ output }: { output: TechnicalIndicatorsOutput }) {
       {row('RSI (14)', rsi.value.toFixed(1), rsiColor, rsi.signal)}
       {row('MACD', `${macd.macdLine} / ${macd.signalLine}`, macdColor, macd.signal)}
       {row('Bollinger Bands', `${bollingerBands.lower} - ${bollingerBands.upper}`, C.text, bollingerBands.signal)}
-      {row('دعم / مقاومة', `$${supportResistance.support} / $${supportResistance.resistance}`, C.text)}
+      {row('دعم / مقاومة', `$${supportResistance.support} / $${supportResistance.resistance}`, C.text, supportResistance.note)}
     </div>
   );
 }
