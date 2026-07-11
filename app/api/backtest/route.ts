@@ -19,24 +19,43 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const symbol = (body.symbol || '').toUpperCase().trim();
-    const timeframe = body.timeframe || '1D'; // فريم يومي افتراضياً
+    // فريم 15 دقيقة افتراضياً (الأنسب لاستراتيجية EMA+VWAP+حجم حسب البحث)
+    const timeframe = body.timeframe || '15min';
 
     if (!symbol) {
       return NextResponse.json({ error: 'رمز السهم مطلوب' }, { status: 400 });
     }
 
-    // نطاق زمني افتراضي: آخر سنة، أو حسب طلب المستخدم
+    // Twelve Data يستخدم صيغة interval مختلفة عن Finnhub
+    const intervalMap: Record<string, string> = {
+      '1D': '1day',
+      'D': '1day',
+      '1W': '1week',
+      '1M': '1month',
+      '1MIN': '1min',
+      '5MIN': '5min',
+      '15MIN': '15min',
+      '30MIN': '30min',
+      '1H': '1h',
+      '4H': '4h',
+    };
+    const interval = intervalMap[timeframe.toUpperCase()] || timeframe;
+    const isIntraday = !['1day', '1week', '1month'].includes(interval);
+
+    // نطاق زمني افتراضي: أقصر للفريمات الدقيقة عشان ما نتجاوز حد Twelve Data (5000 شمعة بالطلب)
+    // فريم 15 دقيقة × ساعات تداول (~26 شمعة/يوم) × 90 يوم ≈ 2340 شمعة - مناسب
+    const defaultLookbackDays = isIntraday ? 90 : 365;
     const toDate = body.to ? new Date(body.to) : new Date();
     const fromDate = body.from
       ? new Date(body.from)
-      : new Date(toDate.getTime() - 365 * 24 * 60 * 60 * 1000);
+      : new Date(toDate.getTime() - defaultLookbackDays * 24 * 60 * 60 * 1000);
 
     // 1) تحقق هل البيانات موجودة مسبقاً بقاعدة البيانات (كاش)
     const { data: cached } = await supabase
       .from('historical_prices')
       .select('*')
       .eq('symbol', symbol)
-      .eq('timeframe', timeframe)
+      .eq('timeframe', interval)
       .gte('timestamp', fromDate.toISOString())
       .lte('timestamp', toDate.toISOString())
       .order('timestamp', { ascending: true });
@@ -46,14 +65,6 @@ export async function POST(req: NextRequest) {
     // لو البيانات ناقصة أو غير موجودة، اجلبها من Twelve Data
     const expectedMinRows = 30; // حد أدنى تقريبي عشان نعتبرها "كافية"
     if (!cached || cached.length < expectedMinRows) {
-      // Twelve Data يستخدم صيغة interval مختلفة عن Finnhub
-      const intervalMap: Record<string, string> = {
-        '1D': '1day',
-        'D': '1day',
-        '1W': '1week',
-        '1M': '1month',
-      };
-      const interval = intervalMap[timeframe] || '1day';
       const startDateStr = fromDate.toISOString().split('T')[0];
       const endDateStr = toDate.toISOString().split('T')[0];
 
@@ -86,7 +97,7 @@ export async function POST(req: NextRequest) {
       // خزّن بقاعدة البيانات للاستخدام القادم (upsert لتفادي التكرار)
       const rowsToInsert = candles.map((c) => ({
         symbol,
-        timeframe,
+        timeframe: interval,
         timestamp: c.timestamp,
         open: c.open,
         high: c.high,
@@ -122,7 +133,7 @@ export async function POST(req: NextRequest) {
     await supabase.from('backtest_results').insert({
       strategy_name: 'EMA_9_21_VWAP_Volume',
       symbol,
-      timeframe,
+      timeframe: interval,
       start_date: fromDate.toISOString(),
       end_date: toDate.toISOString(),
       total_trades: result.totalTrades,
@@ -137,7 +148,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       symbol,
-      timeframe,
+      timeframe: interval,
       period: { from: fromDate.toISOString(), to: toDate.toISOString() },
       result,
     });
