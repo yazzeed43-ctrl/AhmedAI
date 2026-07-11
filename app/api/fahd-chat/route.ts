@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { FAHD_SYSTEM_PROMPT } from '@/lib/fahd-system-prompt';
+import { executeBacktest } from '@/lib/run-backtest';
 
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 
@@ -21,6 +22,31 @@ async function getQuote(symbol: string, apiKey: string) {
     return null;
   }
 }
+
+// ============================================
+// أداة الباك-تست: تعريف الأداة اللي فهد يقدر يستدعيها بنفسه
+// ============================================
+const TOOLS = [
+  {
+    name: 'run_backtest',
+    description:
+      'يشغّل اختبار تاريخي (backtest) لاستراتيجية EMA 9/21 + VWAP + تأكيد الحجم على سهم معين، ويرجع عدد الصفقات، نسبة النجاح، العائد الكلي، وأقصى انخفاض. استخدمها لما يزيد يسأل عن أداء استراتيجية أو نتيجة باك-تست لسهم معين.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'رمز السهم الأمريكي، مثل AAPL أو TSLA' },
+        timeframe: {
+          type: 'string',
+          description: 'الفريم الزمني. الافتراضي 15min وهو الأنسب لهالاستراتيجية.',
+          enum: ['5min', '15min', '30min', '1h', '4h', '1day'],
+        },
+        from: { type: 'string', description: 'تاريخ البداية بصيغة YYYY-MM-DD (اختياري)' },
+        to: { type: 'string', description: 'تاريخ النهاية بصيغة YYYY-MM-DD (اختياري)' },
+      },
+      required: ['symbol'],
+    },
+  },
+];
 
 // حفظ تلقائي: يسأل Claude إذا كانت رسالة يزيد تحتوي معلومة تستحق الحفظ الدائم
 async function autoSaveMemory(userMessage: string, assistantReply: string) {
@@ -77,6 +103,30 @@ async function autoSaveMemory(userMessage: string, assistantReply: string) {
   }
 }
 
+async function callClaude(messages: any[], systemPrompt: string) {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': process.env.ANTHROPIC_API_KEY!,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1500,
+      system: systemPrompt,
+      tools: TOOLS,
+      messages,
+    }),
+  });
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error('Anthropic API error:', errText);
+    throw new Error('فشل الاتصال بالنموذج');
+  }
+  return response.json();
+}
+
 export async function POST(req: NextRequest) {
   try {
     const { message } = await req.json();
@@ -113,6 +163,7 @@ export async function POST(req: NextRequest) {
     }
 
     let fullSystemPrompt = FAHD_SYSTEM_PROMPT;
+    fullSystemPrompt += `\n\n# قدرة إضافية: اختبار الاستراتيجيات (Backtest)\nعندك أداة run_backtest تقدر تستدعيها لما يزيد يسأل عن أداء استراتيجية أو نتيجة باك-تست لسهم معين. بعد ما ترجع النتيجة، لخّصها له بالعربي بشكل واضح: عدد الصفقات، نسبة النجاح، العائد الكلي، وأقصى انخفاض. ذكّره دائماً إن العينات الصغيرة (أقل من 20-30 صفقة) مؤشر ضعيف الموثوقية.`;
     if (memoryContext) {
       fullSystemPrompt += `\n\n# ذاكرتك طويلة المدى عن يزيد وتداولاته:\n${memoryContext}`;
     }
@@ -120,7 +171,7 @@ export async function POST(req: NextRequest) {
       fullSystemPrompt += marketData;
     }
 
-    const messages = [
+    const workingMessages: any[] = [
       ...conversationHistory.map((m: { role: string; content: string }) => ({
         role: m.role,
         content: m.content,
@@ -128,30 +179,54 @@ export async function POST(req: NextRequest) {
       { role: 'user', content: message },
     ];
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY!,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1500,
-        system: fullSystemPrompt,
-        messages,
-      }),
-    });
-    if (!response.ok) {
-      const errText = await response.text();
-      console.error('Anthropic API error:', errText);
-      return NextResponse.json({ error: 'فشل الاتصال بالنموذج' }, { status: 500 });
+    // ============================================
+    // حلقة تنفيذ الأدوات: لغاية 3 جولات (نفس نمط أحمد)
+    // ============================================
+    let assistantText = '';
+    const maxRounds = 3;
+
+    for (let round = 0; round < maxRounds; round++) {
+      const data = await callClaude(workingMessages, fullSystemPrompt);
+      const toolUseBlocks = data.content.filter((b: any) => b.type === 'tool_use');
+      const textBlocks = data.content
+        .filter((b: any) => b.type === 'text')
+        .map((b: any) => b.text)
+        .join('\n');
+
+      if (toolUseBlocks.length === 0) {
+        assistantText = textBlocks;
+        break;
+      }
+
+      // أضف رد المساعد (يحتوي على طلب استخدام الأداة) للمحادثة
+      workingMessages.push({ role: 'assistant', content: data.content });
+
+      // نفّذ كل أداة مطلوبة
+      const toolResults = [];
+      for (const block of toolUseBlocks) {
+        if (block.name === 'run_backtest') {
+          const result = await executeBacktest(block.input);
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: block.id,
+            content: JSON.stringify(result),
+          });
+        } else {
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: block.id,
+            content: JSON.stringify({ error: 'أداة غير معروفة' }),
+            is_error: true,
+          });
+        }
+      }
+      workingMessages.push({ role: 'user', content: toolResults });
+
+      // لو وصلنا آخر جولة وما زال فيه tool_use، خذ أي نص متوفر كحل احتياطي
+      if (round === maxRounds - 1) {
+        assistantText = textBlocks || 'نفّذت الطلب، بس واجهت صعوبة ألخصه بوضوح. جرب تسأل مرة ثانية.';
+      }
     }
-    const data = await response.json();
-    const assistantText = data.content
-      .filter((block: { type: string }) => block.type === 'text')
-      .map((block: { text: string }) => block.text)
-      .join('\n');
 
     await supabase.from('fahd_conversations').insert([
       { role: 'user', content: message },
