@@ -59,6 +59,18 @@ type OptionsChainOutput =
     }
   | { error: string };
 
+type TechnicalIndicatorsOutput =
+  | {
+      symbol: string;
+      timeframe: string;
+      lastPrice: number;
+      rsi: { value: number; signal: string };
+      macd: { macdLine: number; signalLine: number; histogram: number; signal: string };
+      bollingerBands: { upper: number; mid: number; lower: number; signal: string };
+      supportResistance: { support: number; resistance: number };
+    }
+  | { error: string };
+
 type ToolResult = { name: string; input: any; output: any };
 type Message = { role: 'user' | 'assistant'; content: string; toolResults?: ToolResult[] };
 type TickerQuote = { symbol: string; price: number; changePct: number };
@@ -277,6 +289,52 @@ function OptionsChainCard({ output }: { output: OptionsChainOutput }) {
 }
 
 // ============================================
+// بطاقة المؤشرات الفنية
+// ============================================
+function IndicatorsCard({ output }: { output: TechnicalIndicatorsOutput }) {
+  if ('error' in output) {
+    return (
+      <div style={{ background: C.panel2, border: `1px solid ${C.loss}`, borderRadius: 14, padding: 14, fontSize: 12.5, color: C.loss }}>
+        ⚠️ {output.error}
+      </div>
+    );
+  }
+
+  const { symbol, timeframe, lastPrice, rsi, macd, bollingerBands, supportResistance } = output;
+  const rsiColor = rsi.value >= 70 ? C.loss : rsi.value <= 30 ? C.gain : C.text;
+  const macdColor = macd.histogram > 0 ? C.gain : macd.histogram < 0 ? C.loss : C.textMuted;
+
+  const row = (label: string, value: string, color: string, signal?: string) => (
+    <div style={{ padding: '10px 14px', borderTop: `1px solid ${C.border}` }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontFamily: FONT_AR, fontSize: 12, color: C.textMuted }}>{label}</span>
+        <span style={{ fontFamily: FONT_MONO, fontSize: 13, fontWeight: 600, color }}>{value}</span>
+      </div>
+      {signal && <div style={{ fontSize: 10.5, color, marginTop: 2 }}>{signal}</div>}
+    </div>
+  );
+
+  return (
+    <div style={{ background: C.panel2, border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden' }}>
+      <div style={{ padding: '12px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `1px solid ${C.border}` }}>
+        <span style={{ fontFamily: FONT_HEAD, fontWeight: 700, fontSize: 14 }}>
+          {symbol} — مؤشرات فنية
+          <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: C.textMuted, fontWeight: 400 }}> · ${lastPrice.toFixed(2)}</span>
+        </span>
+        <span style={{ fontFamily: FONT_MONO, fontSize: 10, background: 'rgba(201,162,39,0.12)', color: C.gold, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(201,162,39,0.3)' }}>
+          {timeframe}
+        </span>
+      </div>
+
+      {row('RSI (14)', rsi.value.toFixed(1), rsiColor, rsi.signal)}
+      {row('MACD', `${macd.macdLine} / ${macd.signalLine}`, macdColor, macd.signal)}
+      {row('Bollinger Bands', `${bollingerBands.lower} - ${bollingerBands.upper}`, C.text, bollingerBands.signal)}
+      {row('دعم / مقاومة', `$${supportResistance.support} / $${supportResistance.resistance}`, C.text)}
+    </div>
+  );
+}
+
+// ============================================
 // بطاقة تواريخ الاستحقاق
 // ============================================
 function ExpirationsCard({ output, onPick }: { output: any; onPick: (d: string) => void }) {
@@ -374,6 +432,7 @@ export default function FahdPage() {
   }
 
   function renderToolResult(tr: ToolResult, key: number) {
+    if (tr.name === 'get_technical_indicators') return <IndicatorsCard key={key} output={tr.output as TechnicalIndicatorsOutput} />;
     if (tr.name === 'run_backtest') return <BacktestCard key={key} output={tr.output as BacktestOutput} />;
     if (tr.name === 'get_options_chain') return <OptionsChainCard key={key} output={tr.output as OptionsChainOutput} />;
     if (tr.name === 'get_options_expirations') {
@@ -465,6 +524,9 @@ export default function FahdPage() {
               </button>
               <button className="fahd-qa-btn" onClick={() => quickFill('قيّم لي خيارات ')} style={{ background: C.panel2, border: `1px solid ${C.border}`, color: C.text, fontFamily: FONT_AR, fontSize: 12, padding: '8px 12px', borderRadius: 10, cursor: 'pointer' }}>
                 🎯 قيّم خيارات
+              </button>
+              <button className="fahd-qa-btn" onClick={() => quickFill('حلل لي المؤشرات الفنية لـ ')} style={{ background: C.panel2, border: `1px solid ${C.border}`, color: C.text, fontFamily: FONT_AR, fontSize: 12, padding: '8px 12px', borderRadius: 10, cursor: 'pointer' }}>
+                📐 مؤشرات فنية
               </button>
             </div>
           </>
