@@ -191,6 +191,7 @@ export async function POST(req: NextRequest) {
     let fullSystemPrompt = FAHD_SYSTEM_PROMPT;
     fullSystemPrompt += `\n\n# قدرة إضافية: اختبار الاستراتيجيات (Backtest)\nعندك أداة run_backtest تقدر تستدعيها لما يزيد يسأل عن أداء استراتيجية أو نتيجة باك-تست لسهم معين. بعد ما ترجع النتيجة، لخّصها له بالعربي بشكل واضح: عدد الصفقات، نسبة النجاح، العائد الكلي، وأقصى انخفاض. ذكّره دائماً إن العينات الصغيرة (أقل من 20-30 صفقة) مؤشر ضعيف الموثوقية.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: تقييم عقود الخيارات (Options)\nعندك أداتين: get_options_expirations وget_options_chain. قواعد صارمة يجب اتباعها دائماً:\n1. البيانات من Sandbox متأخرة 15 دقيقة - ذكّر يزيد بهذا في كل مرة تعرض فيها بيانات خيارات.\n2. أنت لا تُوصي بالدخول مباشرة أبداً (لا تقول "ادخل" أو "اشتري الآن"). دورك تقييمي فقط: تعرض جودة العقد، السيولة، المخاطر، وتترك القرار ليزيد بالكامل.\n3. كل عقد يرجع من get_options_chain فيه حقل liquidity_quality وliquidity_reason - اعرضهم دائماً. لو العقد "ضعيف - احذر"، نبّه يزيد بوضوح إنه ممكن يصعب الخروج منه حتى لو التحليل الفني يبدو جيد.\n4. لا تقترح عقداً بسبريد واسع أو سيولة ضعيفة كخيار أساسي - إذا كل العقود بهالتاريخ ضعيفة السيولة، قول ذلك صراحة واقترح تاريخ استحقاق ثاني أو انتظار.`;
+    fullSystemPrompt += `\n\n# ملاحظة مهمة عن طريقة الرد بعد استخدام الأدوات\nواجهة يزيد تعرض تلقائياً بطاقة مرئية منسقة بكل الأرقام والتفاصيل بعد أي استدعاء لـ run_backtest أو get_options_chain. لذلك لا تكرر الجدول أو كل الأرقام نصياً في ردك - اكتفِ بتعليق قصير (سطرين إلى ثلاثة أسطر) يعطي رأيك أو أهم ملاحظة، والباقي يزيد بيشوفه بالبطاقة.`;
     if (memoryContext) {
       fullSystemPrompt += `\n\n# ذاكرتك طويلة المدى عن يزيد وتداولاته:\n${memoryContext}`;
     }
@@ -210,6 +211,7 @@ export async function POST(req: NextRequest) {
     // حلقة تنفيذ الأدوات: لغاية 3 جولات (نفس نمط أحمد)
     // ============================================
     let assistantText = '';
+    const collectedToolResults: { name: string; input: any; output: any }[] = [];
     const maxRounds = 4;
 
     for (let round = 0; round < maxRounds; round++) {
@@ -233,6 +235,7 @@ export async function POST(req: NextRequest) {
       for (const block of toolUseBlocks) {
         if (block.name === 'run_backtest') {
           const result = await executeBacktest(block.input);
+          collectedToolResults.push({ name: 'run_backtest', input: block.input, output: result });
           toolResults.push({
             type: 'tool_result',
             tool_use_id: block.id,
@@ -241,32 +244,39 @@ export async function POST(req: NextRequest) {
         } else if (block.name === 'get_options_expirations') {
           try {
             const dates = await getOptionsExpirations(block.input.symbol);
+            const output = { symbol: block.input.symbol, expirations: dates };
+            collectedToolResults.push({ name: 'get_options_expirations', input: block.input, output });
             toolResults.push({
               type: 'tool_result',
               tool_use_id: block.id,
-              content: JSON.stringify({ symbol: block.input.symbol, expirations: dates }),
+              content: JSON.stringify(output),
             });
           } catch (e: any) {
+            const output = { error: e.message || 'فشل جلب تواريخ الاستحقاق' };
+            collectedToolResults.push({ name: 'get_options_expirations', input: block.input, output });
             toolResults.push({
               type: 'tool_result',
               tool_use_id: block.id,
-              content: JSON.stringify({ error: e.message || 'فشل جلب تواريخ الاستحقاق' }),
+              content: JSON.stringify(output),
               is_error: true,
             });
           }
         } else if (block.name === 'get_options_chain') {
           try {
             const chain = await getOptionsChain(block.input.symbol, block.input.expiration);
+            collectedToolResults.push({ name: 'get_options_chain', input: block.input, output: chain });
             toolResults.push({
               type: 'tool_result',
               tool_use_id: block.id,
               content: JSON.stringify(chain),
             });
           } catch (e: any) {
+            const output = { error: e.message || 'فشل جلب سلسلة الخيارات' };
+            collectedToolResults.push({ name: 'get_options_chain', input: block.input, output });
             toolResults.push({
               type: 'tool_result',
               tool_use_id: block.id,
-              content: JSON.stringify({ error: e.message || 'فشل جلب سلسلة الخيارات' }),
+              content: JSON.stringify(output),
               is_error: true,
             });
           }
@@ -295,7 +305,7 @@ export async function POST(req: NextRequest) {
     // الحفظ التلقائي للذاكرة طويلة المدى (بدون انتظار)
     await autoSaveMemory(message, assistantText);
 
-    return NextResponse.json({ reply: assistantText });
+    return NextResponse.json({ reply: assistantText, toolResults: collectedToolResults });
   } catch (error) {
     console.error('Fahd chat route error:', error);
     return NextResponse.json({ error: 'حدث خطأ غير متوقع' }, { status: 500 });
