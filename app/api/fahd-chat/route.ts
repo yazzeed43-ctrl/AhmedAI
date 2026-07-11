@@ -32,6 +32,55 @@ async function getQuote(symbol: string, apiKey: string) {
   }
 }
 
+function formatDate(d: Date) {
+  return d.toISOString().split('T')[0];
+}
+
+// آخر 3 أخبار مهمة للسهم خلال 5 أيام
+async function getCompanyNews(symbol: string, apiKey: string) {
+  try {
+    const to = new Date();
+    const from = new Date(to.getTime() - 5 * 24 * 60 * 60 * 1000);
+    const res = await fetch(
+      `${FINNHUB_BASE}/company-news?symbol=${symbol}&from=${formatDate(from)}&to=${formatDate(to)}&token=${apiKey}`,
+      { cache: 'no-store' }
+    );
+    if (!res.ok) return null;
+    const items = await res.json();
+    if (!Array.isArray(items) || items.length === 0) return null;
+    const top = items.slice(0, 3);
+    const lines = top.map((n: any) => {
+      const date = new Date(n.datetime * 1000).toISOString().split('T')[0];
+      return `  - [${date}] ${n.headline} (المصدر: ${n.source})`;
+    });
+    return `أخبار ${symbol} الأخيرة:\n${lines.join('\n')}`;
+  } catch (e: any) {
+    console.error(`Finnhub company-news fetch threw for ${symbol}: ${e?.message || e}`);
+    return null;
+  }
+}
+
+// تحقق هل فيه إعلان أرباح خلال الـ14 يوم الجاية (مهم جداً لمتداولي الخيارات)
+async function getUpcomingEarnings(symbol: string, apiKey: string) {
+  try {
+    const from = new Date();
+    const to = new Date(from.getTime() + 14 * 24 * 60 * 60 * 1000);
+    const res = await fetch(
+      `${FINNHUB_BASE}/calendar/earnings?from=${formatDate(from)}&to=${formatDate(to)}&symbol=${symbol}&token=${apiKey}`,
+      { cache: 'no-store' }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const items = data?.earningsCalendar;
+    if (!Array.isArray(items) || items.length === 0) return null;
+    const next = items[0];
+    return `⚠️ ${symbol} عندها إعلان أرباح متوقع بتاريخ ${next.date} (${next.hour === 'bmo' ? 'قبل الافتتاح' : next.hour === 'amc' ? 'بعد الإغلاق' : 'وقت غير محدد'}) - توقّع تقلب أعلى من المعتاد حول هذا التاريخ.`;
+  } catch (e: any) {
+    console.error(`Finnhub earnings calendar fetch threw for ${symbol}: ${e?.message || e}`);
+    return null;
+  }
+}
+
 // ============================================
 // أداة الباك-تست: تعريف الأداة اللي فهد يقدر يستدعيها بنفسه
 // ============================================
@@ -83,6 +132,16 @@ const TOOLS = [
 ];
 
 // حفظ تلقائي: يسأل Claude إذا كانت رسالة يزيد تحتوي معلومة تستحق الحفظ الدائم
+// فلتر سريع بدون AI: هل الرسالة يُحتمل تحتوي معلومة تستحق الحفظ؟
+// يشتغل قبل أي استدعاء لـ Claude، عشان نوفر الوقت والتكلفة لمعظم الرسائل العادية
+function mightContainSaveworthyInfo(userMessage: string): boolean {
+  const signals = [
+    /\d/, // أي رقم (سعر، نسبة، كمية)
+    /دخلت|خرجت|صفقة|قاعدة|تعلمت|درس|أفضل\s*ما|ما\s*أدخل|ما\s*أدخل\s*قبل|وقف\s*خسارة|هدف\s*ربح/,
+  ];
+  return signals.some((re) => re.test(userMessage));
+}
+
 async function autoSaveMemory(userMessage: string, assistantReply: string) {
   try {
     const checkRes = await fetch('https://api.anthropic.com/v1/messages', {
@@ -205,12 +264,27 @@ export async function POST(req: NextRequest) {
       } else {
         console.error(`No quotes returned at all for symbols: ${quoteSymbols.join(',')}`);
       }
+
+      // أخبار وتقويم أرباح - بس للأسهم المحددة (مو SPY/QQQ) عشان نتجنب طلبات زايدة
+      if (tickers.length > 0) {
+        const newsResults = await Promise.all(tickers.map((s) => getCompanyNews(s, finnhubKey)));
+        const earningsResults = await Promise.all(tickers.map((s) => getUpcomingEarnings(s, finnhubKey)));
+        const newsLines = newsResults.filter(Boolean);
+        const earningsLines = earningsResults.filter(Boolean);
+        if (newsLines.length > 0) {
+          marketData += `\n\n# أخبار حديثة (من Finnhub):\n${newsLines.join('\n')}`;
+        }
+        if (earningsLines.length > 0) {
+          marketData += `\n\n# تنبيهات أرباح قريبة:\n${earningsLines.join('\n')}`;
+        }
+      }
     } else {
       console.error('FINNHUB_API_KEY is missing from environment variables');
     }
 
     let fullSystemPrompt = FAHD_SYSTEM_PROMPT;
-    fullSystemPrompt += `\n\n# قدرة إضافية: اختبار الاستراتيجيات (Backtest)\nعندك أداة run_backtest تقدر تستدعيها لما يزيد يسأل عن أداء استراتيجية أو نتيجة باك-تست لسهم معين. بعد ما ترجع النتيجة، لخّصها له بالعربي بشكل واضح: عدد الصفقات، نسبة النجاح، العائد الكلي، وأقصى انخفاض. ذكّره دائماً إن العينات الصغيرة (أقل من 20-30 صفقة) مؤشر ضعيف الموثوقية.`;
+    fullSystemPrompt += `\n\n# قدرة إضافية: الأخبار وتقويم الأرباح\nلو وصلتك أخبار حديثة أو تنبيه أرباح قريبة عن سهم يزيد يسأل عنه، اذكرها له مختصرة ضمن تحليلك - خصوصاً تنبيه الأرباح، لأنه مهم جداً لمتداولي الخيارات (التقلب يرتفع كثير حول تاريخ الإعلان). لا تتجاهلها حتى لو ما سأل عنها صراحة.`;
+    fullSystemPrompt += `\n\n# قدرة إضافية: اختبار الاستراتيجيات (Backtest)\nعندك أداة run_backtest تقدر تستدعيها لما يزيد يسأل عن أداء استراتيجية أو نتيجة باك-تست لسهم معين. بعد ما ترجع النتيجة، لخّصها له بالعربي بشكل واضح: عدد الصفقات، نسبة النجاح، العائد الكلي، وأقصى انخفاض. ذكّره دائماً إن العينات الصغيرة (أقل من 20-30 صفقة) مؤشر ضعيف الموثوقية. ملاحظتين مهمتين: (1) العائد المحسوب يخصم تقديرياً عمولة وانزلاق سعري بسيط، فهو أقرب للواقع مو مثالي 100%. (2) لو آخر صفقة فيها autoClosedAtEnd=true، وضّح له إنها أُغلقت افتراضياً لانتهاء بيانات الفترة مو بإشارة خروج حقيقية، وممكن نتيجتها تختلف لو مدّينا الفترة.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: تقييم عقود الخيارات (Options)\nعندك أداتين: get_options_expirations وget_options_chain. قواعد صارمة يجب اتباعها دائماً:\n1. البيانات من Sandbox متأخرة 15 دقيقة - ذكّر يزيد بهذا في كل مرة تعرض فيها بيانات خيارات.\n2. أنت لا تُوصي بالدخول مباشرة أبداً (لا تقول "ادخل" أو "اشتري الآن"). دورك تقييمي فقط: تعرض جودة العقد، السيولة، المخاطر، وتترك القرار ليزيد بالكامل.\n3. كل عقد يرجع من get_options_chain فيه حقل liquidity_quality وliquidity_reason - اعرضهم دائماً. لو العقد "ضعيف - احذر"، نبّه يزيد بوضوح إنه ممكن يصعب الخروج منه حتى لو التحليل الفني يبدو جيد.\n4. لا تقترح عقداً بسبريد واسع أو سيولة ضعيفة كخيار أساسي - إذا كل العقود بهالتاريخ ضعيفة السيولة، قول ذلك صراحة واقترح تاريخ استحقاق ثاني أو انتظار.`;
     fullSystemPrompt += `\n\n# ملاحظة مهمة عن طريقة الرد بعد استخدام الأدوات\nواجهة يزيد تعرض تلقائياً بطاقة مرئية منسقة بكل الأرقام والتفاصيل بعد أي استدعاء لـ run_backtest أو get_options_chain. لذلك لا تكرر الجدول أو كل الأرقام نصياً في ردك - اكتفِ بتعليق قصير (سطرين إلى ثلاثة أسطر) يعطي رأيك أو أهم ملاحظة، والباقي يزيد بيشوفه بالبطاقة.`;
     if (memoryContext) {
@@ -323,8 +397,11 @@ export async function POST(req: NextRequest) {
       { role: 'assistant', content: assistantText },
     ]);
 
-    // الحفظ التلقائي للذاكرة طويلة المدى (بدون انتظار)
-    await autoSaveMemory(message, assistantText);
+    // الحفظ التلقائي للذاكرة طويلة المدى - بس لو الفلتر السريع اشتبه فيها،
+    // عشان نتجنب استدعاء Claude إضافي على كل رسالة عادية
+    if (mightContainSaveworthyInfo(message)) {
+      await autoSaveMemory(message, assistantText);
+    }
 
     return NextResponse.json({ reply: assistantText, toolResults: collectedToolResults });
   } catch (error) {
