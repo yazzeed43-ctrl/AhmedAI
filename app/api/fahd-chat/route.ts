@@ -222,6 +222,18 @@ const TOOLS = [
       required: ['symbol'],
     },
   },
+  {
+    name: 'get_recent_tv_signals',
+    description:
+      'يجيب آخر إشارات وردت من مؤشر PRO Multi-Tool على TradingView (إشارة BOOM هابط/صاعد، أو نمط توافقي Harmonic) لسهم معين أو لكل الأسهم. استخدمها لما يزيد يسأل "هل صار BOOM على سهم معين؟" أو يسأل عن آخر إشارات المؤشر، أو كجزء من تأكيد Trigger بمحرك CZT إذا كان يزيد يراقب هذا السهم بالمؤشر.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'رمز السهم (اختياري) - لو ما تحدد، ترجع آخر الإشارات من كل الأسهم' },
+        limit: { type: 'number', description: 'عدد الإشارات المطلوبة، افتراضياً 10' },
+      },
+    },
+  },
 ];
 
 // حفظ تلقائي: يسأل Claude إذا كانت رسالة يزيد تحتوي معلومة تستحق الحفظ الدائم
@@ -390,6 +402,7 @@ export async function POST(req: NextRequest) {
     fullSystemPrompt += `\n\n# قدرة إضافية: اختبار الاستراتيجيات (Backtest)\nعندك أداة run_backtest تقدر تستدعيها لما يزيد يسأل عن أداء استراتيجية أو نتيجة باك-تست لسهم معين. بعد ما ترجع النتيجة، لخّصها له بالعربي بشكل واضح: عدد الصفقات، نسبة النجاح، العائد الكلي، وأقصى انخفاض. ذكّره دائماً إن العينات الصغيرة (أقل من 20-30 صفقة) مؤشر ضعيف الموثوقية. ملاحظتين مهمتين: (1) العائد المحسوب يخصم تقديرياً عمولة وانزلاق سعري بسيط، فهو أقرب للواقع مو مثالي 100%. (2) لو آخر صفقة فيها autoClosedAtEnd=true، وضّح له إنها أُغلقت افتراضياً لانتهاء بيانات الفترة مو بإشارة خروج حقيقية، وممكن نتيجتها تختلف لو مدّينا الفترة.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: تقييم عقود الخيارات (Options)\nعندك أداتين: get_options_expirations وget_options_chain. قواعد صارمة يجب اتباعها دائماً:\n1. البيانات من Sandbox متأخرة 15 دقيقة - ذكّر يزيد بهذا في كل مرة تعرض فيها بيانات خيارات.\n2. أنت لا تُوصي بالدخول مباشرة أبداً (لا تقول "ادخل" أو "اشتري الآن"). دورك تقييمي فقط: تعرض جودة العقد، السيولة، المخاطر، وتترك القرار ليزيد بالكامل.\n3. كل عقد يرجع من get_options_chain فيه حقل liquidity_quality وliquidity_reason - اعرضهم دائماً. لو العقد "ضعيف - احذر"، نبّه يزيد بوضوح إنه ممكن يصعب الخروج منه حتى لو التحليل الفني يبدو جيد.\n4. لا تقترح عقداً بسبريد واسع أو سيولة ضعيفة كخيار أساسي - إذا كل العقود بهالتاريخ ضعيفة السيولة، قول ذلك صراحة واقترح تاريخ استحقاق ثاني أو انتظار.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: Volume Profile حقيقي (Massive.com)\nعندك أداة get_volume_profile تحسب VAH وVAL وPOC الفعليين لليوم السابق من بيانات شموع حقيقية (5 دقائق)، مو تقديرية. استخدمها إلزامياً في مرحلة Zone من محرك CZT بدل أي تخمين لمستويات Value Area. البيانات مصدرها Massive.com على الخطة المجانية - قد تتأخر أحياناً أو ما تتوفر ليوم معين (عطلة، توقف تداول)؛ لو رجع error، أخبر يزيد بوضوح واستمر بالتحليل بدون هذي البيانات مع ذكر أثر غيابها على الثقة.`;
+    fullSystemPrompt += `\n\n# قدرة إضافية: إشارات مؤشر PRO Multi-Tool (TradingView)\nعندك أداة get_recent_tv_signals تجيب آخر إشارات وصلت من مؤشر يزيد المخصص على TradingView (BOOM هابط/صاعد = انعكاس سعري مؤكد، أو نمط توافقي Harmonic زي Gartley/Bat/Butterfly/Crab/Shark/Cypher). هذي إشارات حقيقية من شارت يزيد الفعلي، مو تحليل منك. قواعد الاستخدام:\n1. هذي الإشارات تعتمد على يزيد نفسه إنه فاتح الشارت والمؤشر شغال على السهم المطلوب - لو رجعت فاضية لسهم معين، وضّح إنه يمكن ما فيه إشارات لأنه ما كان مراقب بالمؤشر، مو لأنه ما صار شي.\n2. اربطها بتحليل CZT: إشارة BOOM أو نمط توافقي ممكن يكون Trigger قوي لو توافق مع Zone منطقية (VAH/VAL/POC)، بس لا تعتبرها Trigger مستقل كافي وحدها - اربطها بالسياق الكامل.\n3. اذكر وقت الإشارة (created_at) دائماً - إشارة من قبل ساعات كثيرة أقل أهمية من إشارة حديثة.`;
     fullSystemPrompt += `\n\n# ملاحظة مهمة عن طريقة الرد بعد استخدام الأدوات\nواجهة يزيد تعرض تلقائياً بطاقة مرئية منسقة بكل الأرقام والتفاصيل بعد أي استدعاء لـ run_backtest أو get_options_chain. لذلك لا تكرر الجدول أو كل الأرقام نصياً في ردك - اكتفِ بتعليق قصير (سطرين إلى ثلاثة أسطر) يعطي رأيك أو أهم ملاحظة، والباقي يزيد بيشوفه بالبطاقة.`;
     if (memoryContext) {
       fullSystemPrompt += `\n\n# ذاكرتك طويلة المدى عن يزيد وتداولاته:\n${memoryContext}`;
@@ -477,6 +490,35 @@ export async function POST(req: NextRequest) {
             content: JSON.stringify(output),
             is_error: !!output.error,
           });
+        } else if (block.name === 'get_recent_tv_signals') {
+          try {
+            let query = supabase
+              .from('tradingview_signals')
+              .select('symbol, signal_type, price, timeframe, created_at')
+              .order('created_at', { ascending: false })
+              .limit(block.input.limit || 10);
+            if (block.input.symbol) {
+              query = query.eq('symbol', block.input.symbol.toUpperCase());
+            }
+            const { data, error } = await query;
+            const output = error ? { error: error.message } : { signals: data };
+            collectedToolResults.push({ name: 'get_recent_tv_signals', input: block.input, output });
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+              is_error: !!error,
+            });
+          } catch (e: any) {
+            const output = { error: e.message || 'فشل جلب إشارات TradingView' };
+            collectedToolResults.push({ name: 'get_recent_tv_signals', input: block.input, output });
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+              is_error: true,
+            });
+          }
         } else if (block.name === 'get_options_chain') {
           try {
             const chain = await getOptionsChain(block.input.symbol, block.input.expiration);
