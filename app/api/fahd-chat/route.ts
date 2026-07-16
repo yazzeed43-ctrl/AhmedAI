@@ -4,6 +4,7 @@ import { FAHD_SYSTEM_PROMPT } from '@/lib/fahd-system-prompt';
 import { executeBacktest } from '@/lib/run-backtest';
 import { getOptionsExpirations, getOptionsChain } from '@/lib/tradier';
 import { getTechnicalIndicators } from '@/lib/market-indicators';
+import { getPreviousDayVolumeProfile } from '@/lib/massive';
 
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 
@@ -209,6 +210,18 @@ const TOOLS = [
       required: ['symbol', 'expiration'],
     },
   },
+  {
+    name: 'get_volume_profile',
+    description:
+      'يحسب Volume Profile الفعلي لليوم السابق (VAH، VAL، POC) من بيانات تداول حقيقية عبر Massive.com. استخدمها إلزامياً في مرحلة Zone من محرك CZT عند تحديد مناطق Previous Day VAH/VAL/POC - هذي بيانات حقيقية محسوبة من الشموع، مو تقديرية.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'رمز السهم الأمريكي، مثل AAPL أو TSLA' },
+      },
+      required: ['symbol'],
+    },
+  },
 ];
 
 // حفظ تلقائي: يسأل Claude إذا كانت رسالة يزيد تحتوي معلومة تستحق الحفظ الدائم
@@ -376,6 +389,7 @@ export async function POST(req: NextRequest) {
     fullSystemPrompt += `\n\n# قدرة إضافية: الأخبار الكلية والتقويم الاقتصادي\nبيوصلك بمعلومات السوق تلقائياً أخبار اقتصادية عامة وأحداث اقتصادية مهمة قادمة (فائدة، تضخم، وظائف). اذكرها لما تكون مرتبطة بسؤال يزيد أو مؤثرة على قراره، خصوصاً لو فيه حدث كبير قريب (زي قرار فائدة) قد يفجّر تقلب السوق كامل.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: اختبار الاستراتيجيات (Backtest)\nعندك أداة run_backtest تقدر تستدعيها لما يزيد يسأل عن أداء استراتيجية أو نتيجة باك-تست لسهم معين. بعد ما ترجع النتيجة، لخّصها له بالعربي بشكل واضح: عدد الصفقات، نسبة النجاح، العائد الكلي، وأقصى انخفاض. ذكّره دائماً إن العينات الصغيرة (أقل من 20-30 صفقة) مؤشر ضعيف الموثوقية. ملاحظتين مهمتين: (1) العائد المحسوب يخصم تقديرياً عمولة وانزلاق سعري بسيط، فهو أقرب للواقع مو مثالي 100%. (2) لو آخر صفقة فيها autoClosedAtEnd=true، وضّح له إنها أُغلقت افتراضياً لانتهاء بيانات الفترة مو بإشارة خروج حقيقية، وممكن نتيجتها تختلف لو مدّينا الفترة.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: تقييم عقود الخيارات (Options)\nعندك أداتين: get_options_expirations وget_options_chain. قواعد صارمة يجب اتباعها دائماً:\n1. البيانات من Sandbox متأخرة 15 دقيقة - ذكّر يزيد بهذا في كل مرة تعرض فيها بيانات خيارات.\n2. أنت لا تُوصي بالدخول مباشرة أبداً (لا تقول "ادخل" أو "اشتري الآن"). دورك تقييمي فقط: تعرض جودة العقد، السيولة، المخاطر، وتترك القرار ليزيد بالكامل.\n3. كل عقد يرجع من get_options_chain فيه حقل liquidity_quality وliquidity_reason - اعرضهم دائماً. لو العقد "ضعيف - احذر"، نبّه يزيد بوضوح إنه ممكن يصعب الخروج منه حتى لو التحليل الفني يبدو جيد.\n4. لا تقترح عقداً بسبريد واسع أو سيولة ضعيفة كخيار أساسي - إذا كل العقود بهالتاريخ ضعيفة السيولة، قول ذلك صراحة واقترح تاريخ استحقاق ثاني أو انتظار.`;
+    fullSystemPrompt += `\n\n# قدرة إضافية: Volume Profile حقيقي (Massive.com)\nعندك أداة get_volume_profile تحسب VAH وVAL وPOC الفعليين لليوم السابق من بيانات شموع حقيقية (5 دقائق)، مو تقديرية. استخدمها إلزامياً في مرحلة Zone من محرك CZT بدل أي تخمين لمستويات Value Area. البيانات مصدرها Massive.com على الخطة المجانية - قد تتأخر أحياناً أو ما تتوفر ليوم معين (عطلة، توقف تداول)؛ لو رجع error، أخبر يزيد بوضوح واستمر بالتحليل بدون هذي البيانات مع ذكر أثر غيابها على الثقة.`;
     fullSystemPrompt += `\n\n# ملاحظة مهمة عن طريقة الرد بعد استخدام الأدوات\nواجهة يزيد تعرض تلقائياً بطاقة مرئية منسقة بكل الأرقام والتفاصيل بعد أي استدعاء لـ run_backtest أو get_options_chain. لذلك لا تكرر الجدول أو كل الأرقام نصياً في ردك - اكتفِ بتعليق قصير (سطرين إلى ثلاثة أسطر) يعطي رأيك أو أهم ملاحظة، والباقي يزيد بيشوفه بالبطاقة.`;
     if (memoryContext) {
       fullSystemPrompt += `\n\n# ذاكرتك طويلة المدى عن يزيد وتداولاته:\n${memoryContext}`;
@@ -454,6 +468,15 @@ export async function POST(req: NextRequest) {
               is_error: true,
             });
           }
+        } else if (block.name === 'get_volume_profile') {
+          const output = await getPreviousDayVolumeProfile(block.input.symbol);
+          collectedToolResults.push({ name: 'get_volume_profile', input: block.input, output });
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: block.id,
+            content: JSON.stringify(output),
+            is_error: !!output.error,
+          });
         } else if (block.name === 'get_options_chain') {
           try {
             const chain = await getOptionsChain(block.input.symbol, block.input.expiration);
