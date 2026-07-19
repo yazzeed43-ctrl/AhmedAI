@@ -10,7 +10,7 @@ const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 
 function extractTickers(text: string): string[] {
   const matches = text.match(/\b[A-Z]{1,5}\b/g) || [];
-  const ignore = ['API', 'ETF', 'CEO', 'AI', 'USA', 'US', 'RSI', 'EMA', 'SMA', 'VWAP', 'MACD', 'VIX', 'SPY', 'QQQ', 'A', 'B', 'C', 'D'];
+  const ignore = ['API', 'ETF', 'CEO', 'AI', 'USA', 'US', 'RSI', 'EMA', 'SMA', 'VWAP', 'MACD', 'VIX', 'A', 'B', 'C', 'D'];
   return [...new Set(matches.filter((t) => !ignore.includes(t)))].slice(0, 2);
 }
 
@@ -152,7 +152,7 @@ const TOOLS = [
   {
     name: 'get_technical_indicators',
     description:
-      'يحسب مؤشرات فنية لسهم معين: RSI (تشبع شرائي/بيعي)، MACD (زخم واتجاه)، Bollinger Bands (تذبذب)، ومستويات دعم/مقاومة تقريبية. استخدمها لما يزيد يسأل عن تحليل فني، أو يسأل عن مؤشر محدد (RSI، MACD، دعم، مقاومة) لسهم.',
+      'يحسب مؤشرات فنية لسهم معين: RSI (تشبع شرائي/بيعي)، MACD (زخم واتجاه)، Bollinger Bands (تذبذب)، ودعم/مقاومة. الدعم/المقاومة يجي من Volume Profile حقيقي (VAH/VAL/POC عبر Massive.com) لو متوفر، وإلا يرجع تلقائياً لنطاق تاريخي تقريبي (أعلى/أدنى قمة بآخر 50 شمعة) - تحقق من supportResistance.source لمعرفة أيهم رجع فعلياً. استخدمها لما يزيد يسأل عن تحليل فني، أو يسأل عن مؤشر محدد (RSI، MACD، دعم، مقاومة) لسهم.',
     input_schema: {
       type: 'object',
       properties: {
@@ -213,7 +213,7 @@ const TOOLS = [
   {
     name: 'get_volume_profile',
     description:
-      'يحسب Volume Profile الفعلي لليوم السابق (VAH، VAL، POC) من بيانات تداول حقيقية عبر Massive.com. استخدمها إلزامياً في مرحلة Zone من محرك CZT عند تحديد مناطق Previous Day VAH/VAL/POC - هذي بيانات حقيقية محسوبة من الشموع، مو تقديرية.',
+      'يحسب Volume Profile الفعلي لليوم السابق (VAH، VAL، POC) من بيانات تداول حقيقية عبر Massive.com. ⚠️ لو سبق واستدعيت get_technical_indicators لنفس السهم ورجع supportResistance.source = "volume_profile"، فهذي البيانات موجودة عندك مسبقاً - لا تستدعِ هذي الأداة مرة ثانية إلا لو يزيد سأل عن Volume Profile صراحة أو كان المصدر السابق "historical_range". استخدمها إلزامياً في مرحلة Zone من محرك CZT عند تحديد مناطق Previous Day VAH/VAL/POC لو ما عندك بيانات مسبقة.',
     input_schema: {
       type: 'object',
       properties: {
@@ -230,7 +230,13 @@ const TOOLS = [
       type: 'object',
       properties: {
         symbol: { type: 'string', description: 'رمز السهم (اختياري) - لو ما تحدد، ترجع آخر الإشارات من كل الأسهم' },
-        limit: { type: 'number', description: 'عدد الإشارات المطلوبة، افتراضياً 10' },
+        limit: {
+          type: 'number',
+          description: 'عدد الإشارات المطلوبة، من 1 إلى 50، افتراضياً 10',
+          minimum: 1,
+          maximum: 50,
+          default: 10,
+        },
       },
     },
   },
@@ -397,7 +403,7 @@ export async function POST(req: NextRequest) {
 
     let fullSystemPrompt = FAHD_SYSTEM_PROMPT;
     fullSystemPrompt += `\n\n# قدرة إضافية: الأخبار وتقويم الأرباح\nلو وصلتك أخبار حديثة أو تنبيه أرباح قريبة عن سهم يزيد يسأل عنه، اذكرها له مختصرة ضمن تحليلك - خصوصاً تنبيه الأرباح، لأنه مهم جداً لمتداولي الخيارات (التقلب يرتفع كثير حول تاريخ الإعلان). لا تتجاهلها حتى لو ما سأل عنها صراحة.`;
-    fullSystemPrompt += `\n\n# قدرة إضافية: المؤشرات الفنية\nعندك أداة get_technical_indicators تحسب RSI وMACD وBollinger Bands ودعم/مقاومة لأي سهم. استخدمها لما يزيد يسأل عن تحليل فني أو مؤشر محدد. اشرح له الإشارات بالعربي البسيط (مثلاً: RSI فوق 70 يعني تشبع شرائي، ممكن يصحح). لا تعتبر إشارة واحدة كافية للقرار - اربطها بسياق باقي التحليل. مستويات الدعم/المقاومة تقريبية (أعلى قمة/أدنى قاع بآخر 50 شمعة) مو نقاط ارتداد دقيقة - وضّح هذا لو سأل عنها بالتفصيل.`;
+    fullSystemPrompt += `\n\n# قدرة إضافية: المؤشرات الفنية\nعندك أداة get_technical_indicators تحسب RSI وMACD وBollinger Bands ودعم/مقاومة لأي سهم. استخدمها لما يزيد يسأل عن تحليل فني أو مؤشر محدد. اشرح له الإشارات بالعربي البسيط (مثلاً: RSI فوق 70 يعني تشبع شرائي، ممكن يصحح). لا تعتبر إشارة واحدة كافية للقرار - اربطها بسياق باقي التحليل.\n\nقواعد مهمة على الحقول الجديدة:\n1. **دعم/مقاومة**: تحقق من حقل supportResistance.source. لو 'volume_profile' فهذي مستويات دقيقة من بيانات تداول حقيقية (VAL دعم، VAH مقاومة، وفيه POC كنقطة أعلى تجمع حجم) - اذكر POC لو متوفر. لو 'historical_range' فهذي احتياطية تقريبية فقط (أعلى/أدنى قمة بآخر 50 شمعة) وقد تكون بعيدة جداً عن السعر الحالي - وضّح هذا صراحة ولا تعاملها كنقاط ارتداد دقيقة.\n2. **حداثة البيانات**: تحقق دائماً من dataStatus.freshness قبل ما تبني تحليلك. لو كانت 'delayed' أو 'stale'، لازم تنبّه يزيد بوضوح إن البيانات متأخرة (اذكر dataStatus.warning وdataStatus.ageMinutes) قبل أي توصية - لا تعرض السعر أو المؤشرات وكأنها لحظية إذا كانت متأخرة فعلاً.\n3. **لا تكرر الاستدعاء**: لو get_technical_indicators رجع supportResistance.source = 'volume_profile'، فهذا يعني إنه فعلاً استدعى Massive داخلياً وجابلك VAH/VAL/POC الحقيقية - لا تستدعِ get_volume_profile بعدها لنفس السهم لأنها بيانات مكررة وبتضيّع استدعاء API إضافي وتبطّئ الرد. استخدم get_volume_profile بشكل منفصل فقط في حالتين: (أ) supportResistance.source = 'historical_range' وتحتاج تحاول تجيب Volume Profile الحقيقي رغم كذا، أو (ب) يزيد يسأل عن Volume Profile صراحة بدون طلب باقي المؤشرات الفنية.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: الأخبار الكلية والتقويم الاقتصادي\nبيوصلك بمعلومات السوق تلقائياً أخبار اقتصادية عامة وأحداث اقتصادية مهمة قادمة (فائدة، تضخم، وظائف). اذكرها لما تكون مرتبطة بسؤال يزيد أو مؤثرة على قراره، خصوصاً لو فيه حدث كبير قريب (زي قرار فائدة) قد يفجّر تقلب السوق كامل.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: اختبار الاستراتيجيات (Backtest)\nعندك أداة run_backtest تقدر تستدعيها لما يزيد يسأل عن أداء استراتيجية أو نتيجة باك-تست لسهم معين. بعد ما ترجع النتيجة، لخّصها له بالعربي بشكل واضح: عدد الصفقات، نسبة النجاح، العائد الكلي، وأقصى انخفاض. ذكّره دائماً إن العينات الصغيرة (أقل من 20-30 صفقة) مؤشر ضعيف الموثوقية. ملاحظتين مهمتين: (1) العائد المحسوب يخصم تقديرياً عمولة وانزلاق سعري بسيط، فهو أقرب للواقع مو مثالي 100%. (2) لو آخر صفقة فيها autoClosedAtEnd=true، وضّح له إنها أُغلقت افتراضياً لانتهاء بيانات الفترة مو بإشارة خروج حقيقية، وممكن نتيجتها تختلف لو مدّينا الفترة.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: تقييم عقود الخيارات (Options)\nعندك أداتين: get_options_expirations وget_options_chain. قواعد صارمة يجب اتباعها دائماً:\n1. البيانات من Sandbox متأخرة 15 دقيقة - ذكّر يزيد بهذا في كل مرة تعرض فيها بيانات خيارات.\n2. أنت لا تُوصي بالدخول مباشرة أبداً (لا تقول "ادخل" أو "اشتري الآن"). دورك تقييمي فقط: تعرض جودة العقد، السيولة، المخاطر، وتترك القرار ليزيد بالكامل.\n3. كل عقد يرجع من get_options_chain فيه حقل liquidity_quality وliquidity_reason - اعرضهم دائماً. لو العقد "ضعيف - احذر"، نبّه يزيد بوضوح إنه ممكن يصعب الخروج منه حتى لو التحليل الفني يبدو جيد.\n4. لا تقترح عقداً بسبريد واسع أو سيولة ضعيفة كخيار أساسي - إذا كل العقود بهالتاريخ ضعيفة السيولة، قول ذلك صراحة واقترح تاريخ استحقاق ثاني أو انتظار.`;
@@ -492,13 +498,26 @@ export async function POST(req: NextRequest) {
           });
         } else if (block.name === 'get_recent_tv_signals') {
           try {
+            const requestedLimit = Number(block.input?.limit);
+            const limit = Number.isFinite(requestedLimit)
+              ? Math.min(50, Math.max(1, Math.trunc(requestedLimit)))
+              : 10;
+            const symbol =
+              typeof block.input?.symbol === 'string'
+                ? block.input.symbol.trim().toUpperCase()
+                : '';
+
+            if (symbol && !/^[A-Z0-9][A-Z0-9.:-]{0,31}$/.test(symbol)) {
+              throw new Error('صيغة رمز السهم غير صحيحة');
+            }
+
             let query = supabase
               .from('tradingview_signals')
               .select('symbol, signal_type, price, timeframe, created_at')
               .order('created_at', { ascending: false })
-              .limit(block.input.limit || 10);
-            if (block.input.symbol) {
-              query = query.eq('symbol', block.input.symbol.toUpperCase());
+              .limit(limit);
+            if (symbol) {
+              query = query.eq('symbol', symbol);
             }
             const { data, error } = await query;
             const output = error ? { error: error.message } : { signals: data };
