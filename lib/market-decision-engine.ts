@@ -139,8 +139,7 @@ async function analyzeSymbol(symbol: 'SPY' | 'QQQ', timeframe: Timeframe) {
 
   const price =
     num(quote?.last) ??
-    num(quote?.close) ??
-    num(indicators?.price);
+    num(quote?.close);
 
   const rsi = readRsi(indicators);
   const macdCurrent = readMacdHistogram(indicators);
