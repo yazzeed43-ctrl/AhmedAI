@@ -12,6 +12,7 @@ import {
 import { getTechnicalIndicators } from '@/lib/market-indicators';
 import { getPreviousDayVolumeProfile } from '@/lib/massive';
 import { getMarketDecision } from '@/lib/market-decision-engine';
+import { getStockDecision } from '@/lib/stock-decision-engine';
 
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 
@@ -205,6 +206,26 @@ const TOOLS = [
           description: 'فريم تقييم السوق. الافتراضي 15min للمضاربة اليومية.',
         },
       },
+    },
+  },
+  {
+    name: 'get_stock_decision',
+    description:
+      'يشغّل محرك اتجاه سهم احترافي ويرجع Stock Score واحتمالات الصعود والهبوط والحياد ودرجة الثقة والانحياز وTrigger وإبطال السيناريو والأهداف. استخدمه عندما يسأل يزيد هل سهم معين سيصعد أو يهبط أو يطلب تحليل صفقة على سهم.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        symbol: {
+          type: 'string',
+          description: 'رمز السهم الأمريكي مثل AMZN أو NVDA أو AAPL',
+        },
+        timeframe: {
+          type: 'string',
+          enum: ['15min', '1h', '1day'],
+          description: 'فريم التحليل، الافتراضي 15min للمضاربة اليومية.',
+        },
+      },
+      required: ['symbol'],
     },
   },
   {
@@ -540,6 +561,16 @@ export async function POST(req: NextRequest) {
 4. اعرض شروط التحول إلى CALL وPUT من conditions.
 5. إذا القرار WAIT، لا تجبر اتجاهاً واضحاً؛ اشرح سبب التعارض بين SPY وQQQ أو ضعف الزخم.
 6. استخدم عبارة "الاحتمال الأعلى" واذكر مستوى إبطال السيناريو.`;
+    fullSystemPrompt += `\n\n# قدرة إضافية: محرك اتجاه السهم
+عندك أداة get_stock_decision لتحليل اتجاه سهم محدد.
+قواعد الاستخدام:
+1. استخدمها عندما يسأل يزيد هل السهم سيصعد أو يهبط، أو يطلب تحليل سهم أو صفقة أوبشن على سهم.
+2. اعرض stockScore والاحتمالات الثلاثة وconfidence والانحياز والقرار.
+3. لا تقل "اشتر الآن". الانحياز ليس دخولاً بدون Trigger.
+4. اعرض trigger وinvalidation والأهداف.
+5. وضح أقوى أسباب الصعود وأقوى أسباب الهبوط والمخاطر.
+6. إذا decision = WAIT، لا تجبر اتجاهاً واضحاً.
+7. لا تقل "المؤسسات تشتري" إلا إذا توفر دليل Order Flow حقيقي؛ هذا المحرك لا يملك Footprint أو CVD حتى الآن.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: حساب Tradier الحقيقي
 عندك ثلاث أدوات خاصة بحساب يزيد:
 - get_account: للرصيد، إجمالي قيمة الحساب، النقد، والقوة الشرائية.
@@ -633,6 +664,42 @@ export async function POST(req: NextRequest) {
           } catch (e: any) {
             const output = { error: e.message || 'فشل تشغيل محرك قرار السوق' };
             collectedToolResults.push({ name: 'get_market_decision', input: block.input, output });
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+              is_error: true,
+            });
+          }
+        } else if (block.name === 'get_stock_decision') {
+          try {
+            const output = await getStockDecision(
+              block.input.symbol,
+              block.input.timeframe || '15min'
+            );
+
+            collectedToolResults.push({
+              name: 'get_stock_decision',
+              input: block.input,
+              output,
+            });
+
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+            });
+          } catch (e: any) {
+            const output = {
+              error: e.message || 'فشل تشغيل محرك اتجاه السهم',
+            };
+
+            collectedToolResults.push({
+              name: 'get_stock_decision',
+              input: block.input,
+              output,
+            });
+
             toolResults.push({
               type: 'tool_result',
               tool_use_id: block.id,
