@@ -11,6 +11,7 @@ import {
 } from '@/lib/tradier';
 import { getTechnicalIndicators } from '@/lib/market-indicators';
 import { getPreviousDayVolumeProfile } from '@/lib/massive';
+import { getMarketDecision } from '@/lib/market-decision-engine';
 
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 
@@ -192,6 +193,21 @@ const TOOLS = [
     },
   },
   {
+    name: 'get_market_decision',
+    description:
+      'يشغّل محرك قرار السوق على SPY وQQQ ويعيد Market Score واحتمالات Bullish/Bearish/Neutral وانحياز CALL أو PUT أو WAIT. استخدمه قبل تحليل أي سهم أو عقد عندما يسأل يزيد عن اتجاه السوق أو توقع الصعود والهبوط.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        timeframe: {
+          type: 'string',
+          enum: ['15min', '1h', '1day'],
+          description: 'فريم تقييم السوق. الافتراضي 15min للمضاربة اليومية.',
+        },
+      },
+    },
+  },
+  {
     name: 'get_account',
     description:
       'يجلب بيانات حساب يزيد الحقيقي في Tradier: إجمالي قيمة الحساب، النقد، القوة الشرائية للأسهم والخيارات، والأرباح والخسائر المفتوحة. استخدمها عندما يسأل يزيد عن رصيده، السيولة، القوة الشرائية، أو حالة الحساب.',
@@ -304,8 +320,25 @@ function enrichTradierQuoteFreshness(quote: any) {
     else freshness = 'stale';
   }
 
+  // نحذف average_volume من النتيجة المرسلة للنموذج حتى لا يقارن
+  // حجمًا جزئيًا أثناء الجلسة بمتوسط يوم كامل ويخرج بنسبة مضللة.
+  const {
+    average_volume: _removedAverageVolume,
+    ...safeQuote
+  } = quote || {};
+
+  const displayTitle =
+    freshness === 'live'
+      ? `سعر ${safeQuote.symbol || ''} — Tradier (حديث جداً)`
+      : freshness === 'delayed'
+        ? `سعر ${safeQuote.symbol || ''} — Tradier (قد يكون متأخراً)`
+        : freshness === 'stale'
+          ? `سعر ${safeQuote.symbol || ''} — Tradier (قديم)`
+          : `سعر ${safeQuote.symbol || ''} — Tradier (حداثة غير مؤكدة)`;
+
   return {
-    ...quote,
+    ...safeQuote,
+    display_title: displayTitle,
     updated_at: tradeTimestampMs
       ? new Date(tradeTimestampMs).toISOString()
       : null,
@@ -319,11 +352,12 @@ function enrichTradierQuoteFreshness(quote: any) {
           : freshness === 'stale'
             ? 'قديمة'
             : 'غير مؤكدة',
-    volume_context: {
-      current_volume: quote?.volume ?? null,
-      average_full_day_volume: quote?.average_volume ?? null,
-      warning:
-        'لا تقارن حجم الجلسة حتى الآن بمتوسط حجم يوم كامل للحكم على القوة. استخدم Time-of-Day RVOL أو قارن بنفس توقيت الجلسات السابقة.',
+    volume_assessment: {
+      allowed: false,
+      reason:
+        'لا توجد مقارنة Time-of-Day RVOL، لذلك لا يجوز وصف الحجم بأنه منخفض أو مرتفع.',
+      instruction:
+        'اعرض حجم اليوم حتى الآن فقط بدون نسبة وبدون حكم على القوة.',
     },
   };
 }
@@ -497,6 +531,15 @@ export async function POST(req: NextRequest) {
     fullSystemPrompt += `\n\n# قدرة إضافية: المؤشرات الفنية\nعندك أداة get_technical_indicators تحسب RSI وMACD وBollinger Bands ودعم/مقاومة لأي سهم. استخدمها لما يزيد يسأل عن تحليل فني أو مؤشر محدد. اشرح له الإشارات بالعربي البسيط (مثلاً: RSI فوق 70 يعني تشبع شرائي، ممكن يصحح). لا تعتبر إشارة واحدة كافية للقرار - اربطها بسياق باقي التحليل.\n\nقواعد مهمة على الحقول الجديدة:\n1. **دعم/مقاومة**: تحقق من حقل supportResistance.source. لو 'volume_profile' فهذي مستويات دقيقة من بيانات تداول حقيقية (VAL دعم، VAH مقاومة، وفيه POC كنقطة أعلى تجمع حجم) - اذكر POC لو متوفر. لو 'historical_range' فهذي احتياطية تقريبية فقط (أعلى/أدنى قمة بآخر 50 شمعة) وقد تكون بعيدة جداً عن السعر الحالي - وضّح هذا صراحة ولا تعاملها كنقاط ارتداد دقيقة.\n2. **حداثة البيانات**: تحقق دائماً من dataStatus.freshness قبل ما تبني تحليلك. لو كانت 'delayed' أو 'stale'، لازم تنبّه يزيد بوضوح إن البيانات متأخرة (اذكر dataStatus.warning وdataStatus.ageMinutes) قبل أي توصية - لا تعرض السعر أو المؤشرات وكأنها لحظية إذا كانت متأخرة فعلاً.\n3. **لا تكرر الاستدعاء**: لو get_technical_indicators رجع supportResistance.source = 'volume_profile'، فهذا يعني إنه فعلاً استدعى Massive داخلياً وجابلك VAH/VAL/POC الحقيقية - لا تستدعِ get_volume_profile بعدها لنفس السهم لأنها بيانات مكررة وبتضيّع استدعاء API إضافي وتبطّئ الرد. استخدم get_volume_profile بشكل منفصل فقط في حالتين: (أ) supportResistance.source = 'historical_range' وتحتاج تحاول تجيب Volume Profile الحقيقي رغم كذا، أو (ب) يزيد يسأل عن Volume Profile صراحة بدون طلب باقي المؤشرات الفنية.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: الأخبار الكلية والتقويم الاقتصادي\nبيوصلك بمعلومات السوق تلقائياً أخبار اقتصادية عامة وأحداث اقتصادية مهمة قادمة (فائدة، تضخم، وظائف). اذكرها لما تكون مرتبطة بسؤال يزيد أو مؤثرة على قراره، خصوصاً لو فيه حدث كبير قريب (زي قرار فائدة) قد يفجّر تقلب السوق كامل.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: اختبار الاستراتيجيات (Backtest)\nعندك أداة run_backtest تقدر تستدعيها لما يزيد يسأل عن أداء استراتيجية أو نتيجة باك-تست لسهم معين. بعد ما ترجع النتيجة، لخّصها له بالعربي بشكل واضح: عدد الصفقات، نسبة النجاح، العائد الكلي، وأقصى انخفاض. ذكّره دائماً إن العينات الصغيرة (أقل من 20-30 صفقة) مؤشر ضعيف الموثوقية. ملاحظتين مهمتين: (1) العائد المحسوب يخصم تقديرياً عمولة وانزلاق سعري بسيط، فهو أقرب للواقع مو مثالي 100%. (2) لو آخر صفقة فيها autoClosedAtEnd=true، وضّح له إنها أُغلقت افتراضياً لانتهاء بيانات الفترة مو بإشارة خروج حقيقية، وممكن نتيجتها تختلف لو مدّينا الفترة.`;
+    fullSystemPrompt += `\n\n# قدرة إضافية: محرك قرار السوق
+عندك أداة get_market_decision لتحليل SPY وQQQ قبل تحليل الأسهم والعقود.
+قواعد الاستخدام:
+1. استخدمها عندما يسأل يزيد: هل السوق سيصعد أو يهبط؟ ما اتجاه SPX؟ هل الأفضل Call أو Put؟ أو قبل تحليل صفقة أوبشن مهمة.
+2. اعرض marketScore واحتمالات bullish وbearish وneutral والقرار النهائي.
+3. لا تقل "اشتر" أو "ادخل الآن". إذا bias = CALL_BIAS أو PUT_BIAS، اكتب أنه انحياز فقط وأن القرار ينتظر Trigger.
+4. اعرض شروط التحول إلى CALL وPUT من conditions.
+5. إذا القرار WAIT، لا تجبر اتجاهاً واضحاً؛ اشرح سبب التعارض بين SPY وQQQ أو ضعف الزخم.
+6. استخدم عبارة "الاحتمال الأعلى" واذكر مستوى إبطال السيناريو.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: حساب Tradier الحقيقي
 عندك ثلاث أدوات خاصة بحساب يزيد:
 - get_account: للرصيد، إجمالي قيمة الحساب، النقد، والقوة الشرائية.
@@ -509,13 +552,14 @@ export async function POST(req: NextRequest) {
 3. عند عرض المراكز، إذا كانت القائمة فارغة فقل بوضوح إنه لا توجد مراكز مفتوحة.
 4. لا تنفذ أي أوامر شراء أو بيع؛ الأدوات الحالية للقراءة فقط.
 5. بيانات الحساب معلومات خاصة؛ لا تحفظ الرصيد أو المراكز في الذاكرة طويلة المدى تلقائياً.
-6. عند استخدام get_tradier_quote، افحص freshness وage_seconds وupdated_at:
-   - لا تكتب "لحظي" إلا إذا freshness = "live".
-   - إذا freshness = "delayed" قل "قد تكون البيانات متأخرة" واذكر عمرها.
-   - إذا freshness = "stale" لا تبنِ عليها دخولاً لحظياً.
-   - إذا freshness = "unknown" قل "حداثة البيانات غير مؤكدة".
-7. لا تحسب نسبة volume / average_volume وتصفها بأنها ضعيفة أو قوية؛ لأن volume قد يكون جزئياً أثناء الجلسة بينما average_volume متوسط يوم كامل. اعرض الرقمين فقط، واذكر أن التقييم الدقيق يحتاج Time-of-Day RVOL.
-8. عند ربط السعر بـ VAH أو POC، قل "يتداول فوق/تحت المستوى حالياً" ولا تعتبر ذلك اختراقاً مؤكداً بدون صمود وحجم مناسب.`;
+6. عند استخدام get_tradier_quote، استخدم display_title كما هو عنواناً للرد ولا تستبدله بعنوان من عندك.
+7. لا تستخدم كلمة "لحظي" نهائياً إلا إذا freshness = "live". إذا كانت freshness غير live، استخدم freshness_label واذكر updated_at أو age_seconds.
+8. إذا volume_assessment.allowed = false:
+   - ممنوع حساب أي نسبة للحجم.
+   - ممنوع وصف الحجم بأنه منخفض أو مرتفع.
+   - اعرض volume فقط بصيغة "حجم اليوم حتى الآن".
+   - قل إن تقييم الحجم يحتاج Time-of-Day RVOL.
+9. عند ربط السعر بـ VAH أو POC، قل "يتداول فوق/تحت المستوى حالياً" ولا تعتبر ذلك اختراقاً مؤكداً بدون صمود وحجم مناسب.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: تقييم عقود الخيارات (Options)\nعندك أداتين: get_options_expirations وget_options_chain. قواعد صارمة يجب اتباعها دائماً:\n1. البيانات من Sandbox متأخرة 15 دقيقة - ذكّر يزيد بهذا في كل مرة تعرض فيها بيانات خيارات.\n2. أنت لا تُوصي بالدخول مباشرة أبداً (لا تقول "ادخل" أو "اشتري الآن"). دورك تقييمي فقط: تعرض جودة العقد، السيولة، المخاطر، وتترك القرار ليزيد بالكامل.\n3. كل عقد يرجع من get_options_chain فيه حقل liquidity_quality وliquidity_reason - اعرضهم دائماً. لو العقد "ضعيف - احذر"، نبّه يزيد بوضوح إنه ممكن يصعب الخروج منه حتى لو التحليل الفني يبدو جيد.\n4. لا تقترح عقداً بسبريد واسع أو سيولة ضعيفة كخيار أساسي - إذا كل العقود بهالتاريخ ضعيفة السيولة، قول ذلك صراحة واقترح تاريخ استحقاق ثاني أو انتظار.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: Volume Profile حقيقي (Massive.com)\nعندك أداة get_volume_profile تحسب VAH وVAL وPOC الفعليين لليوم السابق من بيانات شموع حقيقية (5 دقائق)، مو تقديرية. استخدمها إلزامياً في مرحلة Zone من محرك CZT بدل أي تخمين لمستويات Value Area. البيانات مصدرها Massive.com على الخطة المجانية - قد تتأخر أحياناً أو ما تتوفر ليوم معين (عطلة، توقف تداول)؛ لو رجع error، أخبر يزيد بوضوح واستمر بالتحليل بدون هذي البيانات مع ذكر أثر غيابها على الثقة.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: إشارات مؤشر PRO Multi-Tool (TradingView)\nعندك أداة get_recent_tv_signals تجيب آخر إشارات وصلت من مؤشر يزيد المخصص على TradingView (BOOM هابط/صاعد = انعكاس سعري مؤكد، أو نمط توافقي Harmonic زي Gartley/Bat/Butterfly/Crab/Shark/Cypher). هذي إشارات حقيقية من شارت يزيد الفعلي، مو تحليل منك. قواعد الاستخدام:\n1. هذي الإشارات تعتمد على يزيد نفسه إنه فاتح الشارت والمؤشر شغال على السهم المطلوب - لو رجعت فاضية لسهم معين، وضّح إنه يمكن ما فيه إشارات لأنه ما كان مراقب بالمؤشر، مو لأنه ما صار شي.\n2. اربطها بتحليل CZT: إشارة BOOM أو نمط توافقي ممكن يكون Trigger قوي لو توافق مع Zone منطقية (VAH/VAL/POC)، بس لا تعتبرها Trigger مستقل كافي وحدها - اربطها بالسياق الكامل.\n3. اذكر وقت الإشارة (created_at) دائماً - إشارة من قبل ساعات كثيرة أقل أهمية من إشارة حديثة.`;
@@ -577,6 +621,25 @@ export async function POST(req: NextRequest) {
             tool_use_id: block.id,
             content: JSON.stringify(result),
           });
+        } else if (block.name === 'get_market_decision') {
+          try {
+            const output = await getMarketDecision(block.input?.timeframe || '15min');
+            collectedToolResults.push({ name: 'get_market_decision', input: block.input, output });
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+            });
+          } catch (e: any) {
+            const output = { error: e.message || 'فشل تشغيل محرك قرار السوق' };
+            collectedToolResults.push({ name: 'get_market_decision', input: block.input, output });
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+              is_error: true,
+            });
+          }
         } else if (block.name === 'get_account') {
           try {
             const output = await getAccountBalance();
