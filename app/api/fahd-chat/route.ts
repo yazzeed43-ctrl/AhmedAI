@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { FAHD_SYSTEM_PROMPT } from '@/lib/fahd-system-prompt';
 import { executeBacktest } from '@/lib/run-backtest';
-import { getOptionsExpirations, getOptionsChain } from '@/lib/tradier';
+import {
+  getOptionsExpirations,
+  getOptionsChain,
+  getAccountBalance,
+  getPositions,
+  getTradierQuote,
+} from '@/lib/tradier';
 import { getTechnicalIndicators } from '@/lib/market-indicators';
 import { getPreviousDayVolumeProfile } from '@/lib/massive';
 
@@ -186,6 +192,39 @@ const TOOLS = [
     },
   },
   {
+    name: 'get_account',
+    description:
+      'يجلب بيانات حساب يزيد الحقيقي في Tradier: إجمالي قيمة الحساب، النقد، القوة الشرائية للأسهم والخيارات، والأرباح والخسائر المفتوحة. استخدمها عندما يسأل يزيد عن رصيده، السيولة، القوة الشرائية، أو حالة الحساب.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'get_positions',
+    description:
+      'يجلب المراكز المفتوحة الحالية في حساب يزيد على Tradier، بما فيها الرمز والكمية والتكلفة. استخدمها عندما يسأل عن الصفقات أو المراكز المفتوحة أو ما يملكه حالياً.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'get_tradier_quote',
+    description:
+      'يجلب السعر الحالي وBid وAsk والحجم والتغير اليومي مباشرة من Tradier لسهم أو ETF أمريكي. استخدمها عندما يطلب يزيد سعر Tradier أو يريد مقارنة بيانات Finnhub مع Tradier.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        symbol: {
+          type: 'string',
+          description: 'رمز السهم أو ETF، مثل AAPL أو SPY',
+        },
+      },
+      required: ['symbol'],
+    },
+  },
+  {
     name: 'get_options_expirations',
     description:
       'يجيب تواريخ استحقاق عقود الخيارات المتاحة لسهم معين. استخدمها أول لما يزيد يسأل عن خيارات سهم ولا يحدد تاريخ استحقاق، عشان تعرف وش التواريخ المتاحة قبل ما تجيب السلسلة.',
@@ -246,6 +285,11 @@ const TOOLS = [
 // فلتر سريع بدون AI: هل الرسالة يُحتمل تحتوي معلومة تستحق الحفظ؟
 // يشتغل قبل أي استدعاء لـ Claude، عشان نوفر الوقت والتكلفة لمعظم الرسائل العادية
 function mightContainSaveworthyInfo(userMessage: string): boolean {
+  // لا نحفظ بيانات الحساب الحساسة أو المؤقتة في الذاكرة طويلة المدى
+  if (/رصيد|قوة\s*شرائية|مراكزي|مراكز\s*مفتوحة|حساب\s*Tradier|ترادير/i.test(userMessage)) {
+    return false;
+  }
+
   const signals = [
     /\d/, // أي رقم (سعر، نسبة، كمية)
     /دخلت|خرجت|صفقة|قاعدة|تعلمت|درس|أفضل\s*ما|ما\s*أدخل|ما\s*أدخل\s*قبل|وقف\s*خسارة|هدف\s*ربح/,
@@ -406,6 +450,18 @@ export async function POST(req: NextRequest) {
     fullSystemPrompt += `\n\n# قدرة إضافية: المؤشرات الفنية\nعندك أداة get_technical_indicators تحسب RSI وMACD وBollinger Bands ودعم/مقاومة لأي سهم. استخدمها لما يزيد يسأل عن تحليل فني أو مؤشر محدد. اشرح له الإشارات بالعربي البسيط (مثلاً: RSI فوق 70 يعني تشبع شرائي، ممكن يصحح). لا تعتبر إشارة واحدة كافية للقرار - اربطها بسياق باقي التحليل.\n\nقواعد مهمة على الحقول الجديدة:\n1. **دعم/مقاومة**: تحقق من حقل supportResistance.source. لو 'volume_profile' فهذي مستويات دقيقة من بيانات تداول حقيقية (VAL دعم، VAH مقاومة، وفيه POC كنقطة أعلى تجمع حجم) - اذكر POC لو متوفر. لو 'historical_range' فهذي احتياطية تقريبية فقط (أعلى/أدنى قمة بآخر 50 شمعة) وقد تكون بعيدة جداً عن السعر الحالي - وضّح هذا صراحة ولا تعاملها كنقاط ارتداد دقيقة.\n2. **حداثة البيانات**: تحقق دائماً من dataStatus.freshness قبل ما تبني تحليلك. لو كانت 'delayed' أو 'stale'، لازم تنبّه يزيد بوضوح إن البيانات متأخرة (اذكر dataStatus.warning وdataStatus.ageMinutes) قبل أي توصية - لا تعرض السعر أو المؤشرات وكأنها لحظية إذا كانت متأخرة فعلاً.\n3. **لا تكرر الاستدعاء**: لو get_technical_indicators رجع supportResistance.source = 'volume_profile'، فهذا يعني إنه فعلاً استدعى Massive داخلياً وجابلك VAH/VAL/POC الحقيقية - لا تستدعِ get_volume_profile بعدها لنفس السهم لأنها بيانات مكررة وبتضيّع استدعاء API إضافي وتبطّئ الرد. استخدم get_volume_profile بشكل منفصل فقط في حالتين: (أ) supportResistance.source = 'historical_range' وتحتاج تحاول تجيب Volume Profile الحقيقي رغم كذا، أو (ب) يزيد يسأل عن Volume Profile صراحة بدون طلب باقي المؤشرات الفنية.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: الأخبار الكلية والتقويم الاقتصادي\nبيوصلك بمعلومات السوق تلقائياً أخبار اقتصادية عامة وأحداث اقتصادية مهمة قادمة (فائدة، تضخم، وظائف). اذكرها لما تكون مرتبطة بسؤال يزيد أو مؤثرة على قراره، خصوصاً لو فيه حدث كبير قريب (زي قرار فائدة) قد يفجّر تقلب السوق كامل.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: اختبار الاستراتيجيات (Backtest)\nعندك أداة run_backtest تقدر تستدعيها لما يزيد يسأل عن أداء استراتيجية أو نتيجة باك-تست لسهم معين. بعد ما ترجع النتيجة، لخّصها له بالعربي بشكل واضح: عدد الصفقات، نسبة النجاح، العائد الكلي، وأقصى انخفاض. ذكّره دائماً إن العينات الصغيرة (أقل من 20-30 صفقة) مؤشر ضعيف الموثوقية. ملاحظتين مهمتين: (1) العائد المحسوب يخصم تقديرياً عمولة وانزلاق سعري بسيط، فهو أقرب للواقع مو مثالي 100%. (2) لو آخر صفقة فيها autoClosedAtEnd=true، وضّح له إنها أُغلقت افتراضياً لانتهاء بيانات الفترة مو بإشارة خروج حقيقية، وممكن نتيجتها تختلف لو مدّينا الفترة.`;
+    fullSystemPrompt += `\n\n# قدرة إضافية: حساب Tradier الحقيقي
+عندك ثلاث أدوات خاصة بحساب يزيد:
+- get_account: للرصيد، إجمالي قيمة الحساب، النقد، والقوة الشرائية.
+- get_positions: للمراكز المفتوحة.
+- get_tradier_quote: لسعر السهم وBid/Ask من Tradier.
+
+قواعد مهمة:
+1. استخدم get_account فقط عندما يسأل يزيد عن حسابه أو رصيده أو قوته الشرائية، ولا تعرض raw بالكامل.
+2. عند عرض الرصيد، لخص القيم المهمة بالدولار: إجمالي قيمة الحساب، النقد، قوة شراء الأسهم، وقوة شراء الخيارات.
+3. عند عرض المراكز، إذا كانت القائمة فارغة فقل بوضوح إنه لا توجد مراكز مفتوحة.
+4. لا تنفذ أي أوامر شراء أو بيع؛ الأدوات الحالية للقراءة فقط.
+5. بيانات الحساب معلومات خاصة؛ لا تحفظ الرصيد أو المراكز في الذاكرة طويلة المدى تلقائياً.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: تقييم عقود الخيارات (Options)\nعندك أداتين: get_options_expirations وget_options_chain. قواعد صارمة يجب اتباعها دائماً:\n1. البيانات من Sandbox متأخرة 15 دقيقة - ذكّر يزيد بهذا في كل مرة تعرض فيها بيانات خيارات.\n2. أنت لا تُوصي بالدخول مباشرة أبداً (لا تقول "ادخل" أو "اشتري الآن"). دورك تقييمي فقط: تعرض جودة العقد، السيولة، المخاطر، وتترك القرار ليزيد بالكامل.\n3. كل عقد يرجع من get_options_chain فيه حقل liquidity_quality وliquidity_reason - اعرضهم دائماً. لو العقد "ضعيف - احذر"، نبّه يزيد بوضوح إنه ممكن يصعب الخروج منه حتى لو التحليل الفني يبدو جيد.\n4. لا تقترح عقداً بسبريد واسع أو سيولة ضعيفة كخيار أساسي - إذا كل العقود بهالتاريخ ضعيفة السيولة، قول ذلك صراحة واقترح تاريخ استحقاق ثاني أو انتظار.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: Volume Profile حقيقي (Massive.com)\nعندك أداة get_volume_profile تحسب VAH وVAL وPOC الفعليين لليوم السابق من بيانات شموع حقيقية (5 دقائق)، مو تقديرية. استخدمها إلزامياً في مرحلة Zone من محرك CZT بدل أي تخمين لمستويات Value Area. البيانات مصدرها Massive.com على الخطة المجانية - قد تتأخر أحياناً أو ما تتوفر ليوم معين (عطلة، توقف تداول)؛ لو رجع error، أخبر يزيد بوضوح واستمر بالتحليل بدون هذي البيانات مع ذكر أثر غيابها على الثقة.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: إشارات مؤشر PRO Multi-Tool (TradingView)\nعندك أداة get_recent_tv_signals تجيب آخر إشارات وصلت من مؤشر يزيد المخصص على TradingView (BOOM هابط/صاعد = انعكاس سعري مؤكد، أو نمط توافقي Harmonic زي Gartley/Bat/Butterfly/Crab/Shark/Cypher). هذي إشارات حقيقية من شارت يزيد الفعلي، مو تحليل منك. قواعد الاستخدام:\n1. هذي الإشارات تعتمد على يزيد نفسه إنه فاتح الشارت والمؤشر شغال على السهم المطلوب - لو رجعت فاضية لسهم معين، وضّح إنه يمكن ما فيه إشارات لأنه ما كان مراقب بالمؤشر، مو لأنه ما صار شي.\n2. اربطها بتحليل CZT: إشارة BOOM أو نمط توافقي ممكن يكون Trigger قوي لو توافق مع Zone منطقية (VAH/VAL/POC)، بس لا تعتبرها Trigger مستقل كافي وحدها - اربطها بالسياق الكامل.\n3. اذكر وقت الإشارة (created_at) دائماً - إشارة من قبل ساعات كثيرة أقل أهمية من إشارة حديثة.`;
@@ -467,6 +523,63 @@ export async function POST(req: NextRequest) {
             tool_use_id: block.id,
             content: JSON.stringify(result),
           });
+        } else if (block.name === 'get_account') {
+          try {
+            const output = await getAccountBalance();
+            collectedToolResults.push({ name: 'get_account', input: block.input, output });
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+            });
+          } catch (e: any) {
+            const output = { error: e.message || 'فشل جلب بيانات حساب Tradier' };
+            collectedToolResults.push({ name: 'get_account', input: block.input, output });
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+              is_error: true,
+            });
+          }
+        } else if (block.name === 'get_positions') {
+          try {
+            const output = await getPositions();
+            collectedToolResults.push({ name: 'get_positions', input: block.input, output });
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+            });
+          } catch (e: any) {
+            const output = { error: e.message || 'فشل جلب مراكز Tradier' };
+            collectedToolResults.push({ name: 'get_positions', input: block.input, output });
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+              is_error: true,
+            });
+          }
+        } else if (block.name === 'get_tradier_quote') {
+          try {
+            const output = await getTradierQuote(block.input.symbol);
+            collectedToolResults.push({ name: 'get_tradier_quote', input: block.input, output });
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+            });
+          } catch (e: any) {
+            const output = { error: e.message || 'فشل جلب السعر من Tradier' };
+            collectedToolResults.push({ name: 'get_tradier_quote', input: block.input, output });
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+              is_error: true,
+            });
+          }
         } else if (block.name === 'get_options_expirations') {
           try {
             const dates = await getOptionsExpirations(block.input.symbol);
