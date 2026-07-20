@@ -281,6 +281,53 @@ const TOOLS = [
   },
 ];
 
+
+function enrichTradierQuoteFreshness(quote: any) {
+  const rawTradeDate = Number(quote?.trade_date);
+
+  // Tradier قد يرجع trade_date بالمللي ثانية أو بالثواني حسب نوع البيانات.
+  const tradeTimestampMs = Number.isFinite(rawTradeDate) && rawTradeDate > 0
+    ? rawTradeDate > 10_000_000_000
+      ? rawTradeDate
+      : rawTradeDate * 1000
+    : null;
+
+  const ageSeconds = tradeTimestampMs
+    ? Math.max(0, Math.round((Date.now() - tradeTimestampMs) / 1000))
+    : null;
+
+  let freshness: 'live' | 'delayed' | 'stale' | 'unknown' = 'unknown';
+
+  if (ageSeconds !== null) {
+    if (ageSeconds <= 60) freshness = 'live';
+    else if (ageSeconds <= 20 * 60) freshness = 'delayed';
+    else freshness = 'stale';
+  }
+
+  return {
+    ...quote,
+    updated_at: tradeTimestampMs
+      ? new Date(tradeTimestampMs).toISOString()
+      : null,
+    age_seconds: ageSeconds,
+    freshness,
+    freshness_label:
+      freshness === 'live'
+        ? 'حديثة جداً'
+        : freshness === 'delayed'
+          ? 'قد تكون متأخرة'
+          : freshness === 'stale'
+            ? 'قديمة'
+            : 'غير مؤكدة',
+    volume_context: {
+      current_volume: quote?.volume ?? null,
+      average_full_day_volume: quote?.average_volume ?? null,
+      warning:
+        'لا تقارن حجم الجلسة حتى الآن بمتوسط حجم يوم كامل للحكم على القوة. استخدم Time-of-Day RVOL أو قارن بنفس توقيت الجلسات السابقة.',
+    },
+  };
+}
+
 // حفظ تلقائي: يسأل Claude إذا كانت رسالة يزيد تحتوي معلومة تستحق الحفظ الدائم
 // فلتر سريع بدون AI: هل الرسالة يُحتمل تحتوي معلومة تستحق الحفظ؟
 // يشتغل قبل أي استدعاء لـ Claude، عشان نوفر الوقت والتكلفة لمعظم الرسائل العادية
@@ -461,7 +508,14 @@ export async function POST(req: NextRequest) {
 2. عند عرض الرصيد، لخص القيم المهمة بالدولار: إجمالي قيمة الحساب، النقد، قوة شراء الأسهم، وقوة شراء الخيارات.
 3. عند عرض المراكز، إذا كانت القائمة فارغة فقل بوضوح إنه لا توجد مراكز مفتوحة.
 4. لا تنفذ أي أوامر شراء أو بيع؛ الأدوات الحالية للقراءة فقط.
-5. بيانات الحساب معلومات خاصة؛ لا تحفظ الرصيد أو المراكز في الذاكرة طويلة المدى تلقائياً.`;
+5. بيانات الحساب معلومات خاصة؛ لا تحفظ الرصيد أو المراكز في الذاكرة طويلة المدى تلقائياً.
+6. عند استخدام get_tradier_quote، افحص freshness وage_seconds وupdated_at:
+   - لا تكتب "لحظي" إلا إذا freshness = "live".
+   - إذا freshness = "delayed" قل "قد تكون البيانات متأخرة" واذكر عمرها.
+   - إذا freshness = "stale" لا تبنِ عليها دخولاً لحظياً.
+   - إذا freshness = "unknown" قل "حداثة البيانات غير مؤكدة".
+7. لا تحسب نسبة volume / average_volume وتصفها بأنها ضعيفة أو قوية؛ لأن volume قد يكون جزئياً أثناء الجلسة بينما average_volume متوسط يوم كامل. اعرض الرقمين فقط، واذكر أن التقييم الدقيق يحتاج Time-of-Day RVOL.
+8. عند ربط السعر بـ VAH أو POC، قل "يتداول فوق/تحت المستوى حالياً" ولا تعتبر ذلك اختراقاً مؤكداً بدون صمود وحجم مناسب.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: تقييم عقود الخيارات (Options)\nعندك أداتين: get_options_expirations وget_options_chain. قواعد صارمة يجب اتباعها دائماً:\n1. البيانات من Sandbox متأخرة 15 دقيقة - ذكّر يزيد بهذا في كل مرة تعرض فيها بيانات خيارات.\n2. أنت لا تُوصي بالدخول مباشرة أبداً (لا تقول "ادخل" أو "اشتري الآن"). دورك تقييمي فقط: تعرض جودة العقد، السيولة، المخاطر، وتترك القرار ليزيد بالكامل.\n3. كل عقد يرجع من get_options_chain فيه حقل liquidity_quality وliquidity_reason - اعرضهم دائماً. لو العقد "ضعيف - احذر"، نبّه يزيد بوضوح إنه ممكن يصعب الخروج منه حتى لو التحليل الفني يبدو جيد.\n4. لا تقترح عقداً بسبريد واسع أو سيولة ضعيفة كخيار أساسي - إذا كل العقود بهالتاريخ ضعيفة السيولة، قول ذلك صراحة واقترح تاريخ استحقاق ثاني أو انتظار.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: Volume Profile حقيقي (Massive.com)\nعندك أداة get_volume_profile تحسب VAH وVAL وPOC الفعليين لليوم السابق من بيانات شموع حقيقية (5 دقائق)، مو تقديرية. استخدمها إلزامياً في مرحلة Zone من محرك CZT بدل أي تخمين لمستويات Value Area. البيانات مصدرها Massive.com على الخطة المجانية - قد تتأخر أحياناً أو ما تتوفر ليوم معين (عطلة، توقف تداول)؛ لو رجع error، أخبر يزيد بوضوح واستمر بالتحليل بدون هذي البيانات مع ذكر أثر غيابها على الثقة.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: إشارات مؤشر PRO Multi-Tool (TradingView)\nعندك أداة get_recent_tv_signals تجيب آخر إشارات وصلت من مؤشر يزيد المخصص على TradingView (BOOM هابط/صاعد = انعكاس سعري مؤكد، أو نمط توافقي Harmonic زي Gartley/Bat/Butterfly/Crab/Shark/Cypher). هذي إشارات حقيقية من شارت يزيد الفعلي، مو تحليل منك. قواعد الاستخدام:\n1. هذي الإشارات تعتمد على يزيد نفسه إنه فاتح الشارت والمؤشر شغال على السهم المطلوب - لو رجعت فاضية لسهم معين، وضّح إنه يمكن ما فيه إشارات لأنه ما كان مراقب بالمؤشر، مو لأنه ما صار شي.\n2. اربطها بتحليل CZT: إشارة BOOM أو نمط توافقي ممكن يكون Trigger قوي لو توافق مع Zone منطقية (VAH/VAL/POC)، بس لا تعتبرها Trigger مستقل كافي وحدها - اربطها بالسياق الكامل.\n3. اذكر وقت الإشارة (created_at) دائماً - إشارة من قبل ساعات كثيرة أقل أهمية من إشارة حديثة.`;
@@ -563,7 +617,8 @@ export async function POST(req: NextRequest) {
           }
         } else if (block.name === 'get_tradier_quote') {
           try {
-            const output = await getTradierQuote(block.input.symbol);
+            const rawQuote = await getTradierQuote(block.input.symbol);
+            const output = enrichTradierQuoteFreshness(rawQuote);
             collectedToolResults.push({ name: 'get_tradier_quote', input: block.input, output });
             toolResults.push({
               type: 'tool_result',
