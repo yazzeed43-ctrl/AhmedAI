@@ -1,3 +1,4 @@
+```ts
 export type Direction = "CALL" | "PUT" | "NEUTRAL";
 
 export type TriggerStatus = "CONFIRMED" | "WAITING" | "FAILED";
@@ -58,21 +59,34 @@ export interface TradeEvaluation {
   reasons: string[];
 }
 
-const calculateWeightedScore = (
-  values: Record<string, number>,
-  weights: Record<string, number>,
+const calculateWeightedScore = <T extends object>(
+  values: T,
+  weights: Partial<Record<keyof T, number>>,
 ): number => {
   let total = 0;
   let totalWeight = 0;
 
-  for (const [key, weight] of Object.entries(weights)) {
-    const value = Math.max(0, Math.min(100, values[key] ?? 0));
+  const keys = Object.keys(weights) as Array<keyof T>;
+
+  for (const key of keys) {
+    const weight = weights[key] ?? 0;
+    const rawValue = values[key];
+
+    const numericValue =
+      typeof rawValue === "number" ? rawValue : 0;
+
+    const value = Math.max(
+      0,
+      Math.min(100, numericValue),
+    );
 
     total += value * weight;
     totalWeight += weight;
   }
 
-  if (totalWeight === 0) return 0;
+  if (totalWeight === 0) {
+    return 0;
+  }
 
   return Math.round(total / totalWeight);
 };
@@ -85,7 +99,7 @@ const MARKET_WEIGHTS = {
   vixCondition: 10,
   momentum: 10,
   sectorStrength: 10,
-};
+} satisfies Record<keyof MarketSignals, number>;
 
 const STOCK_WEIGHTS = {
   trend: 20,
@@ -96,7 +110,7 @@ const STOCK_WEIGHTS = {
   supportResistance: 10,
   relativeStrength: 10,
   catalyst: 5,
-};
+} satisfies Record<keyof StockSignals, number>;
 
 const OPTIONS_WEIGHTS = {
   spread: 20,
@@ -107,7 +121,7 @@ const OPTIONS_WEIGHTS = {
   theta: 10,
   expiration: 10,
   contractProximity: 5,
-};
+} satisfies Record<keyof OptionSignals, number>;
 
 export function evaluateTrade(
   input: TradeEvaluationInput,
@@ -191,3 +205,4 @@ export function evaluateTrade(
     reasons,
   };
 }
+```
