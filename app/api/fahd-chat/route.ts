@@ -13,6 +13,10 @@ import { getTechnicalIndicators } from '@/lib/market-indicators';
 import { getPreviousDayVolumeProfile } from '@/lib/massive';
 import { getMarketDecision } from '@/lib/market-decision-engine';
 import { getStockDecision } from '@/lib/stock-decision-engine';
+import {
+  runTradeEngine,
+  type TradeEngineInput,
+} from '@/lib/trading/trade-engine';
 
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 
@@ -316,6 +320,156 @@ const TOOLS = [
       },
     },
   },
+
+  {
+    name: 'analyze_trade',
+    description:
+      'يشغّل محرك تقييم الصفقة الكامل وفق Condition ثم Zone ثم Trigger ثم تقييم العقد. استخدمه عندما يرسل يزيد بيانات صفقة خيارات كاملة أو يطلب تقييماً نهائياً لعقد CALL أو PUT. لا تخترع أرقاماً ناقصة. إذا كانت البيانات الأساسية غير متوفرة، وضّح ما ينقص أو استخدم الأدوات المتاحة لجمعه أولاً.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        market: {
+          type: 'object',
+          description: 'بيانات حالة السوق العامة',
+          properties: {
+            spy: {
+              type: 'object',
+              properties: {
+                price: { type: 'number' },
+                vwap: { type: 'number' },
+                ema20: { type: 'number' },
+                ema50: { type: 'number' },
+                rsi: { type: 'number' },
+                changePercent: { type: 'number' },
+              },
+              required: ['price'],
+            },
+            qqq: {
+              type: 'object',
+              properties: {
+                price: { type: 'number' },
+                vwap: { type: 'number' },
+                ema20: { type: 'number' },
+                ema50: { type: 'number' },
+                rsi: { type: 'number' },
+                changePercent: { type: 'number' },
+              },
+              required: ['price'],
+            },
+            vix: {
+              type: 'object',
+              properties: {
+                price: { type: 'number' },
+                changePercent: { type: 'number' },
+              },
+            },
+            breadth: {
+              type: 'object',
+              properties: {
+                advanceDeclineRatio: { type: 'number' },
+                percentAboveVwap: { type: 'number' },
+              },
+            },
+            sector: {
+              type: 'object',
+              properties: {
+                changePercent: { type: 'number' },
+                relativeStrength: { type: 'number' },
+              },
+            },
+          },
+          required: ['spy', 'qqq'],
+        },
+        stock: {
+          type: 'object',
+          description: 'بيانات السهم أو الأصل الأساسي',
+          properties: {
+            symbol: { type: 'string' },
+            price: { type: 'number' },
+            vwap: { type: 'number' },
+            ema20: { type: 'number' },
+            ema50: { type: 'number' },
+            ema200: { type: 'number' },
+            rsi: { type: 'number' },
+            macdHistogram: { type: 'number' },
+            adx: { type: 'number' },
+            relativeVolume: { type: 'number' },
+            volume: { type: 'number' },
+            averageVolume: { type: 'number' },
+            poc: { type: 'number' },
+            vah: { type: 'number' },
+            val: { type: 'number' },
+            support: { type: 'number' },
+            resistance: { type: 'number' },
+            relativeStrength: { type: 'number' },
+            catalyst: {
+              type: 'object',
+              properties: {
+                hasNews: { type: 'boolean' },
+                earningsSoon: { type: 'boolean' },
+                sentiment: {
+                  type: 'string',
+                  enum: ['POSITIVE', 'NEGATIVE', 'NEUTRAL'],
+                },
+              },
+            },
+          },
+          required: ['symbol', 'price'],
+        },
+        option: {
+          type: 'object',
+          description: 'بيانات عقد الخيارات',
+          properties: {
+            symbol: { type: 'string' },
+            strike: { type: 'number' },
+            optionType: {
+              type: 'string',
+              enum: ['CALL', 'PUT'],
+            },
+            expiration: { type: 'string' },
+            bid: { type: 'number' },
+            ask: { type: 'number' },
+            last: { type: 'number' },
+            delta: { type: 'number' },
+            gamma: { type: 'number' },
+            theta: { type: 'number' },
+            impliedVolatility: { type: 'number' },
+            volume: { type: 'number' },
+            openInterest: { type: 'number' },
+            underlyingPrice: { type: 'number' },
+            daysToExpiration: { type: 'number' },
+          },
+          required: [
+            'symbol',
+            'strike',
+            'optionType',
+            'expiration',
+            'underlyingPrice',
+            'daysToExpiration',
+          ],
+        },
+        trigger: {
+          type: 'object',
+          description: 'بيانات تأكيد الدخول',
+          properties: {
+            direction: {
+              type: 'string',
+              enum: ['CALL', 'PUT', 'NEUTRAL'],
+            },
+            candleClose: { type: 'number' },
+            previousCandleClose: { type: 'number' },
+            breakoutLevel: { type: 'number' },
+            breakdownLevel: { type: 'number' },
+            priceAboveVwap: { type: 'boolean' },
+            priceBelowVwap: { type: 'boolean' },
+            relativeVolume: { type: 'number' },
+          },
+          required: ['direction', 'candleClose'],
+        },
+      },
+      required: ['market', 'stock', 'option', 'trigger'],
+    },
+  },
 ];
 
 
@@ -594,6 +748,20 @@ export async function POST(req: NextRequest) {
     fullSystemPrompt += `\n\n# قدرة إضافية: تقييم عقود الخيارات (Options)\nعندك أداتين: get_options_expirations وget_options_chain. قواعد صارمة يجب اتباعها دائماً:\n1. البيانات من Sandbox متأخرة 15 دقيقة - ذكّر يزيد بهذا في كل مرة تعرض فيها بيانات خيارات.\n2. أنت لا تُوصي بالدخول مباشرة أبداً (لا تقول "ادخل" أو "اشتري الآن"). دورك تقييمي فقط: تعرض جودة العقد، السيولة، المخاطر، وتترك القرار ليزيد بالكامل.\n3. كل عقد يرجع من get_options_chain فيه حقل liquidity_quality وliquidity_reason - اعرضهم دائماً. لو العقد "ضعيف - احذر"، نبّه يزيد بوضوح إنه ممكن يصعب الخروج منه حتى لو التحليل الفني يبدو جيد.\n4. لا تقترح عقداً بسبريد واسع أو سيولة ضعيفة كخيار أساسي - إذا كل العقود بهالتاريخ ضعيفة السيولة، قول ذلك صراحة واقترح تاريخ استحقاق ثاني أو انتظار.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: Volume Profile حقيقي (Massive.com)\nعندك أداة get_volume_profile تحسب VAH وVAL وPOC الفعليين لليوم السابق من بيانات شموع حقيقية (5 دقائق)، مو تقديرية. استخدمها إلزامياً في مرحلة Zone من محرك CZT بدل أي تخمين لمستويات Value Area. البيانات مصدرها Massive.com على الخطة المجانية - قد تتأخر أحياناً أو ما تتوفر ليوم معين (عطلة، توقف تداول)؛ لو رجع error، أخبر يزيد بوضوح واستمر بالتحليل بدون هذي البيانات مع ذكر أثر غيابها على الثقة.`;
     fullSystemPrompt += `\n\n# قدرة إضافية: إشارات مؤشر PRO Multi-Tool (TradingView)\nعندك أداة get_recent_tv_signals تجيب آخر إشارات وصلت من مؤشر يزيد المخصص على TradingView (BOOM هابط/صاعد = انعكاس سعري مؤكد، أو نمط توافقي Harmonic زي Gartley/Bat/Butterfly/Crab/Shark/Cypher). هذي إشارات حقيقية من شارت يزيد الفعلي، مو تحليل منك. قواعد الاستخدام:\n1. هذي الإشارات تعتمد على يزيد نفسه إنه فاتح الشارت والمؤشر شغال على السهم المطلوب - لو رجعت فاضية لسهم معين، وضّح إنه يمكن ما فيه إشارات لأنه ما كان مراقب بالمؤشر، مو لأنه ما صار شي.\n2. اربطها بتحليل CZT: إشارة BOOM أو نمط توافقي ممكن يكون Trigger قوي لو توافق مع Zone منطقية (VAH/VAL/POC)، بس لا تعتبرها Trigger مستقل كافي وحدها - اربطها بالسياق الكامل.\n3. اذكر وقت الإشارة (created_at) دائماً - إشارة من قبل ساعات كثيرة أقل أهمية من إشارة حديثة.`;
+    fullSystemPrompt += `
+
+# قدرة إضافية: محرك تقييم الصفقة الكامل
+عندك أداة analyze_trade لتشغيل محرك فهد الكامل وفق Condition → Zone → Trigger → Contract Score.
+
+قواعد الاستخدام:
+1. استخدمها عندما يطلب يزيد تقييم صفقة خيارات كاملة أو يرسل بيانات عقد محدد مع بيانات السوق والأصل والتفعيل.
+2. لا تخترع أي رقم مفقود. إذا كانت البيانات ناقصة، اجمعها من الأدوات المتاحة أو وضّح ما ينقص.
+3. Condition: تحقق من اتجاه SPY وQQQ وموضعهما من VWAP وEMA20 وEMA50 وRSI، وVIX إن توفر.
+4. Zone: تحقق من VAH وVAL وPOC والدعم والمقاومة وموقع السعر من VWAP.
+5. Trigger: تحقق من اتجاه CALL أو PUT، وإغلاق شمعة التأكيد، ومستوى الاختراق أو الكسر، والحجم النسبي إن توفر.
+6. بيانات العقد: تحقق من Strike وExpiration وDays to Expiration وBid وAsk وDelta وGamma وTheta وIV وVolume وOpen Interest وسعر الأصل.
+7. بعد النتيجة اعرض: القرار، درجات السوق والأصل والعقد والصفقة، الثقة، حالة التفعيل، التوافق، الأسباب والتحذيرات.
+8. لا تقل اشتر الآن أو ادخل الآن. النتيجة تقييم تحليلي وليست تنفيذاً للصفقة.`;
     fullSystemPrompt += `\n\n# ملاحظة مهمة عن طريقة الرد بعد استخدام الأدوات\nواجهة يزيد تعرض تلقائياً بطاقة مرئية منسقة بكل الأرقام والتفاصيل بعد أي استدعاء لـ run_backtest أو get_options_chain. لذلك لا تكرر الجدول أو كل الأرقام نصياً في ردك - اكتفِ بتعليق قصير (سطرين إلى ثلاثة أسطر) يعطي رأيك أو أهم ملاحظة، والباقي يزيد بيشوفه بالبطاقة.`;
     if (memoryContext) {
       fullSystemPrompt += `\n\n# ذاكرتك طويلة المدى عن يزيد وتداولاته:\n${memoryContext}`;
@@ -848,6 +1016,122 @@ export async function POST(req: NextRequest) {
           } catch (e: any) {
             const output = { error: e.message || 'فشل جلب سلسلة الخيارات' };
             collectedToolResults.push({ name: 'get_options_chain', input: block.input, output });
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+              is_error: true,
+            });
+          }
+        } else if (block.name === 'analyze_trade') {
+          try {
+            const input = block.input as TradeEngineInput;
+
+            if (
+              !input ||
+              !input.market ||
+              !input.market.spy ||
+              !input.market.qqq ||
+              !input.stock ||
+              !input.option ||
+              !input.trigger
+            ) {
+              throw new Error(
+                'بيانات السوق أو الأصل أو العقد أو التفعيل غير مكتملة'
+              );
+            }
+
+            if (
+              typeof input.market.spy.price !== 'number' ||
+              !Number.isFinite(input.market.spy.price) ||
+              typeof input.market.qqq.price !== 'number' ||
+              !Number.isFinite(input.market.qqq.price)
+            ) {
+              throw new Error('سعر SPY وسعر QQQ مطلوبان ويجب أن يكونا رقمين صحيحين');
+            }
+
+            if (
+              typeof input.stock.symbol !== 'string' ||
+              input.stock.symbol.trim().length === 0 ||
+              typeof input.stock.price !== 'number' ||
+              !Number.isFinite(input.stock.price)
+            ) {
+              throw new Error('رمز الأصل وسعره الحالي مطلوبان');
+            }
+
+            if (
+              typeof input.option.symbol !== 'string' ||
+              input.option.symbol.trim().length === 0 ||
+              typeof input.option.strike !== 'number' ||
+              !Number.isFinite(input.option.strike) ||
+              typeof input.option.underlyingPrice !== 'number' ||
+              !Number.isFinite(input.option.underlyingPrice) ||
+              typeof input.option.daysToExpiration !== 'number' ||
+              !Number.isFinite(input.option.daysToExpiration)
+            ) {
+              throw new Error('بيانات العقد الأساسية غير مكتملة');
+            }
+
+            if (
+              input.option.optionType !== 'CALL' &&
+              input.option.optionType !== 'PUT'
+            ) {
+              throw new Error('نوع العقد يجب أن يكون CALL أو PUT');
+            }
+
+            if (
+              input.trigger.direction !== 'CALL' &&
+              input.trigger.direction !== 'PUT' &&
+              input.trigger.direction !== 'NEUTRAL'
+            ) {
+              throw new Error(
+                'اتجاه التفعيل يجب أن يكون CALL أو PUT أو NEUTRAL'
+              );
+            }
+
+            if (
+              typeof input.trigger.candleClose !== 'number' ||
+              !Number.isFinite(input.trigger.candleClose)
+            ) {
+              throw new Error('إغلاق شمعة التفعيل مطلوب');
+            }
+
+            const normalizedInput: TradeEngineInput = {
+              ...input,
+              stock: {
+                ...input.stock,
+                symbol: input.stock.symbol.trim().toUpperCase(),
+              },
+              option: {
+                ...input.option,
+                symbol: input.option.symbol.trim().toUpperCase(),
+              },
+            };
+
+            const output = runTradeEngine(normalizedInput);
+
+            collectedToolResults.push({
+              name: 'analyze_trade',
+              input: normalizedInput,
+              output,
+            });
+
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+            });
+          } catch (e: any) {
+            const output = {
+              error: e?.message || 'فشل تشغيل محرك تقييم الصفقة',
+            };
+
+            collectedToolResults.push({
+              name: 'analyze_trade',
+              input: block.input,
+              output,
+            });
+
             toolResults.push({
               type: 'tool_result',
               tool_use_id: block.id,
