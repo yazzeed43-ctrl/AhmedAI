@@ -1,4 +1,3 @@
-```ts
 export type Direction = "CALL" | "PUT" | "NEUTRAL";
 
 export type TriggerStatus = "CONFIRMED" | "WAITING" | "FAILED";
@@ -75,10 +74,7 @@ const calculateWeightedScore = <T extends object>(
     const numericValue =
       typeof rawValue === "number" ? rawValue : 0;
 
-    const value = Math.max(
-      0,
-      Math.min(100, numericValue),
-    );
+    const value = Math.max(0, Math.min(100, numericValue));
 
     total += value * weight;
     totalWeight += weight;
@@ -205,4 +201,3 @@ export function evaluateTrade(
     reasons,
   };
 }
-```
