@@ -783,7 +783,7 @@ export async function POST(req: NextRequest) {
     // ============================================
     let assistantText = '';
     const collectedToolResults: { name: string; input: any; output: any }[] = [];
-    const maxRounds = 4;
+    const maxRounds = 8;
 
     for (let round = 0; round < maxRounds; round++) {
       const data = await callClaude(workingMessages, fullSystemPrompt);
