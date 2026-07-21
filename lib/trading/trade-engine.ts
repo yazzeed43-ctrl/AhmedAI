@@ -1,6 +1,7 @@
 import {
   evaluateTrade,
   type TradeEvaluation,
+  type OptionQuality,
 } from "./scoring-engine";
 
 import {
@@ -32,6 +33,7 @@ export interface TradeEngineReport {
     options: number;
     trade: number;
   };
+  optionQuality: OptionQuality;
   directions: {
     market: "CALL" | "PUT" | "NEUTRAL";
     stock: "CALL" | "PUT" | "NEUTRAL";
@@ -81,6 +83,14 @@ const createArabicSummary = (
     REJECT_CONTRACT: "رفض العقد",
   };
 
+  const optionQualityLabels = {
+    EXCELLENT: "ممتازة",
+    GOOD: "جيدة",
+    FAIR: "متوسطة",
+    WEAK: "ضعيفة",
+    REJECT: "مرفوضة",
+  };
+
   const directionLabels = {
     CALL: "صاعد",
     PUT: "هابط",
@@ -100,6 +110,14 @@ const createArabicSummary = (
     `درجة السوق: ${report.scores.market}/100`,
     `درجة السهم: ${report.scores.stock}/100`,
     `درجة العقد: ${report.scores.options}/100`,
+    `جودة العقد: ${report.optionQuality.score}/100 — ${
+      optionQualityLabels[report.optionQuality.label]
+    }`,
+    `سيولة العقد: ${report.optionQuality.components.liquidity}/100`,
+    `جودة السبريد: ${report.optionQuality.components.spread}/100`,
+    `جودة Delta: ${report.optionQuality.components.delta}/100`,
+    `ضغط Theta: ${report.optionQuality.components.theta}/100`,
+    `حالة IV: ${report.optionQuality.components.iv}/100`,
     `درجة الصفقة: ${report.scores.trade}/100`,
     `اتجاه السوق: ${directionLabels[report.directions.market]}`,
     `اتجاه السهم: ${directionLabels[report.directions.stock]}`,
@@ -108,6 +126,18 @@ const createArabicSummary = (
       report.alignment ? "نعم" : "لا"
     }`,
   ];
+
+  if (report.optionQuality.strengths.length > 0) {
+    lines.push(
+      `نقاط قوة العقد: ${report.optionQuality.strengths.join("، ")}`,
+    );
+  }
+
+  if (report.optionQuality.weaknesses.length > 0) {
+    lines.push(
+      `نقاط ضعف العقد: ${report.optionQuality.weaknesses.join("، ")}`,
+    );
+  }
 
   if (report.reasons.length > 0) {
     lines.push(`الأسباب: ${report.reasons.join("، ")}`);
@@ -157,6 +187,8 @@ export function runTradeEngine(
       options: evaluation.optionsScore,
       trade: evaluation.tradeScore,
     },
+
+    optionQuality: evaluation.optionQuality,
 
     directions: {
       market: normalized.marketDirection,
