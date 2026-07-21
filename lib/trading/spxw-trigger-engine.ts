@@ -36,12 +36,17 @@ export async function buildSpxwTriggerPlan(
     };
   }
 
+  const spxPrice = scan.underlyingPrice;
+
+  if (typeof spxPrice !== "number" || !Number.isFinite(spxPrice)) {
+    throw new Error("تعذر تحديد سعر SPX لبناء خطة الدخول.");
+  }
+
   const confirmationBuffer = config.confirmationBufferPoints ?? 1.5;
   const stopBuffer = config.stopBufferPoints ?? 6;
   const target1 = config.target1Points ?? 8;
   const target2 = config.target2Points ?? 15;
 
-  const spxPrice = scan.underlyingPrice;
   const market = scan.market;
 
   const plans = scan.opportunities.map((opportunity) => {
@@ -105,28 +110,31 @@ export async function buildSpxwTriggerPlan(
       conditions: {
         marketDecision: market.decision,
         triggerRequired: true,
-        confirmation:
-          isCall
-            ? `إغلاق شمعة 5 دقائق فوق ${round(triggerPrice)} مع بقاء SPY وQQQ فوق VAH`
-            : `إغلاق شمعة 5 دقائق تحت ${round(triggerPrice)} مع بقاء SPY وQQQ تحت VAL`,
-        cancellation:
-          isCall
-            ? `إلغاء إذا عاد SPX تحت ${round(invalidationPrice)}`
-            : `إلغاء إذا عاد SPX فوق ${round(invalidationPrice)}`,
+        confirmation: isCall
+          ? `إغلاق شمعة 5 دقائق فوق ${round(
+              triggerPrice,
+            )} مع بقاء SPY وQQQ فوق VAH`
+          : `إغلاق شمعة 5 دقائق تحت ${round(
+              triggerPrice,
+            )} مع بقاء SPY وQQQ تحت VAL`,
+        cancellation: isCall
+          ? `إلغاء إذا عاد SPX تحت ${round(invalidationPrice)}`
+          : `إلغاء إذا عاد SPX فوق ${round(invalidationPrice)}`,
       },
     };
   });
 
+  const hasActiveTrigger = plans.some(
+    (plan) => plan.state === "ENTER_NOW",
+  );
+
   return {
     generatedAt: new Date().toISOString(),
-    state: plans.some((plan) => plan.state === "ENTER_NOW")
-      ? "ENTER_NOW"
-      : "WAIT_TRIGGER",
+    state: hasActiveTrigger ? "ENTER_NOW" : "WAIT_TRIGGER",
     market,
     plans,
-    message:
-      plans.some((plan) => plan.state === "ENTER_NOW")
-        ? "تم تفعيل فرصة SPXW."
-        : "الفرص جاهزة لكن تنتظر إغلاق شمعة التأكيد.",
+    message: hasActiveTrigger
+      ? "تم تفعيل فرصة SPXW."
+      : "الفرص جاهزة لكنها تنتظر إغلاق شمعة التأكيد.",
   };
 }
