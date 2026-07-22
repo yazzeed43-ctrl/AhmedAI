@@ -45,8 +45,8 @@ function normalizeMarketImpact(
   marketImpact: string,
   sourceCategory: string
 ): string {
-  // Options flow is market evidence, not an official event.
-  // It must not become HIGH by itself in phase one.
+  // تدفقات الخيارات تعتبر دليلًا سوقيًا،
+  // وليست حدثًا رسميًا يفرض HIGH بمفرده.
   if (
     sourceCategory === 'OPTIONS_FLOW' &&
     marketImpact === 'HIGH'
@@ -55,6 +55,12 @@ function normalizeMarketImpact(
   }
 
   return marketImpact;
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) =>
+    setTimeout(resolve, milliseconds)
+  );
 }
 
 export async function collectTrustedXSignals(params?: {
@@ -82,109 +88,134 @@ export async function collectTrustedXSignals(params?: {
     failedSources: [],
   };
 
-  const sourceRuns = await Promise.allSettled(
-    sources.map(async (configuredSource) => {
-      const tweets = await fetchNewTweetsForUser({
-        username: configuredSource.username,
-        sinceUnixSeconds,
-        untilUnixSeconds,
-      });
+  for (
+    let sourceIndex = 0;
+    sourceIndex < sources.length;
+    sourceIndex += 1
+  ) {
+    const configuredSource = sources[sourceIndex];
 
-      return {
-        configuredSource,
-        tweets,
-      };
-    })
-  );
+    try {
+      const tweets =
+        await fetchNewTweetsForUser({
+          username: configuredSource.username,
+          sinceUnixSeconds,
+          untilUnixSeconds,
+        });
 
-  for (const sourceRun of sourceRuns) {
-    if (sourceRun.status === 'rejected') {
-      result.failedSources.push('unknown');
-      continue;
-    }
+      result.fetchedTweets += tweets.length;
 
-    const {
-      configuredSource,
-      tweets,
-    } = sourceRun.value;
+      for (const tweet of tweets) {
+        const trustedSource =
+          getTrustedXSource(
+            tweet.authorUsername
+          );
 
-    result.fetchedTweets += tweets.length;
+        if (!trustedSource) {
+          result.ignoredTweets += 1;
+          continue;
+        }
 
-    for (const tweet of tweets) {
-      const trustedSource =
-        getTrustedXSource(tweet.authorUsername);
+        const publishedAt =
+          parseTwitterApiIoDate(
+            tweet.createdAt
+          );
 
-      if (!trustedSource) {
-        result.ignoredTweets += 1;
-        continue;
+        if (!publishedAt) {
+          result.ignoredTweets += 1;
+          continue;
+        }
+
+        const parsed =
+          parseTelegramSignal(
+            tweet.text
+          );
+
+        if (parsed.symbols.length === 0) {
+          result.ignoredTweets += 1;
+          continue;
+        }
+
+        const contentTypes =
+          normalizeContentTypes(
+            parsed.contentTypes,
+            trustedSource.category
+          );
+
+        const marketImpact =
+          normalizeMarketImpact(
+            parsed.marketImpact,
+            trustedSource.category
+          );
+
+        const saved =
+          await saveSocialSignal({
+            platform: 'x',
+            sourceName:
+              `@${trustedSource.username}`,
+            sourceId:
+              trustedSource.username,
+            messageId: tweet.id,
+            symbol: parsed.symbol,
+            symbols: parsed.symbols,
+            content: tweet.text,
+            contentType:
+              parsed.contentType,
+            contentTypes,
+            marketImpact,
+            signalType:
+              parsed.signalType,
+            sentiment:
+              parsed.sentiment,
+            confidence:
+              parsed.confidence,
+            reliabilityScore:
+              trustedSource.reliabilityScore,
+            publishedAt:
+              publishedAt.toISOString(),
+            rawData: {
+              provider:
+                'twitterapi.io',
+              tweetId: tweet.id,
+              authorUsername:
+                tweet.authorUsername,
+              sourceCategory:
+                trustedSource.category,
+              reliabilityScore:
+                trustedSource.reliabilityScore,
+              collectedAt:
+                new Date().toISOString(),
+            },
+          });
+
+        if (saved) {
+          result.savedSignals += 1;
+        } else {
+          result.ignoredTweets += 1;
+        }
       }
-
-      const publishedAt =
-        parseTwitterApiIoDate(tweet.createdAt);
-
-      if (!publishedAt) {
-        result.ignoredTweets += 1;
-        continue;
-      }
-
-      const parsed = parseTelegramSignal(
-        tweet.text
+    } catch (error: unknown) {
+      result.failedSources.push(
+        configuredSource.username
       );
 
-      if (parsed.symbols.length === 0) {
-        result.ignoredTweets += 1;
-        continue;
-      }
+      const message =
+        error instanceof Error
+          ? error.message
+          : String(error);
 
-      const contentTypes =
-        normalizeContentTypes(
-          parsed.contentTypes,
-          trustedSource.category
-        );
+      console.error(
+        `X source failed: ${configuredSource.username} error=${message}`
+      );
+    }
 
-      const marketImpact =
-        normalizeMarketImpact(
-          parsed.marketImpact,
-          trustedSource.category
-        );
+    const hasAnotherSource =
+      sourceIndex < sources.length - 1;
 
-      const saved = await saveSocialSignal({
-        platform: 'x',
-        sourceName: `@${trustedSource.username}`,
-        sourceId: trustedSource.username,
-        messageId: tweet.id,
-        symbol: parsed.symbol,
-        symbols: parsed.symbols,
-        content: tweet.text,
-        contentType: parsed.contentType,
-        contentTypes,
-        marketImpact,
-        signalType: parsed.signalType,
-        sentiment: parsed.sentiment,
-        confidence: parsed.confidence,
-        reliabilityScore:
-          trustedSource.reliabilityScore,
-        publishedAt: publishedAt.toISOString(),
-        rawData: {
-          provider: 'twitterapi.io',
-          tweetId: tweet.id,
-          authorUsername:
-            tweet.authorUsername,
-          sourceCategory:
-            trustedSource.category,
-          reliabilityScore:
-            trustedSource.reliabilityScore,
-          collectedAt:
-            new Date().toISOString(),
-        },
-      });
-
-      if (saved) {
-        result.savedSignals += 1;
-      } else {
-        // saveSocialSignal uses content_hash dedupe.
-        result.ignoredTweets += 1;
-      }
+    if (hasAnotherSource) {
+      // حساب TwitterAPI.io المجاني يسمح
+      // بطلب واحد فقط كل 5 ثوانٍ.
+      await sleep(5_500);
     }
   }
 
