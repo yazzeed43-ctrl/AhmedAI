@@ -1,4 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server';
+import {
+  NextRequest,
+  NextResponse,
+} from 'next/server';
 
 import {
   getTelegramMessage,
@@ -16,16 +19,20 @@ import {
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-function isValidSecret(request: NextRequest): boolean {
-  const expected = process.env.TELEGRAM_WEBHOOK_SECRET;
+function isValidSecret(
+  request: NextRequest
+): boolean {
+  const expected =
+    process.env.TELEGRAM_WEBHOOK_SECRET;
+
   const received = request.headers.get(
     'x-telegram-bot-api-secret-token'
   );
 
   return Boolean(
     expected &&
-    received &&
-    received === expected
+      received &&
+      received === expected
   );
 }
 
@@ -33,7 +40,8 @@ async function sendTelegramMessage(
   chatId: number | string,
   text: string
 ): Promise<boolean> {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const token =
+    process.env.TELEGRAM_BOT_TOKEN;
 
   if (!token) {
     console.error(
@@ -49,7 +57,8 @@ async function sendTelegramMessage(
       {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          'Content-Type':
+            'application/json',
         },
         body: JSON.stringify({
           chat_id: chatId,
@@ -76,7 +85,8 @@ async function sendTelegramMessage(
       return false;
     }
 
-    const result = await response.json();
+    const result =
+      await response.json();
 
     if (!result?.ok) {
       console.error(
@@ -98,13 +108,42 @@ async function sendTelegramMessage(
   }
 }
 
+function formatContentTypeLabel(
+  value: string
+): string {
+  const labels: Record<string, string> = {
+    SIGNAL: '📈 إشارة تداول',
+    NEWS: '📰 خبر',
+    EARNINGS: '📅 أرباح',
+    BREAKING: '🚨 عاجل',
+    WHALE: '🐋 تدفقات حيتان',
+    FED: '🏦 فيدرالي',
+  };
+
+  return labels[value] ?? value;
+}
+
+function formatMarketImpactLabel(
+  value: string
+): string {
+  const labels: Record<string, string> = {
+    LOW: 'منخفض',
+    MEDIUM: 'متوسط',
+    HIGH: 'مرتفع',
+  };
+
+  return labels[value] ?? value;
+}
+
 export async function GET() {
   return NextResponse.json({
     ok: true,
-    service: 'fahd-telegram-webhook',
+    service:
+      'fahd-telegram-webhook',
     configured: Boolean(
       process.env.TELEGRAM_BOT_TOKEN &&
-      process.env.TELEGRAM_WEBHOOK_SECRET
+        process.env
+          .TELEGRAM_WEBHOOK_SECRET
     ),
   });
 }
@@ -157,8 +196,7 @@ export async function POST(
     console.log(
       'TELEGRAM_IGNORED_UPDATE',
       {
-        updateId:
-          update.update_id,
+        updateId: update.update_id,
         reason:
           'unsupported_update',
       }
@@ -167,7 +205,8 @@ export async function POST(
     return NextResponse.json({
       ok: true,
       ignored: true,
-      reason: 'unsupported_update',
+      reason:
+        'unsupported_update',
     });
   }
 
@@ -180,12 +219,10 @@ export async function POST(
     console.log(
       'TELEGRAM_IGNORED_UPDATE',
       {
-        updateId:
-          update.update_id,
+        updateId: update.update_id,
         messageId:
           telegramMessage.message_id,
-        reason:
-          'empty_text',
+        reason: 'empty_text',
       }
     );
 
@@ -199,10 +236,9 @@ export async function POST(
   const {
     sourceId,
     sourceName,
-  } =
-    getTelegramSource(
-      telegramMessage
-    );
+  } = getTelegramSource(
+    telegramMessage
+  );
 
   const chatId =
     telegramMessage?.chat?.id;
@@ -222,8 +258,8 @@ export async function POST(
           sourceName,
           chatId,
           chatType:
-            telegramMessage?.chat?.type ??
-            null,
+            telegramMessage?.chat
+              ?.type ?? null,
           username:
             telegramMessage?.from
               ?.username ??
@@ -232,8 +268,7 @@ export async function POST(
             null,
           messageId:
             telegramMessage
-              ?.message_id ??
-            null,
+              ?.message_id ?? null,
           textPreview:
             text.slice(0, 120),
         }
@@ -257,7 +292,8 @@ export async function POST(
       return NextResponse.json({
         ok: true,
         ignored: true,
-        reason: 'untrusted_source',
+        reason:
+          'untrusted_source',
         sourceId,
         sourceName,
       });
@@ -269,47 +305,44 @@ export async function POST(
     const saved =
       await saveSocialSignal({
         platform: 'telegram',
-
         sourceName:
           trusted.display_name ??
           sourceName,
-
         sourceId,
-
-        messageId:
-          String(
-            telegramMessage.message_id
-          ),
-
+        messageId: String(
+          telegramMessage.message_id
+        ),
         symbol:
           parsed.symbol,
-
-        content:
-          text,
-
+        symbols:
+          parsed.symbols,
+        content: text,
+        contentType:
+          parsed.contentType,
+        contentTypes:
+          parsed.contentTypes,
+        marketImpact:
+          parsed.marketImpact,
         signalType:
           parsed.signalType,
-
         sentiment:
           parsed.sentiment,
-
         confidence:
           parsed.confidence,
-
         reliabilityScore:
           Number(
             trusted.reliability_score ??
-            0.5
+              0.5
           ),
-
         publishedAt:
           new Date(
             telegramMessage.date *
               1000
           ).toISOString(),
-
-        rawData:
-          update,
+        rawData: {
+          telegramUpdate: update,
+          parsed,
+        },
       });
 
     console.log(
@@ -323,6 +356,14 @@ export async function POST(
           telegramMessage.message_id,
         symbol:
           parsed.symbol,
+        symbols:
+          parsed.symbols,
+        contentType:
+          parsed.contentType,
+        contentTypes:
+          parsed.contentTypes,
+        marketImpact:
+          parsed.marketImpact,
         signalType:
           parsed.signalType,
         sentiment:
@@ -335,13 +376,34 @@ export async function POST(
     );
 
     if (chatId) {
+      const symbolsLabel =
+        parsed.symbols.length > 0
+          ? parsed.symbols.join(', ')
+          : 'غير محددة';
+
+      const contentTypesLabel =
+        parsed.contentTypes.length > 0
+          ? parsed.contentTypes
+              .map(
+                formatContentTypeLabel
+              )
+              .join('، ')
+          : 'غير محددة';
+
       const replyLines = [
-        'تم استلام الإشارة وحفظها ✅',
+        parsed.contentType ===
+        'SIGNAL'
+          ? 'تم استلام الإشارة وحفظها ✅'
+          : 'تم استلام المحتوى وحفظه ✅',
         '',
-        `الرمز: ${
-          parsed.symbol ??
-          'غير محدد'
-        }`,
+        `الرموز: ${symbolsLabel}`,
+        `نوع المحتوى: ${formatContentTypeLabel(
+          parsed.contentType
+        )}`,
+        `التصنيفات: ${contentTypesLabel}`,
+        `تأثير السوق: ${formatMarketImpactLabel(
+          parsed.marketImpact
+        )}`,
         `نوع الإشارة: ${
           parsed.signalType ??
           'غير محدد'
@@ -354,6 +416,16 @@ export async function POST(
         )}%`,
       ];
 
+      if (
+        parsed.marketImpact ===
+        'HIGH'
+      ) {
+        replyLines.push(
+          '',
+          '⚠️ حدث مرتفع التأثير؛ سيأخذه فهد في الحسبان أثناء التحليل.'
+        );
+      }
+
       await sendTelegramMessage(
         chatId,
         replyLines.join('\n')
@@ -362,11 +434,18 @@ export async function POST(
 
     return NextResponse.json({
       ok: true,
-      saved:
-        Boolean(saved),
+      saved: Boolean(saved),
       signal: {
         symbol:
           parsed.symbol,
+        symbols:
+          parsed.symbols,
+        contentType:
+          parsed.contentType,
+        contentTypes:
+          parsed.contentTypes,
+        marketImpact:
+          parsed.marketImpact,
         signalType:
           parsed.signalType,
         sentiment:
@@ -388,8 +467,7 @@ export async function POST(
         sourceName,
         messageId:
           telegramMessage.message_id,
-        error:
-          errorMessage,
+        error: errorMessage,
       }
     );
 
@@ -407,8 +485,7 @@ export async function POST(
     return NextResponse.json(
       {
         ok: false,
-        error:
-          errorMessage,
+        error: errorMessage,
       },
       {
         status: 500,
