@@ -1,5 +1,4 @@
-﻿import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+﻿import { NextRequest, NextResponse } from 'next/server';import { supabase } from '@/lib/supabase';
 import { FAHD_SYSTEM_PROMPT } from '@/lib/fahd-system-prompt';
 import { executeBacktest } from '@/lib/run-backtest';
 import {
@@ -19,6 +18,10 @@ import {
   runTradeEngine,
   type TradeEngineInput,
 } from '@/lib/trading/trade-engine';
+import {
+  getRecentSocialSignals,
+  summarizeSocialSignals,
+} from '@/lib/social/social-signals';
 
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 
@@ -90,7 +93,7 @@ async function getUpcomingEarnings(symbol: string, apiKey: string) {
     const items = data?.earningsCalendar;
     if (!Array.isArray(items) || items.length === 0) return null;
     const next = items[0];
-    return `âڑ ï¸ڈ ${symbol} ط¹ظ†ط¯ظ‡ط§ ط¥ط¹ظ„ط§ظ† ط£ط±ط¨ط§ط­ ظ…طھظˆظ‚ط¹ ط¨طھط§ط±ظٹط® ${next.date} (${next.hour === 'bmo' ? 'ظ‚ط¨ظ„ ط§ظ„ط§ظپطھطھط§ط­' : next.hour === 'amc' ? 'ط¨ط¹ط¯ ط§ظ„ط¥ط؛ظ„ط§ظ‚' : 'ظˆظ‚طھ ط؛ظٹط± ظ…ط­ط¯ط¯'}) - طھظˆظ‚ظ‘ط¹ طھظ‚ظ„ط¨ ط£ط¹ظ„ظ‰ ظ…ظ† ط§ظ„ظ…ط¹طھط§ط¯ ط­ظˆظ„ ظ‡ط°ط§ ط§ظ„طھط§ط±ظٹط®.`;
+    return `âڑ ï¸ڈ ${symbol} ط¹ظ†ط¯ظ‡ط§ ط¥ط¹ظ„ط§ظ† ط£ط±ط¨ط§ط­ ظ…طھظˆظ‚ط¹ ط¨طھط§ط±ظٹط® ${next.date} (${next.hour === 'bmo' ? 'ظ‚ط¨ظ„ ط§ظ„ط§ظپطھطھط§ط­' : next.hour === 'amc' ? 'ط¨ط¹ط¯ ط§ظ„ط¥ط؛ظ„ط§ظ‚' : 'ظˆظ‚طھ ط؛ظٹط± ظ…ط­ط¯ط¯'}) - طھظˆظ‚ظ‘ط¹ طھظ‚ظ„ط¨ ط£ط¹ظ„ظ‰ ظ…ظ† ط§ظ„ظ…ط¹طھط§ط¯ ط­ظˆظ„ ظ‡ط°ط§ ط§ظ„طھط§ط±ظٹط®.`;
   } catch (e: any) {
     console.error(`Finnhub earnings calendar fetch threw for ${symbol}: ${e?.message || e}`);
     return null;
@@ -296,7 +299,7 @@ const TOOLS = [
   {
     name: 'get_options_chain',
     description:
-      'ظٹط¬ظٹط¨ ط³ظ„ط³ظ„ط© ط®ظٹط§ط±ط§طھ ظƒط§ظ…ظ„ط© (Calls ظˆPuts) ظ„ط³ظ‡ظ… ظˆطھط§ط±ظٹط® ط§ط³طھط­ظ‚ط§ظ‚ ظ…ط¹ظٹظ†طŒ ظ…ط¹ ط§ظ„ط£ط³ط¹ط§ط± ظˆGreeks (Delta, Theta, Gamma, Vega, IV) ظˆطھظ‚ظٹظٹظ… ط¬ظˆط¯ط© ط§ظ„ط³ظٹظˆظ„ط© ظ„ظƒظ„ ط¹ظ‚ط¯ (ط³ط¨ط±ظٹط¯طŒ Open InterestطŒ ط§ظ„ط­ط¬ظ…). âڑ ï¸ڈ ط¨ظٹط§ظ†ط§طھ Sandbox ظ…طھط£ط®ط±ط© 15 ط¯ظ‚ظٹظ‚ط© - ظ„ظ„طھظ‚ظٹظٹظ… ظˆط§ظ„طھط¬ط±ط¨ط© ظپظ‚ط·طŒ ظ…ظˆ ظ„ظ‚ط±ط§ط± ط¯ط®ظˆظ„ ظ„ط­ط¸ظٹ. ظ„ط§ط²ظ… طھط³طھط®ط¯ظ… get_options_expirations ط£ظˆظ„ ظ„ظˆ ظ…ط§ ط¹ظ†ط¯ظƒ طھط§ط±ظٹط® ط§ط³طھط­ظ‚ط§ظ‚ ظ…ط­ط¯ط¯.',
+      'ظٹط¬ظٹط¨ ط³ظ„ط³ظ„ط© ط®ظٹط§ط±ط§طھ ظƒط§ظ…ظ„ط© (Calls ظˆPuts) ظ„ط³ظ‡ظ… ظˆطھط§ط±ظٹط® ط§ط³طھط­ظ‚ط§ظ‚ ظ…ط¹ظٹظ†طŒ ظ…ط¹ ط§ظ„ط£ط³ط¹ط§ط± ظˆGreeks (Delta, Theta, Gamma, Vega, IV) ظˆطھظ‚ظٹظٹظ… ط¬ظˆط¯ط© ط§ظ„ط³ظٹظˆظ„ط© ظ„ظƒظ„ ط¹ظ‚ط¯ (ط³ط¨ط±ظٹط¯طŒ Open InterestطŒ ط§ظ„ط­ط¬ظ…). âڑ ï¸ڈ ط¨ظٹط§ظ†ط§طھ Sandbox ظ…طھط£ط®ط±ط© 15 ط¯ظ‚ظٹظ‚ط© - ظ„ظ„طھظ‚ظٹظٹظ… ظˆط§ظ„طھط¬ط±ط¨ط© ظپظ‚ط·طŒ ظ…ظˆ ظ„ظ‚ط±ط§ط± ط¯ط®ظˆظ„ ظ„ط­ط¸ظٹ. ظ„ط§ط²ظ… طھط³طھط®ط¯ظ… get_options_expirations ط£ظˆظ„ ظ„ظˆ ظ…ط§ ط¹ظ†ط¯ظƒ طھط§ط±ظٹط® ط§ط³طھط­ظ‚ط§ظ‚ ظ…ط­ط¯ط¯.',
     input_schema: {
       type: 'object',
       properties: {
@@ -309,7 +312,7 @@ const TOOLS = [
   {
     name: 'get_volume_profile',
     description:
-      'ظٹط­ط³ط¨ Volume Profile ط§ظ„ظپط¹ظ„ظٹ ظ„ظ„ظٹظˆظ… ط§ظ„ط³ط§ط¨ظ‚ (VAHطŒ VALطŒ POC) ظ…ظ† ط¨ظٹط§ظ†ط§طھ طھط¯ط§ظˆظ„ ط­ظ‚ظٹظ‚ظٹط© ط¹ط¨ط± Massive.com. âڑ ï¸ڈ ظ„ظˆ ط³ط¨ظ‚ ظˆط§ط³طھط¯ط¹ظٹطھ get_technical_indicators ظ„ظ†ظپط³ ط§ظ„ط³ظ‡ظ… ظˆط±ط¬ط¹ supportResistance.source = "volume_profile"طŒ ظپظ‡ط°ظٹ ط§ظ„ط¨ظٹط§ظ†ط§طھ ظ…ظˆط¬ظˆط¯ط© ط¹ظ†ط¯ظƒ ظ…ط³ط¨ظ‚ط§ظ‹ - ظ„ط§ طھط³طھط¯ط¹ظگ ظ‡ط°ظٹ ط§ظ„ط£ط¯ط§ط© ظ…ط±ط© ط«ط§ظ†ظٹط© ط¥ظ„ط§ ظ„ظˆ ظٹط²ظٹط¯ ط³ط£ظ„ ط¹ظ† Volume Profile طµط±ط§ط­ط© ط£ظˆ ظƒط§ظ† ط§ظ„ظ…طµط¯ط± ط§ظ„ط³ط§ط¨ظ‚ "historical_range". ط§ط³طھط®ط¯ظ…ظ‡ط§ ط¥ظ„ط²ط§ظ…ظٹط§ظ‹ ظپظٹ ظ…ط±ط­ظ„ط© Zone ظ…ظ† ظ…ط­ط±ظƒ CZT ط¹ظ†ط¯ طھط­ط¯ظٹط¯ ظ…ظ†ط§ط·ظ‚ Previous Day VAH/VAL/POC ظ„ظˆ ظ…ط§ ط¹ظ†ط¯ظƒ ط¨ظٹط§ظ†ط§طھ ظ…ط³ط¨ظ‚ط©.',
+      'ظٹط­ط³ط¨ Volume Profile ط§ظ„ظپط¹ظ„ظٹ ظ„ظ„ظٹظˆظ… ط§ظ„ط³ط§ط¨ظ‚ (VAHطŒ VALطŒ POC) ظ…ظ† ط¨ظٹط§ظ†ط§طھ طھط¯ط§ظˆظ„ ط­ظ‚ظٹظ‚ظٹط© ط¹ط¨ط± Massive.com. âڑ ï¸ڈ ظ„ظˆ ط³ط¨ظ‚ ظˆط§ط³طھط¯ط¹ظٹطھ get_technical_indicators ظ„ظ†ظپط³ ط§ظ„ط³ظ‡ظ… ظˆط±ط¬ط¹ supportResistance.source = "volume_profile"طŒ ظپظ‡ط°ظٹ ط§ظ„ط¨ظٹط§ظ†ط§طھ ظ…ظˆط¬ظˆط¯ط© ط¹ظ†ط¯ظƒ ظ…ط³ط¨ظ‚ط§ظ‹ - ظ„ط§ طھط³طھط¯ط¹ظگ ظ‡ط°ظٹ ط§ظ„ط£ط¯ط§ط© ظ…ط±ط© ط«ط§ظ†ظٹط© ط¥ظ„ط§ ظ„ظˆ ظٹط²ظٹط¯ ط³ط£ظ„ ط¹ظ† Volume Profile طµط±ط§ط­ط© ط£ظˆ ظƒط§ظ† ط§ظ„ظ…طµط¯ط± ط§ظ„ط³ط§ط¨ظ‚ "historical_range". ط§ط³طھط®ط¯ظ…ظ‡ط§ ط¥ظ„ط²ط§ظ…ظٹط§ظ‹ ظپظٹ ظ…ط±ط­ظ„ط© Zone ظ…ظ† ظ…ط­ط±ظƒ CZT ط¹ظ†ط¯ طھط­ط¯ظٹط¯ ظ…ظ†ط§ط·ظ‚ Previous Day VAH/VAL/POC ظ„ظˆ ظ…ط§ ط¹ظ†ط¯ظƒ ط¨ظٹط§ظ†ط§طھ ظ…ط³ط¨ظ‚ط©.',
     input_schema: {
       type: 'object',
       properties: {
@@ -332,6 +335,41 @@ const TOOLS = [
           minimum: 1,
           maximum: 50,
           default: 10,
+        },
+      },
+    },
+  },
+
+
+  {
+    name: 'get_recent_social_signals',
+    description:
+      'يجلب آخر الإشارات الاجتماعية الموثوقة المحفوظة من Telegram أو منصة X. استخدمه عند تحليل SPX أو سهم أو عقد خيارات، وعند سؤال يزيد عن إشارات تيليجرام أو المزاج الاجتماعي. هذه الإشارات عامل تأكيد إضافي فقط، ولا تُستخدم وحدها كأمر دخول.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        symbol: {
+          type: 'string',
+          description: 'رمز الأصل مثل SPX أو NVDA. اختياري؛ إذا لم يُحدد يرجع آخر الإشارات لكل الرموز.',
+        },
+        platform: {
+          type: 'string',
+          enum: ['telegram', 'x'],
+          description: 'المنصة المطلوبة. اختياري.',
+        },
+        minutes: {
+          type: 'number',
+          minimum: 1,
+          maximum: 1440,
+          default: 180,
+          description: 'عدد الدقائق الماضية المطلوب البحث خلالها. الافتراضي 180 دقيقة.',
+        },
+        limit: {
+          type: 'number',
+          minimum: 1,
+          maximum: 100,
+          default: 20,
+          description: 'أقصى عدد من الإشارات.',
         },
       },
     },
@@ -797,6 +835,18 @@ export async function POST(req: NextRequest) {
       fullSystemPrompt += marketData;
     }
 
+    fullSystemPrompt += `
+
+# إشارات Telegram وX
+عند تحليل SPX أو سهم أو عقد خيارات مهم، استخدم أداة get_recent_social_signals لجلب الإشارات الحديثة المرتبطة بالرمز إن كانت متوفرة.
+قواعد الاستخدام:
+1. الإشارات الاجتماعية عامل تأكيد إضافي فقط، وليست سببًا منفردًا للدخول.
+2. اعرض عدد الإشارات الصاعدة والهابطة والمحايدة والانحياز الاجتماعي الناتج.
+3. إذا وافقت الإشارات الاجتماعية Market Score وStock Score وTrigger، اذكر أنها تدعم السيناريو، لكن لا ترفع الثقة بشكل مبالغ.
+4. إذا تعارضت، اذكر التعارض بوضوح ولا تتجاهله.
+5. إذا لم توجد إشارات حديثة، قل ذلك باختصار ولا تخترع بيانات.
+6. لا تعتبر رسالة يزيد في Telegram توصية مستقلة أو حقيقة سوقية؛ تعامل معها كمعلومة من مصدر موثوق تحتاج تأكيدًا فنيًا.`;
+
     const workingMessages: any[] = [
       ...conversationHistory.map((m: { role: string; content: string }) => ({
         role: m.role,
@@ -1058,6 +1108,70 @@ export async function POST(req: NextRequest) {
           } catch (e: any) {
             const output = { error: e.message || 'ظپط´ظ„ ط¬ظ„ط¨ ط¥ط´ط§ط±ط§طھ TradingView' };
             collectedToolResults.push({ name: 'get_recent_tv_signals', input: block.input, output });
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+              is_error: true,
+            });
+          }
+        } else if (block.name === 'get_recent_social_signals') {
+          try {
+            const symbol =
+              typeof block.input?.symbol === 'string' && block.input.symbol.trim()
+                ? block.input.symbol.trim().toUpperCase()
+                : undefined;
+
+            if (symbol && !/^[A-Z0-9][A-Z0-9.:-]{0,31}$/.test(symbol)) {
+              throw new Error('صيغة رمز الأصل غير صحيحة');
+            }
+
+            const platform =
+              block.input?.platform === 'telegram' || block.input?.platform === 'x'
+                ? block.input.platform
+                : undefined;
+
+            const requestedMinutes = Number(block.input?.minutes);
+            const minutes = Number.isFinite(requestedMinutes)
+              ? Math.min(1440, Math.max(1, Math.trunc(requestedMinutes)))
+              : 180;
+
+            const requestedLimit = Number(block.input?.limit);
+            const limit = Number.isFinite(requestedLimit)
+              ? Math.min(100, Math.max(1, Math.trunc(requestedLimit)))
+              : 20;
+
+            const signals = await getRecentSocialSignals({
+              symbol,
+              platform,
+              minutes,
+              limit,
+            });
+
+            const output = summarizeSocialSignals(signals);
+
+            collectedToolResults.push({
+              name: 'get_recent_social_signals',
+              input: block.input,
+              output,
+            });
+
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+            });
+          } catch (e: any) {
+            const output = {
+              error: e?.message || 'فشل جلب الإشارات الاجتماعية',
+            };
+
+            collectedToolResults.push({
+              name: 'get_recent_social_signals',
+              input: block.input,
+              output,
+            });
+
             toolResults.push({
               type: 'tool_result',
               tool_use_id: block.id,
