@@ -177,25 +177,26 @@ const SYMBOL_PATTERN = /^[A-Z][A-Z0-9.^:-]{0,19}$/;
 /**
  * الرموز التي نجربها في Twelve Data.
  *
- * عند طلب SPX:
- * 1. نحاول SPX
- * 2. ثم GSPC
- * 3. ثم ^GSPC
+ * ملاحظة مهمة: "SPX" ليس رمزاً معترفاً به لدى Twelve Data (يرجع 404 دائماً)،
+ * لذلك تم حذفه نهائياً من قائمة المحاولات لمؤشر S&P 500.
+ * الرمز الفعلي المدعوم هو GSPC أو ^GSPC فقط.
  *
- * أول رمز يعيد شموعاً صحيحة يتم اعتماده.
+ * عند طلب SPX:
+ * 1. نحاول GSPC
+ * 2. ثم ^GSPC
  */
 const TWELVE_DATA_SYMBOL_CANDIDATES: Record<string, string[]> = {
-  SPX: ['SPX', 'GSPC', '^GSPC'],
+  SPX: ['GSPC', '^GSPC'],
 
-  SPXW: ['SPX', 'GSPC', '^GSPC'],
+  SPXW: ['GSPC', '^GSPC'],
 
-  'SPX.X': ['SPX', 'GSPC', '^GSPC'],
+  'SPX.X': ['GSPC', '^GSPC'],
 
-  '$SPX': ['SPX', 'GSPC', '^GSPC'],
+  '$SPX': ['GSPC', '^GSPC'],
 
-  GSPC: ['GSPC', '^GSPC', 'SPX'],
+  GSPC: ['GSPC', '^GSPC'],
 
-  '^GSPC': ['^GSPC', 'GSPC', 'SPX'],
+  '^GSPC': ['^GSPC', 'GSPC'],
 };
 
 /**
@@ -217,6 +218,9 @@ const MASSIVE_SYMBOL_MAP: Record<string, string> = {
  *
  * SPXW ليس أصلاً مستقلاً للتحليل الفني؛
  * الأصل الأساسي لعقوده هو SPX.
+ *
+ * هذا التطبيع يُطبَّق أولاً وقبل بناء مفتاح الكاش،
+ * حتى لا تتكوّن مفاتيح مختلفة (SPX / SPXW / GSPC...) لنفس البيانات فعلياً.
  */
 function normalizeRequestedSymbol(symbol: string): string {
   const normalized = symbol.toUpperCase().trim();
@@ -492,6 +496,12 @@ function hasValidCandles(
   );
 }
 
+/**
+ * خطأ مخصص لتفرقة "توقف فوري" (rate limit / auth / server error)
+ * عن "جرّب alias التالي" (404 / رمز غير معروف).
+ */
+class NonRetryableProviderError extends Error {}
+
 async function fetchTwelveDataTimeSeries(
   requestedSymbol: string,
   interval: AllowedInterval,
@@ -542,7 +552,32 @@ async function fetchTwelveDataTimeSeries(
         }
       );
 
+      // 429 / 401 / 403 / 500+ = مشكلة عامة بالمفتاح أو بالخدمة نفسها.
+      // محاولة alias آخر بنفس اللحظة مضمونة تفشل بنفس الطريقة وتهدر محاولة إضافية.
+      // نوقف فوراً بدل ما نكمل الحلقة.
+      if (
+        response.status === 429 ||
+        response.status === 401 ||
+        response.status === 403 ||
+        response.status >= 500
+      ) {
+        if (response.status === 429) {
+          console.warn(
+            `[TwelveData] Rate limit hit for ${candidate} (${interval})`
+          );
+        } else {
+          console.warn(
+            `[TwelveData] Non-retryable error ${response.status} for ${candidate} (${interval})`
+          );
+        }
+
+        throw new NonRetryableProviderError(
+          `${candidate}: HTTP ${response.status} (توقف فوري، بدون تجربة alias آخر)`
+        );
+      }
+
       if (!response.ok) {
+        // مثال: 404 أو رمز غير معروف — هذي فقط الحالة اللي نسمح فيها بتجربة alias التالي
         errors.push(
           `${candidate}: HTTP ${response.status}`
         );
@@ -567,6 +602,10 @@ async function fetchTwelveDataTimeSeries(
         }`
       );
     } catch (error: unknown) {
+      if (error instanceof NonRetryableProviderError) {
+        throw error;
+      }
+
       const message =
         error instanceof Error
           ? error.message
@@ -585,6 +624,47 @@ async function fetchTwelveDataTimeSeries(
   );
 }
 
+/**
+ * كاش + دمج الطلبات المتزامنة (in-flight promise deduplication).
+ *
+ * لماذا هذا ضروري: live-market-context يستدعي getTechnicalIndicators
+ * بشكل مستقل من عدة مسارات (technical, market -> getMarketDecision, stock -> getStockDecision)
+ * خلال نفس الطلب الواحد تقريباً في نفس اللحظة. بدون هذا الكاش، كل مسار
+ * يطلق نداء API منفصل لنفس الرمز/الفريم، فيستهلك حد الطلبات بسرعة
+ * قبل ما توصل محاولات الـ fallback (GSPC / ^GSPC).
+ *
+ * التخزين المؤقت يشمل النتيجة سواء نجحت أو رجعت {error}،
+ * لأن تخزين الخطأ لمدة قصيرة مفيد بالذات في حالة 429:
+ * يمنع الطلبات المتوازية الثانية من ضرب Twelve Data مرة ثانية فوراً.
+ */
+type IndicatorCacheEntry = {
+  expiresAt: number;
+  promise: Promise<TechnicalIndicatorsResult | { error: string }>;
+};
+
+const indicatorCache = new Map<string, IndicatorCacheEntry>();
+const INDICATOR_CACHE_TTL_MS = 30_000;
+const INDICATOR_CACHE_MAX_SIZE = 100;
+
+/**
+ * تنظيف انتهازي (Opportunistic Cleanup)، مناسب لبيئة Serverless.
+ *
+ * setInterval غير مجدٍ هنا لأن الـ instance في Vercel قد يموت بين طلب وآخر،
+ * فيُستدعى هذا التنظيف مباشرة بعد كل .set() بدل الاعتماد على مؤقّت خلفي.
+ * لا يفعل شيئاً طالما حجم الكاش صغير ومعقول (عدد الأصول محدود: SPX, SPY, QQQ...).
+ */
+function cleanupIndicatorCache() {
+  if (indicatorCache.size <= INDICATOR_CACHE_MAX_SIZE) return;
+
+  const now = Date.now();
+
+  for (const [key, entry] of indicatorCache) {
+    if (entry.expiresAt <= now) {
+      indicatorCache.delete(key);
+    }
+  }
+}
+
 export async function getTechnicalIndicators(
   symbol: string,
   timeframe = '1day'
@@ -593,11 +673,7 @@ export async function getTechnicalIndicators(
     error: string;
   }
 > {
-  const rawSymbol =
-    symbol.toUpperCase().trim();
-
-  const sym =
-    normalizeRequestedSymbol(rawSymbol);
+  const rawSymbol = symbol.toUpperCase().trim();
 
   if (!rawSymbol) {
     return {
@@ -605,25 +681,58 @@ export async function getTechnicalIndicators(
     };
   }
 
-  if (
-    !SYMBOL_PATTERN.test(rawSymbol)
-  ) {
+  if (!SYMBOL_PATTERN.test(rawSymbol)) {
     return {
       error:
         'صيغة الرمز غير صحيحة. استخدم رمزاً مثل AAPL أو SPY أو SPX أو BRK.B.',
     };
   }
 
-  const interval =
-    normalizeInterval(timeframe);
+  // التطبيع يتم هنا، قبل بناء مفتاح الكاش،
+  // حتى تدخل SPX / SPXW / SPX.X / $SPX / GSPC / ^GSPC كلها تحت مفتاح واحد: SPX
+  const normalizedSymbol = normalizeRequestedSymbol(rawSymbol);
 
-  if (!interval) {
+  const normalizedTimeframe = normalizeInterval(timeframe);
+
+  if (!normalizedTimeframe) {
     return {
       error:
         'الفريم غير مدعوم. الفريمات المسموحة: 1min، 5min، 15min، 30min، 45min، 1h، 2h، 4h، 1day، 1week.',
     };
   }
 
+  const cacheKey = `${normalizedSymbol}:${normalizedTimeframe}`;
+  const now = Date.now();
+
+  const cached = indicatorCache.get(cacheKey);
+
+  if (cached && cached.expiresAt > now) {
+    return cached.promise;
+  }
+
+  const promise = getTechnicalIndicatorsUncached(
+    normalizedSymbol,
+    normalizedTimeframe
+  );
+
+  indicatorCache.set(cacheKey, {
+    expiresAt: now + INDICATOR_CACHE_TTL_MS,
+    promise,
+  });
+
+  cleanupIndicatorCache();
+
+  return promise;
+}
+
+async function getTechnicalIndicatorsUncached(
+  sym: string,
+  interval: AllowedInterval
+): Promise<
+  TechnicalIndicatorsResult | {
+    error: string;
+  }
+> {
   if (!TWELVE_DATA_TOKEN) {
     return {
       error:
