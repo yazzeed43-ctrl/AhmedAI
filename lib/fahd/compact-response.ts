@@ -66,10 +66,10 @@ type SocialSummaryOutput = {
 };
 
 const DETAILED_MODE_PHRASES = [
-  'طھط­ظ„ظٹظ„ ظƒط§ظ…ظ„',
-  'طھط­ظ„ظٹظ„ ظ…ظپطµظ„',
-  'طھظ‚ط±ظٹط± ظƒط§ظ…ظ„',
-  'ط¨ط§ظ„طھظپطµظٹظ„',
+  'تحليل كامل',
+  'تحليل مفصل',
+  'تقرير كامل',
+  'بالتفصيل',
 ];
 
 export function isDetailedRequestMode(userMessage: string): boolean {
@@ -253,9 +253,9 @@ const TRADE_DECISION_TO_COMPACT: Record<
 };
 
 const DIRECTION_LABELS = {
-  CALL: 'طµط§ط¹ط¯',
-  PUT: 'ظ‡ط§ط¨ط·',
-  NEUTRAL: 'ظ…ط­ط§ظٹط¯',
+  CALL: 'صاعد',
+  PUT: 'هابط',
+  NEUTRAL: 'محايد',
 } as const;
 
 function uniqueFiniteLevels(
@@ -289,8 +289,8 @@ function buildTradeCriticalLevels(
     { label: 'VAL', value: stock.val },
     { label: 'POC', value: stock.poc },
     { label: 'VAH', value: stock.vah },
-    { label: 'ط¯ط¹ظ…', value: stock.support },
-    { label: 'ظ…ظ‚ط§ظˆظ…ط©', value: stock.resistance },
+    { label: 'دعم', value: stock.support },
+    { label: 'مقاومة', value: stock.resistance },
   ]);
 }
 
@@ -298,7 +298,7 @@ function buildTradeSocialBias(
   context: SociallyAdjustedTradeReport['socialIntelligence']
 ): string {
   if (context.totalSignals === 0) {
-    return 'ظ„ط§ طھظˆط¬ط¯ ط¥ط´ط§ط±ط§طھ ط§ط¬طھظ…ط§ط¹ظٹط© ط­ط¯ظٹط«ط©';
+    return 'لا توجد إشارات اجتماعية حديثة';
   }
 
   const maxCount = Math.max(
@@ -310,12 +310,12 @@ function buildTradeSocialBias(
   const dominant =
     context.neutralCount === maxCount ||
     context.bullishCount === context.bearishCount
-      ? 'ظ…ط­ط§ظٹط¯'
+      ? 'محايد'
       : context.bullishCount === maxCount
-        ? 'ط¥ظٹط¬ط§ط¨ظٹ'
-        : 'ط³ظ„ط¨ظٹ';
+        ? 'إيجابي'
+        : 'سلبي';
 
-  return `${dominant} (${context.bullishCount} طµط§ط¹ط¯ / ${context.bearishCount} ظ‡ط§ط¨ط· / ${context.neutralCount} ظ…ط­ط§ظٹط¯)`;
+  return `${dominant} (${context.bullishCount} صاعد / ${context.bearishCount} هابط / ${context.neutralCount} محايد)`;
 }
 
 function buildTradeNextAction(
@@ -325,30 +325,30 @@ function buildTradeNextAction(
 
   if (social.forcedWait) {
     return social.pendingHighImpactCount > 0
-      ? 'ط§ظ†طھط¸ط± ط§طھط¶ط§ط­ ظ†طھظٹط¬ط© ط§ظ„ط­ط¯ط« ظ…ط±طھظپط¹ ط§ظ„طھط£ط«ظٹط± ط«ظ… ط£ط¹ط¯ ط§ظ„طھط­ظ„ظٹظ„'
-      : 'ظ„ط§ طھط¯ط®ظ„ ط§ظ„ط¢ظ† ط¨ط³ط¨ط¨ طھط¹ط§ط±ط¶ ط§ظ„ط­ط¯ط« ظ…ط±طھظپط¹ ط§ظ„طھط£ط«ظٹط± ظ…ط¹ ط§طھط¬ط§ظ‡ ط§ظ„طµظپظ‚ط©';
+      ? 'انتظر اتضاح نتيجة الحدث مرتفع التأثير ثم أعد التحليل'
+      : 'لا تدخل الآن بسبب تعارض الحدث مرتفع التأثير مع اتجاه الصفقة';
   }
 
   if (report.decision === 'REJECT_CONTRACT') {
-    return 'ظ„ط§ طھط¯ط®ظ„ â€” ط§ظ„ط¹ظ‚ط¯ ظ…ط±ظپظˆط¶ ط­ط³ط¨ ظ…ط¹ط§ظٹظٹط± ط§ظ„ط¬ظˆط¯ط© ظˆط§ظ„ط³ظٹظˆظ„ط©';
+    return 'لا تدخل — العقد مرفوض حسب معايير الجودة والسيولة';
   }
 
   if (report.trigger === 'FAILED') {
-    return 'ط§ظ„طھظپط¹ظٹظ„ ظپط´ظ„ â€” ظ„ط§ طھط¯ط®ظ„ ط¹ظ„ظ‰ ظ‡ط°ط§ ط§ظ„ط¥ط¹ط¯ط§ط¯ ط­ط§ظ„ظٹظ‹ط§';
+    return 'التفعيل فشل — لا تدخل على هذا الإعداد حاليًا';
   }
 
   if (report.trigger === 'WAITING') {
-    return 'ط§ظ†طھط¸ط± طھط£ظƒظٹط¯ ط§ظ„ط´ظ…ط¹ط© ظ‚ط¨ظ„ ط§ظ„ط¯ط®ظˆظ„';
+    return 'انتظر تأكيد الشمعة قبل الدخول';
   }
 
   if (
     report.decision === 'BUY_CALL' ||
     report.decision === 'BUY_PUT'
   ) {
-    return 'ط§ظ„طھظپط¹ظٹظ„ ظ…ط¤ظƒط¯ â€” ط§ظ„طھط²ظ… ط¨ط¥ط¯ط§ط±ط© ط§ظ„ظ…ط®ط§ط·ط± ط§ظ„ظ…ط­ط¯ط¯ط©';
+    return 'التفعيل مؤكد — التزم بإدارة المخاطر المحددة';
   }
 
-  return 'ط±ط§ظ‚ط¨ ط§ظ„ط³ظ‡ظ… ظˆط§ظ†طھط¸ط± طھط£ظƒظٹط¯ظ‹ط§ ط£ظˆط¶ط­';
+  return 'راقب السهم وانتظر تأكيدًا أوضح';
 }
 
 function mapAnalyzeTrade(
@@ -364,10 +364,10 @@ function mapAnalyzeTrade(
     reasons:
       report.reasons.length > 0
         ? report.reasons.slice(0, 4)
-        : ['ظ„ط§ طھطھظˆظپط± ط£ط³ط¨ط§ط¨ ظ…ظپطµظ„ط© ظ…ظ† ظ…ط­ط±ظƒ ط§ظ„طµظپظ‚ط©'],
+        : ['لا تتوفر أسباب مفصلة من محرك الصفقة'],
     technicalBias:
-      `ط§ظ„ط³ظ‡ظ… ${DIRECTION_LABELS[report.directions.stock]} ` +
-      `ظˆط§ظ„ط³ظˆظ‚ ${DIRECTION_LABELS[report.directions.market]}`,
+      `السهم ${DIRECTION_LABELS[report.directions.stock]} ` +
+      `والسوق ${DIRECTION_LABELS[report.directions.market]}`,
     socialBias: buildTradeSocialBias(report.socialIntelligence),
     conflict: report.socialIntelligence.conflict,
     criticalLevels: buildTradeCriticalLevels(input),
@@ -393,22 +393,22 @@ function stockReasons(stock: StockDecisionOutput): string[] {
 
   return reasons.length > 0
     ? [...new Set(reasons)].slice(0, 4)
-    : ['ظ„ط§ ظٹظˆط¬ط¯ Trigger ظ…ط¤ظƒط¯ ظ„ظ„ط¯ط®ظˆظ„ ط­ط§ظ„ظٹظ‹ط§'];
+    : ['لا يوجد Trigger مؤكد للدخول حاليًا'];
 }
 
 function stockTechnicalBias(stock: StockDecisionOutput): string {
   const label =
     stock.bias === 'CALL_BIAS'
-      ? 'طµط§ط¹ط¯'
+      ? 'صاعد'
       : stock.bias === 'PUT_BIAS'
-        ? 'ظ‡ط§ط¨ط·'
-        : 'ظ…ط­ط§ظٹط¯';
+        ? 'هابط'
+        : 'محايد';
 
   const marketBias = stock.marketContext?.marketBias;
 
   return marketBias
-    ? `ط§ظ„ط³ظ‡ظ… ${label} ظˆط§ظ„ط³ظˆظ‚ ${marketBias}`
-    : `ط§ظ„ط³ظ‡ظ… ${label}`;
+    ? `السهم ${label} والسوق ${marketBias}`
+    : `السهم ${label}`;
 }
 
 function stockCriticalLevels(stock: StockDecisionOutput): string[] {
@@ -416,8 +416,8 @@ function stockCriticalLevels(stock: StockDecisionOutput): string[] {
     { label: 'VAL', value: stock.levels.val },
     { label: 'POC', value: stock.levels.poc },
     { label: 'VAH', value: stock.levels.vah },
-    { label: 'ط¯ط¹ظ…', value: stock.levels.support },
-    { label: 'ظ…ظ‚ط§ظˆظ…ط©', value: stock.levels.resistance },
+    { label: 'دعم', value: stock.levels.support },
+    { label: 'مقاومة', value: stock.levels.resistance },
   ]);
 }
 
@@ -425,17 +425,17 @@ function socialBiasLabel(
   social: SocialSummaryOutput | undefined
 ): string {
   if (!social || social.total === 0) {
-    return 'ظ„ط§ طھظˆط¬ط¯ ط¥ط´ط§ط±ط§طھ ط§ط¬طھظ…ط§ط¹ظٹط© ط­ط¯ظٹط«ط©';
+    return 'لا توجد إشارات اجتماعية حديثة';
   }
 
   const label =
     social.bias === 'BULLISH'
-      ? 'ط¥ظٹط¬ط§ط¨ظٹ'
+      ? 'إيجابي'
       : social.bias === 'BEARISH'
-        ? 'ط³ظ„ط¨ظٹ'
-        : 'ظ…ط­ط§ظٹط¯';
+        ? 'سلبي'
+        : 'محايد';
 
-  return `${label} (${social.bullish} طµط§ط¹ط¯ / ${social.bearish} ظ‡ط§ط¨ط· / ${social.neutral} ظ…ط­ط§ظٹط¯)`;
+  return `${label} (${social.bullish} صاعد / ${social.bearish} هابط / ${social.neutral} محايد)`;
 }
 
 function hasStockSocialConflict(
@@ -458,7 +458,7 @@ function mapStockDecision(
   const highImpact = (social?.highImpactCount ?? 0) > 0;
 
   const socialReason = highImpact
-    ? 'طھظˆط¬ط¯ ط¥ط´ط§ط±ط© ط§ط¬طھظ…ط§ط¹ظٹط© ظ…ط±طھظپط¹ط© ط§ظ„طھط£ط«ظٹط± ظˆطھط­طھط§ط¬ طھط£ظƒظٹط¯ظ‹ط§ ظ‚ط¨ظ„ ط§ظ„ط¯ط®ظˆظ„'
+    ? 'توجد إشارة اجتماعية مرتفعة التأثير وتحتاج تأكيدًا قبل الدخول'
     : null;
 
   const reasons = stockReasons(stock);
@@ -469,13 +469,13 @@ function mapStockDecision(
 
   const nextAction =
     highImpact
-      ? 'ط§ظ†طھط¸ط± طھط£ظƒظٹط¯ ط§ظ„ط­ط¯ط« ظˆTrigger ط§ظ„ط³ظ‡ظ… ظ‚ط¨ظ„ ط£ظٹ ط¯ط®ظˆظ„'
+      ? 'انتظر تأكيد الحدث وTrigger السهم قبل أي دخول'
       : stock.trigger[0] ??
-        'ط§ظ†طھط¸ط± Trigger ظپظ†ظٹ ظˆط§ط¶ط­ ظ‚ط¨ظ„ ط§ظ„ط¯ط®ظˆظ„';
+        'انتظر Trigger فني واضح قبل الدخول';
 
   return {
     symbol: stock.symbol,
-    // get_stock_decision ظٹط¹ظٹط¯ ط§ظ†ط­ظٹط§ط²ظ‹ط§ ظپظ‚ط· ظˆظٹط´طھط±ط· Triggerط› ظ„ط°ظ„ظƒ ط§ظ„ظ‚ط±ط§ط± ط§ظ„طھظ†ظپظٹط°ظٹ WAIT.
+    // get_stock_decision يعيد انحيازًا فقط ويشترط Trigger؛ لذلك القرار التنفيذي WAIT.
     decision: 'WAIT',
     confidence: Math.round(stock.confidence),
     reasons: reasons.slice(0, 4),
@@ -545,7 +545,7 @@ function enforceWordLimit(
 
   const words = text.trim().split(/\s+/).filter(Boolean);
 
-  return `${words.slice(0, maxWords).join(' ')}â€¦`;
+  return `${words.slice(0, maxWords).join(' ')}…`;
 }
 
 export function formatCompactResponse(
@@ -559,22 +559,22 @@ export function formatCompactResponse(
   const levels =
     data.criticalLevels.length > 0
       ? data.criticalLevels.join(' / ')
-      : 'ط؛ظٹط± ظ…ط­ط¯ط¯';
+      : 'غير محدد';
 
   const response = [
-    `ًںڑ¦ ${data.symbol} â€” ط§ظ„ظ‚ط±ط§ط± ط§ظ„ظ†ظ‡ط§ط¦ظٹ`,
+    `🚦 ${data.symbol} — القرار النهائي`,
     '',
-    `ط§ظ„ظ‚ط±ط§ط±: ${data.decision}`,
-    `ط§ظ„ط«ظ‚ط© ط§ظ„ظ†ظ‡ط§ط¦ظٹط©: ${data.confidence}%`,
+    `القرار: ${data.decision}`,
+    `الثقة النهائية: ${data.confidence}%`,
     '',
-    'ط§ظ„ط£ط³ط¨ط§ط¨:',
+    'الأسباب:',
     reasons,
     '',
-    `ط§ظ„ط§ظ†ط­ظٹط§ط² ط§ظ„ظپظ†ظٹ: ${data.technicalBias}`,
-    `ط§ظ„ط§ظ†ط­ظٹط§ط² ط§ظ„ط§ط¬طھظ…ط§ط¹ظٹ: ${data.socialBias}`,
-    `ط§ظ„طھط¹ط§ط±ط¶: ${data.conflict ? 'ظ†ط¹ظ…' : 'ظ„ط§'}`,
-    `ط§ظ„ظ…ط³طھظˆظ‰ ط§ظ„ط­ط§ط³ظ…: ${levels}`,
-    `ط§ظ„ط®ط·ط©: ${data.nextAction}`,
+    `الانحياز الفني: ${data.technicalBias}`,
+    `الانحياز الاجتماعي: ${data.socialBias}`,
+    `التعارض: ${data.conflict ? 'نعم' : 'لا'}`,
+    `المستوى الحاسم: ${levels}`,
+    `الخطة: ${data.nextAction}`,
   ].join('\n');
 
   return enforceWordLimit(
@@ -603,7 +603,7 @@ export function buildFahdResponse(params: {
   );
 
   if (!compact) {
-    // ط§ظ„ط·ظ„ط¨ط§طھ ط؛ظٹط± ط§ظ„طھط­ظ„ظٹظ„ظٹط© طھط¨ظ‚ظ‰ ط¨ط±ط¯ Claude ط§ظ„ط·ط¨ظٹط¹ظٹ ط¨ط¯ظ„ ط±ط³ط§ظ„ط© ظپط´ظ„ ظ…ط²ط¹ط¬ط©.
+    // الطلبات غير التحليلية تبقى برد Claude الطبيعي بدل رسالة فشل مزعجة.
     return assistantText;
   }
 
