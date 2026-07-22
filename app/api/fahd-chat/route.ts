@@ -1,4 +1,4 @@
-﻿import { NextRequest, NextResponse } from 'next/server';import { supabase } from '@/lib/supabase';
+import { NextRequest, NextResponse } from 'next/server';import { supabase } from '@/lib/supabase';
 import { FAHD_SYSTEM_PROMPT } from '@/lib/fahd-system-prompt';
 import { executeBacktest } from '@/lib/run-backtest';
 import {
@@ -22,6 +22,9 @@ import {
   getRecentSocialSignals,
   summarizeSocialSignals,
 } from '@/lib/social/social-signals';
+import {
+  applySocialIntelligenceToTradeReport,
+} from '@/lib/social/social-decision-context';
 
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 
@@ -1283,7 +1286,15 @@ export async function POST(req: NextRequest) {
               },
             };
 
-            const output = runTradeEngine(normalizedInput);
+            const baseOutput = runTradeEngine(normalizedInput);
+            const output =
+              await applySocialIntelligenceToTradeReport(
+                baseOutput,
+                {
+                  minutes: 1440,
+                  limit: 50,
+                }
+              );
 
             collectedToolResults.push({
               name: 'analyze_trade',
