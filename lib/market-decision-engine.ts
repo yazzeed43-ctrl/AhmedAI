@@ -2,106 +2,224 @@ import { getTechnicalIndicators } from '@/lib/market-indicators';
 import { getTradierQuote } from '@/lib/tradier';
 
 type Timeframe = '15min' | '1h' | '1day';
-type Bias = 'CALL_BIAS' | 'PUT_BIAS' | 'WAIT';
-type MarketSymbol = 'SPX' | 'SPY' | 'QQQ';
+
+type Bias =
+  | 'CALL_BIAS'
+  | 'PUT_BIAS'
+  | 'WAIT';
+
+type MarketSymbol =
+  | 'SPX'
+  | 'SPY'
+  | 'QQQ';
 
 function num(value: unknown): number | null {
   const n = Number(value);
-  return Number.isFinite(n) ? n : null;
+
+  return Number.isFinite(n)
+    ? n
+    : null;
 }
 
-function clamp(value: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, value));
+function clamp(
+  value: number,
+  min: number,
+  max: number
+) {
+  return Math.max(
+    min,
+    Math.min(max, value)
+  );
+}
+
+function hasTechnicalError(
+  data: unknown
+): data is { error: string } {
+  return Boolean(
+    data &&
+      typeof data === 'object' &&
+      'error' in data
+  );
 }
 
 function readRsi(data: any) {
-  return num(data?.rsi?.value) ?? num(data?.rsi);
+  return (
+    num(data?.rsi?.value) ??
+    num(data?.rsi)
+  );
 }
 
 function readMacdHistogram(data: any) {
-  return num(data?.macd?.histogram);
+  return num(
+    data?.macd?.histogram
+  );
 }
 
-function readPreviousMacdHistogram(data: any) {
+function readPreviousMacdHistogram(
+  data: any
+) {
   return (
-    num(data?.macd?.previousHistogram) ??
-    num(data?.macd?.previous_histogram)
+    num(
+      data?.macd
+        ?.previousHistogram
+    ) ??
+    num(
+      data?.macd
+        ?.previous_histogram
+    )
   );
 }
 
 function readLevels(data: any) {
-  const sr = data?.supportResistance || {};
+  const sr =
+    data?.supportResistance || {};
 
   return {
-    source: sr.source || 'unknown',
-    val: num(sr.val) ?? num(sr.support),
-    poc: num(sr.poc),
-    vah: num(sr.vah) ?? num(sr.resistance),
+    source:
+      sr.source || 'unknown',
+
+    val:
+      num(sr.val) ??
+      num(sr.support),
+
+    poc:
+      num(sr.poc),
+
+    vah:
+      num(sr.vah) ??
+      num(sr.resistance),
   };
 }
 
-function scoreRsi(rsi: number | null) {
-  if (rsi === null) return 0;
-  if (rsi >= 60) return 5;
-  if (rsi >= 52) return 3;
-  if (rsi <= 40) return -5;
-  if (rsi <= 48) return -3;
+function scoreRsi(
+  rsi: number | null
+) {
+  if (rsi === null) {
+    return 0;
+  }
+
+  if (rsi >= 60) {
+    return 5;
+  }
+
+  if (rsi >= 52) {
+    return 3;
+  }
+
+  if (rsi <= 40) {
+    return -5;
+  }
+
+  if (rsi <= 48) {
+    return -3;
+  }
+
   return 0;
 }
 
-function scoreMacd(current: number | null, previous: number | null) {
+function scoreMacd(
+  current: number | null,
+  previous: number | null
+) {
   let score = 0;
+
   const reasons: string[] = [];
 
   if (current !== null) {
     if (current > 0) {
       score += 4;
-      reasons.push('MACD Histogram موجب');
+
+      reasons.push(
+        'MACD Histogram موجب'
+      );
     } else if (current < 0) {
       score -= 4;
-      reasons.push('MACD Histogram سالب');
-    }
-  }
 
-  if (current !== null && previous !== null) {
-    if (current > previous) {
-      score += 3;
-      reasons.push('زخم MACD يتحسن مقارنة بالشمعة السابقة');
-    } else if (current < previous) {
-      score -= 3;
-      reasons.push('زخم MACD يضعف مقارنة بالشمعة السابقة');
+      reasons.push(
+        'MACD Histogram سالب'
+      );
     }
   } else {
-    reasons.push('مقارنة MACD مع الشمعة السابقة غير متوفرة');
+    reasons.push(
+      'MACD Histogram غير متوفر'
+    );
   }
 
-  return { score, reasons };
+  if (
+    current !== null &&
+    previous !== null
+  ) {
+    if (current > previous) {
+      score += 3;
+
+      reasons.push(
+        'زخم MACD يتحسن مقارنة بالشمعة السابقة'
+      );
+    } else if (
+      current < previous
+    ) {
+      score -= 3;
+
+      reasons.push(
+        'زخم MACD يضعف مقارنة بالشمعة السابقة'
+      );
+    } else {
+      reasons.push(
+        'زخم MACD ثابت مقارنة بالشمعة السابقة'
+      );
+    }
+  } else {
+    reasons.push(
+      'مقارنة MACD مع الشمعة السابقة غير متوفرة'
+    );
+  }
+
+  return {
+    score,
+    reasons,
+  };
 }
 
 function scoreZones(
   price: number | null,
-  levels: ReturnType<typeof readLevels>
+  levels: ReturnType<
+    typeof readLevels
+  >
 ) {
   let score = 0;
+
   const reasons: string[] = [];
 
   if (price === null) {
     return {
       score,
-      reasons: ['السعر غير متوفر'],
+      reasons: [
+        'السعر غير متوفر',
+      ],
     };
   }
 
-  if (levels.source !== 'volume_profile') {
+  if (
+    levels.source !==
+    'volume_profile'
+  ) {
     return {
       score,
-      reasons: ['Volume Profile غير مؤكد، لذلك وزن المناطق منخفض'],
+      reasons: [
+        'Volume Profile غير مؤكد، لذلك وزن المناطق منخفض',
+      ],
     };
   }
 
-  if (levels.vah !== null && price > levels.vah) {
+  if (
+    levels.vah !== null &&
+    price > levels.vah
+  ) {
     score += 8;
-    reasons.push(`السعر يتداول فوق VAH ${levels.vah}`);
+
+    reasons.push(
+      `السعر يتداول فوق VAH ${levels.vah}`
+    );
   } else if (
     levels.poc !== null &&
     levels.vah !== null &&
@@ -109,7 +227,10 @@ function scoreZones(
     price <= levels.vah
   ) {
     score += 2;
-    reasons.push('السعر بين POC وVAH');
+
+    reasons.push(
+      'السعر بين POC وVAH'
+    );
   } else if (
     levels.val !== null &&
     levels.poc !== null &&
@@ -117,22 +238,51 @@ function scoreZones(
     price < levels.poc
   ) {
     score -= 2;
-    reasons.push('السعر بين VAL وPOC');
-  } else if (levels.val !== null && price < levels.val) {
+
+    reasons.push(
+      'السعر بين VAL وPOC'
+    );
+  } else if (
+    levels.val !== null &&
+    price < levels.val
+  ) {
     score -= 8;
-    reasons.push(`السعر يتداول تحت VAL ${levels.val}`);
+
+    reasons.push(
+      `السعر يتداول تحت VAL ${levels.val}`
+    );
   }
 
   if (levels.poc !== null) {
-    if (price > levels.poc) score += 3;
-    if (price < levels.poc) score -= 3;
+    if (price > levels.poc) {
+      score += 3;
+    }
+
+    if (price < levels.poc) {
+      score -= 3;
+    }
   }
 
-  return { score, reasons };
+  return {
+    score,
+    reasons,
+  };
 }
 
-function scoreDataRisk(data: any) {
-  const freshness = data?.dataStatus?.freshness;
+function scoreDataRisk(
+  data: any,
+  technicalError: string | null
+) {
+  if (technicalError) {
+    return {
+      score: -10,
+      reason:
+        'فشل جلب البيانات الفنية',
+    };
+  }
+
+  const freshness =
+    data?.dataStatus?.freshness;
 
   if (freshness === 'stale') {
     return {
@@ -141,17 +291,34 @@ function scoreDataRisk(data: any) {
     };
   }
 
-  if (freshness === 'delayed') {
+  if (
+    freshness === 'delayed'
+  ) {
     return {
       score: -3,
-      reason: 'البيانات متأخرة',
+      reason:
+        'البيانات متأخرة',
     };
   }
 
-  if (!freshness) {
+  if (
+    freshness === 'historical'
+  ) {
     return {
-      score: -1,
-      reason: 'حداثة البيانات غير مؤكدة',
+      score: -4,
+      reason:
+        'البيانات تاريخية وليست لحظية',
+    };
+  }
+
+  if (
+    freshness === 'unknown' ||
+    !freshness
+  ) {
+    return {
+      score: -2,
+      reason:
+        'حداثة البيانات غير مؤكدة',
     };
   }
 
@@ -165,33 +332,87 @@ async function analyzeSymbol(
   symbol: MarketSymbol,
   timeframe: Timeframe
 ) {
-  const [indicators, quote] = await Promise.all([
-    getTechnicalIndicators(symbol, timeframe),
+  const [
+    indicatorsResult,
+    quote,
+  ] = await Promise.all([
+    getTechnicalIndicators(
+      symbol,
+      timeframe
+    ),
     getTradierQuote(symbol),
   ]);
 
+  const technicalError =
+    hasTechnicalError(
+      indicatorsResult
+    )
+      ? String(
+          indicatorsResult.error
+        )
+      : null;
+
+  const indicators =
+    technicalError === null
+      ? indicatorsResult
+      : null;
+
+  const quoteError =
+    quote &&
+    typeof quote === 'object' &&
+    'error' in quote
+      ? String(
+          (quote as any).error
+        )
+      : null;
+
   const price =
-    num(quote?.last) ??
-    num(quote?.close);
+    num((quote as any)?.last) ??
+    num((quote as any)?.close) ??
+    num(
+      (indicators as any)
+        ?.lastPrice
+    );
 
-  const rsi = readRsi(indicators);
-  const macdCurrent = readMacdHistogram(indicators);
-  const macdPrevious = readPreviousMacdHistogram(indicators);
-  const levels = readLevels(indicators);
+  const rsi =
+    readRsi(indicators);
 
-  const trend = clamp(scoreRsi(rsi), -10, 10);
+  const macdCurrent =
+    readMacdHistogram(
+      indicators
+    );
 
-  const macd = scoreMacd(
-    macdCurrent,
-    macdPrevious
+  const macdPrevious =
+    readPreviousMacdHistogram(
+      indicators
+    );
+
+  const levels =
+    readLevels(indicators);
+
+  const trend = clamp(
+    scoreRsi(rsi),
+    -10,
+    10
   );
 
-  const momentum = clamp(macd.score, -10, 10);
+  const macd =
+    scoreMacd(
+      macdCurrent,
+      macdPrevious
+    );
 
-  const zoneResult = scoreZones(
-    price,
-    levels
+  const momentum = clamp(
+    macd.score,
+    -10,
+    10
   );
+
+  const zoneResult =
+    scoreZones(
+      price,
+      levels
+    );
 
   const zones = clamp(
     zoneResult.score,
@@ -199,7 +420,11 @@ async function analyzeSymbol(
     10
   );
 
-  const riskResult = scoreDataRisk(indicators);
+  const riskResult =
+    scoreDataRisk(
+      indicators,
+      technicalError
+    );
 
   const risk = clamp(
     riskResult.score,
@@ -207,38 +432,108 @@ async function analyzeSymbol(
     0
   );
 
+  const technicalDataAvailable =
+    technicalError === null;
+
+  const quoteAvailable =
+    price !== null;
+
   return {
     symbol,
+
     price,
-    score: trend + momentum + zones + risk,
+
+    technicalDataAvailable,
+
+    quoteAvailable,
+
+    technicalError,
+
+    quoteError,
+
+    providerSymbol:
+      (indicators as any)
+        ?.providerSymbol ??
+      null,
+
+    volumeProfileSymbol:
+      (indicators as any)
+        ?.volumeProfileSymbol ??
+      null,
+
+    dataStatus:
+      (indicators as any)
+        ?.dataStatus ??
+      null,
+
+    score:
+      trend +
+      momentum +
+      zones +
+      risk,
+
     components: {
       trend,
       momentum,
       zones,
       risk,
     },
+
     indicators: {
       rsi,
-      macdHistogram: macdCurrent,
-      previousMacdHistogram: macdPrevious,
+
+      macdHistogram:
+        macdCurrent,
+
+      previousMacdHistogram:
+        macdPrevious,
     },
+
     levels,
+
     reasons: [
+      ...(technicalError
+        ? [
+            `فشل جلب مؤشرات ${symbol}: ${technicalError}`,
+          ]
+        : []),
+
+      ...(quoteError
+        ? [
+            `فشل جلب سعر ${symbol}: ${quoteError}`,
+          ]
+        : []),
+
       rsi !== null
         ? `RSI ${rsi.toFixed(1)}`
         : 'RSI غير متوفر',
+
       ...macd.reasons,
+
       ...zoneResult.reasons,
+
       ...(riskResult.reason
-        ? [riskResult.reason]
+        ? [
+            riskResult.reason,
+          ]
+        : []),
+
+      ...(price === null
+        ? [
+            `السعر الحالي لـ${symbol} غير متوفر`,
+          ]
         : []),
     ],
   };
 }
 
-function probabilityFromScore(score: number) {
+function probabilityFromScore(
+  score: number
+) {
   return clamp(
-    Math.round(50 + score * 1.6),
+    Math.round(
+      50 + score * 1.6
+    ),
     5,
     95
   );
@@ -248,7 +543,8 @@ function signAlignment(
   primaryScore: number,
   confirmationScores: number[]
 ) {
-  const primarySign = Math.sign(primaryScore);
+  const primarySign =
+    Math.sign(primaryScore);
 
   if (primarySign === 0) {
     return 0;
@@ -256,16 +552,26 @@ function signAlignment(
 
   let alignment = 0;
 
-  for (const score of confirmationScores) {
-    if (Math.sign(score) === primarySign) {
-      alignment += Math.min(
-        Math.abs(primaryScore),
-        Math.abs(score)
-      ) / confirmationScores.length;
+  for (
+    const score
+    of confirmationScores
+  ) {
+    if (
+      Math.sign(score) ===
+      primarySign
+    ) {
+      alignment +=
+        Math.min(
+          Math.abs(primaryScore),
+          Math.abs(score)
+        ) /
+        confirmationScores.length;
     } else {
-      alignment -= Math.abs(
-        primaryScore - score
-      ) / confirmationScores.length;
+      alignment -=
+        Math.abs(
+          primaryScore - score
+        ) /
+        confirmationScores.length;
     }
   }
 
@@ -275,14 +581,30 @@ function signAlignment(
 export async function getMarketDecision(
   timeframe: Timeframe = '15min'
 ) {
-  const [spx, spy, qqq] = await Promise.all([
-    analyzeSymbol('SPX', timeframe),
-    analyzeSymbol('SPY', timeframe),
-    analyzeSymbol('QQQ', timeframe),
+  const [
+    spx,
+    spy,
+    qqq,
+  ] = await Promise.all([
+    analyzeSymbol(
+      'SPX',
+      timeframe
+    ),
+
+    analyzeSymbol(
+      'SPY',
+      timeframe
+    ),
+
+    analyzeSymbol(
+      'QQQ',
+      timeframe
+    ),
   ]);
 
   /*
    * SPX هو الأصل الأساسي:
+   *
    * SPX = 60%
    * SPY = 25%
    * QQQ = 15%
@@ -292,17 +614,44 @@ export async function getMarketDecision(
     spy.score * 0.25 +
     qqq.score * 0.15;
 
-  const bullish = probabilityFromScore(weightedScore);
-  const bearish = probabilityFromScore(-weightedScore);
+  const bullish =
+    probabilityFromScore(
+      weightedScore
+    );
 
-  const neutral = Math.max(
-    0,
-    100 - Math.max(bullish, bearish)
-  );
+  const bearish =
+    probabilityFromScore(
+      -weightedScore
+    );
+
+  const neutral =
+    Math.max(
+      0,
+      100 -
+        Math.max(
+          bullish,
+          bearish
+        )
+    );
+
+  const spxTechnicalReady =
+    spx.technicalDataAvailable &&
+    spx.indicators.rsi !== null &&
+    spx.indicators
+      .macdHistogram !== null;
+
+  const spxLevelsReady =
+    spx.levels.val !== null &&
+    spx.levels.vah !== null;
+
+  const dataReadyForEntry =
+    spxTechnicalReady &&
+    spx.quoteAvailable;
 
   let bias: Bias = 'WAIT';
 
   if (
+    dataReadyForEntry &&
     weightedScore >= 8 &&
     bullish >= 63
   ) {
@@ -310,6 +659,7 @@ export async function getMarketDecision(
   }
 
   if (
+    dataReadyForEntry &&
     weightedScore <= -8 &&
     bearish >= 63
   ) {
@@ -319,7 +669,12 @@ export async function getMarketDecision(
   const callConditions = [
     spx.levels.vah !== null
       ? `صمود SPX فوق VAH ${spx.levels.vah}`
-      : null,
+      : 'توفير مستوى مقاومة أو VAH مؤكد على SPX',
+
+    spx.indicators
+      .macdHistogram !== null
+      ? 'تأكيد زخم MACD الصاعد على SPX'
+      : 'توفير MACD الخاص بـSPX',
 
     spy.levels.vah !== null
       ? `تأكيد SPY فوق VAH ${spy.levels.vah}`
@@ -328,12 +683,22 @@ export async function getMarketDecision(
     qqq.levels.vah !== null
       ? `تأكيد QQQ فوق VAH ${qqq.levels.vah}`
       : null,
-  ].filter(Boolean);
+  ].filter(
+    (
+      value
+    ): value is string =>
+      Boolean(value)
+  );
 
   const putConditions = [
     spx.levels.val !== null
       ? `كسر SPX مستوى VAL ${spx.levels.val} مع تأكيد`
-      : null,
+      : 'توفير مستوى دعم أو VAL مؤكد على SPX',
+
+    spx.indicators
+      .macdHistogram !== null
+      ? 'تأكيد زخم MACD الهابط على SPX'
+      : 'توفير MACD الخاص بـSPX',
 
     spy.levels.val !== null
       ? `تأكيد SPY تحت VAL ${spy.levels.val}`
@@ -342,19 +707,96 @@ export async function getMarketDecision(
     qqq.levels.val !== null
       ? `تأكيد QQQ تحت VAL ${qqq.levels.val}`
       : null,
-  ].filter(Boolean);
-
-  const alignmentRaw = signAlignment(
-    spx.score,
-    [spy.score, qqq.score]
+  ].filter(
+    (
+      value
+    ): value is string =>
+      Boolean(value)
   );
+
+  const alignmentRaw =
+    signAlignment(
+      spx.score,
+      [
+        spy.score,
+        qqq.score,
+      ]
+    );
+
+  const blockingReasons:
+    string[] = [];
+
+  if (
+    !spx.technicalDataAvailable
+  ) {
+    blockingReasons.push(
+      spx.technicalError
+        ? `بيانات SPX الفنية فشلت: ${spx.technicalError}`
+        : 'بيانات SPX الفنية غير متوفرة'
+    );
+  }
+
+  if (
+    !spx.quoteAvailable
+  ) {
+    blockingReasons.push(
+      spx.quoteError
+        ? `سعر SPX فشل: ${spx.quoteError}`
+        : 'سعر SPX غير متوفر'
+    );
+  }
+
+  if (
+    !spxTechnicalReady
+  ) {
+    blockingReasons.push(
+      'RSI أو MACD الخاص بـSPX غير مكتمل'
+    );
+  }
+
+  if (
+    !spxLevelsReady
+  ) {
+    blockingReasons.push(
+      'مستويات VAH وVAL الخاصة بـSPX غير مكتملة'
+    );
+  }
+
+  if (
+    spx.dataStatus
+      ?.freshness === 'stale'
+  ) {
+    blockingReasons.push(
+      'بيانات SPX قديمة'
+    );
+  }
+
+  if (
+    spx.dataStatus
+      ?.freshness === 'delayed'
+  ) {
+    blockingReasons.push(
+      'بيانات SPX متأخرة'
+    );
+  }
+
+  const decision =
+    !dataReadyForEntry
+      ? 'WAIT_TECHNICAL_DATA_UNAVAILABLE'
+      : bias === 'WAIT'
+        ? 'WAIT'
+        : `${bias}_WAIT_FOR_TRIGGER`;
 
   return {
     underlying: 'SPX',
+
     timeframe,
 
     marketScore: clamp(
-      Math.round(50 + weightedScore * 1.6),
+      Math.round(
+        50 +
+          weightedScore * 1.6
+      ),
       0,
       100
     ),
@@ -367,26 +809,42 @@ export async function getMarketDecision(
 
     bias,
 
-    decision:
+    decision,
+
+    opportunity:
       bias === 'WAIT'
-        ? 'WAIT'
-        : `${bias}_WAIT_FOR_TRIGGER`,
+        ? 'NO_OPPORTUNITY'
+        : 'WAITING_FOR_TRIGGER',
+
+    dataReadyForEntry,
+
+    spxTechnicalReady,
+
+    spxLevelsReady,
+
+    blockingReasons,
 
     triggerRequired: true,
 
     triggerRule:
-      'قرار SPX يعتمد أولاً على حركة SPX، ثم يستخدم SPY وQQQ لتأكيد الاتجاه. الانحياز وحده لا يكفي للدخول، ويلزم إغلاق أو صمود أو إعادة اختبار ناجحة مع حجم مناسب.',
+      'قرار SPX يعتمد أولاً على حركة SPX ومستوياته ومؤشراته، ثم يستخدم SPY وQQQ للتأكيد. الانحياز وحده لا يكفي للدخول، ويلزم إغلاق أو صمود أو إعادة اختبار ناجحة مع حجم مناسب.',
 
     components: {
       trend: clamp(
         Math.round(
           12.5 +
-          (
-            spx.components.trend * 0.6 +
-            spy.components.trend * 0.25 +
-            qqq.components.trend * 0.15
-          ) *
-          1.25
+            (
+              spx.components
+                .trend *
+                0.6 +
+              spy.components
+                .trend *
+                0.25 +
+              qqq.components
+                .trend *
+                0.15
+            ) *
+              1.25
         ),
         0,
         25
@@ -395,9 +853,15 @@ export async function getMarketDecision(
       momentum: clamp(
         Math.round(
           10 +
-          spx.components.momentum * 0.6 +
-          spy.components.momentum * 0.25 +
-          qqq.components.momentum * 0.15
+            spx.components
+              .momentum *
+              0.6 +
+            spy.components
+              .momentum *
+              0.25 +
+            qqq.components
+              .momentum *
+              0.15
         ),
         0,
         20
@@ -406,16 +870,25 @@ export async function getMarketDecision(
       zones: clamp(
         Math.round(
           10 +
-          spx.components.zones * 0.6 +
-          spy.components.zones * 0.25 +
-          qqq.components.zones * 0.15
+            spx.components
+              .zones *
+              0.6 +
+            spy.components
+              .zones *
+              0.25 +
+            qqq.components
+              .zones *
+              0.15
         ),
         0,
         20
       ),
 
       alignment: clamp(
-        Math.round(10 + alignmentRaw),
+        Math.round(
+          10 +
+            alignmentRaw
+        ),
         0,
         20
       ),
@@ -423,9 +896,15 @@ export async function getMarketDecision(
       risk: clamp(
         Math.round(
           15 +
-          spx.components.risk * 0.6 +
-          spy.components.risk * 0.25 +
-          qqq.components.risk * 0.15
+            spx.components
+              .risk *
+              0.6 +
+            spy.components
+              .risk *
+              0.25 +
+            qqq.components
+              .risk *
+              0.15
         ),
         0,
         15
@@ -433,17 +912,19 @@ export async function getMarketDecision(
     },
 
     conditions: {
-      call: callConditions.length
-        ? callConditions
-        : [
-            'اختراق مقاومة واضحة على SPX مع صمود وإعادة اختبار',
-          ],
+      call:
+        callConditions.length
+          ? callConditions
+          : [
+              'اختراق مقاومة واضحة على SPX مع صمود وإعادة اختبار',
+            ],
 
-      put: putConditions.length
-        ? putConditions
-        : [
-            'كسر دعم واضح على SPX مع إغلاق تأكيدي',
-          ],
+      put:
+        putConditions.length
+          ? putConditions
+          : [
+              'كسر دعم واضح على SPX مع إغلاق تأكيدي',
+            ],
     },
 
     primary: spx,
