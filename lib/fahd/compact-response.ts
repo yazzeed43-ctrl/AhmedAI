@@ -1,14 +1,3 @@
-// lib/fahd/compact-response.ts
-//
-// طبقة إخراج ثابتة لردود فهد — لا تلمس أي محرك أو scoring.
-// لا يوجد أي استدعاء LLM إضافي هنا. المصدر الوحيد للبيانات في
-// الوضع المختصر هو collectedToolResults. assistantText يُستخدم
-// حصريًا في الوضع المفصل، ولا يُقرأ أو يُحلَّل إطلاقًا هنا.
-//
-// ⚠️ يتطلب هذا الملف أن يحتوي SocialDecisionContext (في
-// social-decision-context.ts) على حقل conflict: boolean.
-// لن يبني المشروع قبل إضافة هذا الحقل هناك.
-
 import type { TradeEngineInput } from '@/lib/trading/trade-engine';
 import type { SociallyAdjustedTradeReport } from '@/lib/social/social-decision-context';
 
@@ -30,29 +19,96 @@ type CollectedToolResult = {
   output: unknown;
 };
 
-// ============================================================
-// 1) كشف نية المستخدم (مختصر افتراضيًا / مفصل عند الطلب الصريح)
-// ============================================================
+type StockBias = 'CALL_BIAS' | 'PUT_BIAS' | 'WAIT';
+
+type StockDecisionOutput = {
+  symbol: string;
+  confidence: number;
+  bias: StockBias;
+  decision: string;
+  probabilities: {
+    bullish: number;
+    bearish: number;
+    neutral: number;
+  };
+  reasons: {
+    bullish: string[];
+    bearish: string[];
+    risks: string[];
+  };
+  levels: {
+    val: number | null;
+    poc: number | null;
+    vah: number | null;
+    support: number | null;
+    resistance: number | null;
+  };
+  trigger: string[];
+  invalidation: string[];
+  targets: number[];
+  marketContext?: {
+    marketScore?: number | null;
+    marketBias?: string | null;
+    marketDecision?: string | null;
+  };
+};
+
+type SocialSummaryOutput = {
+  total: number;
+  bullish: number;
+  bearish: number;
+  neutral: number;
+  highImpactCount: number;
+  earningsCount: number;
+  breakingCount: number;
+  weightedScore: number;
+  bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+};
 
 const DETAILED_MODE_PHRASES = [
-  'تحليل كامل',
-  'تحليل مفصل',
-  'تقرير كامل',
-  'بالتفصيل',
+  'طھط­ظ„ظٹظ„ ظƒط§ظ…ظ„',
+  'طھط­ظ„ظٹظ„ ظ…ظپطµظ„',
+  'طھظ‚ط±ظٹط± ظƒط§ظ…ظ„',
+  'ط¨ط§ظ„طھظپطµظٹظ„',
 ];
 
 export function isDetailedRequestMode(userMessage: string): boolean {
   const normalized = userMessage.trim();
+
   return DETAILED_MODE_PHRASES.some((phrase) =>
     normalized.includes(phrase)
   );
 }
 
-// ============================================================
-// 2) Type guards حقيقية لنتيجة analyze_trade (لا يوجد any)
-// ============================================================
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
 
-function isValidDecisionValue(
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.every((item) => typeof item === 'string')
+  );
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function findLatestToolResult(
+  results: CollectedToolResult[],
+  name: string
+): CollectedToolResult | undefined {
+  for (let index = results.length - 1; index >= 0; index -= 1) {
+    if (results[index].name === name) {
+      return results[index];
+    }
+  }
+
+  return undefined;
+}
+
+function isTradeDecision(
   value: unknown
 ): value is SociallyAdjustedTradeReport['decision'] {
   return (
@@ -64,96 +120,128 @@ function isValidDecisionValue(
   );
 }
 
-function isValidDirectionValue(
+function isDirection(
   value: unknown
 ): value is 'CALL' | 'PUT' | 'NEUTRAL' {
   return value === 'CALL' || value === 'PUT' || value === 'NEUTRAL';
 }
 
-function isValidTriggerValue(
+function isTrigger(
   value: unknown
 ): value is SociallyAdjustedTradeReport['trigger'] {
-  return value === 'CONFIRMED' || value === 'WAITING' || value === 'FAILED';
+  return (
+    value === 'CONFIRMED' ||
+    value === 'WAITING' ||
+    value === 'FAILED'
+  );
 }
 
-function isSocialDecisionContext(
+function isSocialContext(
   value: unknown
 ): value is SociallyAdjustedTradeReport['socialIntelligence'] {
-  if (typeof value !== 'object' || value === null) return false;
-  const c = value as Record<string, unknown>;
+  if (!isRecord(value)) return false;
 
   return (
-    typeof c.totalSignals === 'number' &&
-    typeof c.highImpactCount === 'number' &&
-    typeof c.pendingHighImpactCount === 'number' &&
-    typeof c.bullishCount === 'number' &&
-    typeof c.bearishCount === 'number' &&
-    typeof c.neutralCount === 'number' &&
-    typeof c.confidenceAdjustment === 'number' &&
-    typeof c.forcedWait === 'boolean' &&
-    typeof c.conflict === 'boolean' &&
-    Array.isArray(c.reasons) &&
-    Array.isArray(c.warnings)
+    isFiniteNumber(value.totalSignals) &&
+    isFiniteNumber(value.highImpactCount) &&
+    isFiniteNumber(value.pendingHighImpactCount) &&
+    isFiniteNumber(value.bullishCount) &&
+    isFiniteNumber(value.bearishCount) &&
+    isFiniteNumber(value.neutralCount) &&
+    isFiniteNumber(value.confidenceAdjustment) &&
+    typeof value.forcedWait === 'boolean' &&
+    typeof value.conflict === 'boolean' &&
+    isStringArray(value.reasons) &&
+    isStringArray(value.warnings)
   );
 }
 
 function isSociallyAdjustedTradeReport(
   value: unknown
 ): value is SociallyAdjustedTradeReport {
-  if (typeof value !== 'object' || value === null) return false;
-  const r = value as Record<string, unknown>;
+  if (!isRecord(value)) return false;
+  if (typeof value.symbol !== 'string') return false;
+  if (!isTradeDecision(value.decision)) return false;
+  if (!isFiniteNumber(value.confidence)) return false;
+  if (!isStringArray(value.reasons)) return false;
+  if (!isStringArray(value.warnings)) return false;
+  if (!isTrigger(value.trigger)) return false;
+  if (typeof value.alignment !== 'boolean') return false;
+  if (!isRecord(value.directions)) return false;
+  if (!isDirection(value.directions.market)) return false;
+  if (!isDirection(value.directions.stock)) return false;
 
-  if (typeof r.symbol !== 'string') return false;
-  if (!isValidDecisionValue(r.decision)) return false;
-  if (typeof r.confidence !== 'number') return false;
-  if (!Array.isArray(r.reasons)) return false;
-  if (!Array.isArray(r.warnings)) return false;
-  if (!isValidTriggerValue(r.trigger)) return false;
-  if (typeof r.alignment !== 'boolean') return false;
+  return isSocialContext(value.socialIntelligence);
+}
 
-  const directions = r.directions as Record<string, unknown> | undefined;
-  if (
-    typeof directions !== 'object' ||
-    directions === null ||
-    !isValidDirectionValue(directions.market) ||
-    !isValidDirectionValue(directions.stock)
-  ) {
-    return false;
+function extractTradeEngineInput(
+  value: unknown
+): TradeEngineInput | undefined {
+  if (!isRecord(value) || !isRecord(value.stock)) {
+    return undefined;
   }
 
-  if (!isSocialDecisionContext(r.socialIntelligence)) return false;
+  return value as unknown as TradeEngineInput;
+}
+
+function isStockBias(value: unknown): value is StockBias {
+  return (
+    value === 'CALL_BIAS' ||
+    value === 'PUT_BIAS' ||
+    value === 'WAIT'
+  );
+}
+
+function isStockDecisionOutput(
+  value: unknown
+): value is StockDecisionOutput {
+  if (!isRecord(value)) return false;
+  if (typeof value.symbol !== 'string') return false;
+  if (!isFiniteNumber(value.confidence)) return false;
+  if (!isStockBias(value.bias)) return false;
+  if (typeof value.decision !== 'string') return false;
+
+  if (!isRecord(value.probabilities)) return false;
+  if (!isFiniteNumber(value.probabilities.bullish)) return false;
+  if (!isFiniteNumber(value.probabilities.bearish)) return false;
+  if (!isFiniteNumber(value.probabilities.neutral)) return false;
+
+  if (!isRecord(value.reasons)) return false;
+  if (!isStringArray(value.reasons.bullish)) return false;
+  if (!isStringArray(value.reasons.bearish)) return false;
+  if (!isStringArray(value.reasons.risks)) return false;
+
+  if (!isRecord(value.levels)) return false;
+  if (!isStringArray(value.trigger)) return false;
+  if (!isStringArray(value.invalidation)) return false;
+  if (!Array.isArray(value.targets)) return false;
 
   return true;
 }
 
-// حارس خفيف على input.stock — كافٍ لأن buildCriticalLevels تتحقق
-// من كل حقل رقمي بنفسها عبر Number.isFinite. لا نتحقق من كل حقول
-// TradeEngineInput لأن criticalLevels تحتاج فقط stock.
-function extractTradeEngineInput(
+function isSocialSummaryOutput(
   value: unknown
-): TradeEngineInput | undefined {
-  if (typeof value !== 'object' || value === null) return undefined;
-  const v = value as Record<string, unknown>;
-  if (typeof v.stock !== 'object' || v.stock === null) return undefined;
+): value is SocialSummaryOutput {
+  if (!isRecord(value)) return false;
 
-  return value as TradeEngineInput;
+  return (
+    isFiniteNumber(value.total) &&
+    isFiniteNumber(value.bullish) &&
+    isFiniteNumber(value.bearish) &&
+    isFiniteNumber(value.neutral) &&
+    isFiniteNumber(value.highImpactCount) &&
+    isFiniteNumber(value.earningsCount) &&
+    isFiniteNumber(value.breakingCount) &&
+    isFiniteNumber(value.weightedScore) &&
+    (
+      value.bias === 'BULLISH' ||
+      value.bias === 'BEARISH' ||
+      value.bias === 'NEUTRAL'
+    )
+  );
 }
 
-// ============================================================
-// 3) استخراج مباشر من analyze_trade (الأولوية 1)
-// ============================================================
-
-function findLatestToolResult(
-  results: CollectedToolResult[],
-  name: string
-): CollectedToolResult | undefined {
-  for (let i = results.length - 1; i >= 0; i--) {
-    if (results[i].name === name) return results[i];
-  }
-  return undefined;
-}
-
-const DECISION_TO_COMPACT: Record<
+const TRADE_DECISION_TO_COMPACT: Record<
   SociallyAdjustedTradeReport['decision'],
   FahdCompactResponse['decision']
 > = {
@@ -164,139 +252,240 @@ const DECISION_TO_COMPACT: Record<
   REJECT_CONTRACT: 'WAIT',
 };
 
-const DIRECTION_LABELS: Record<'CALL' | 'PUT' | 'NEUTRAL', string> = {
-  CALL: 'صاعد',
-  PUT: 'هابط',
-  NEUTRAL: 'محايد',
-};
+const DIRECTION_LABELS = {
+  CALL: 'طµط§ط¹ط¯',
+  PUT: 'ظ‡ط§ط¨ط·',
+  NEUTRAL: 'ظ…ط­ط§ظٹط¯',
+} as const;
 
-function buildTechnicalBias(report: SociallyAdjustedTradeReport): string {
-  const stockLabel = DIRECTION_LABELS[report.directions.stock];
-  const marketLabel = DIRECTION_LABELS[report.directions.market];
-  const alignmentLabel = report.alignment ? 'متوافقان' : 'متعارضان';
-
-  return `السهم ${stockLabel} والسوق ${marketLabel} (${alignmentLabel})`;
-}
-
-// يقارن الأصوات الثلاثة كاملة (صاعد/هابط/محايد)، لا صاعد وهابط فقط.
-// أي تعادل يميل لصالح "محايد" (الخيار الأكثر تحفظًا).
-function buildSocialBias(
-  context: SociallyAdjustedTradeReport['socialIntelligence']
-): string {
-  const { bullishCount, bearishCount, neutralCount, totalSignals } = context;
-
-  if (totalSignals === 0) {
-    return 'لا توجد إشارات اجتماعية حديثة';
-  }
-
-  const max = Math.max(bullishCount, bearishCount, neutralCount);
-
-  let dominant: string;
-  if (neutralCount === max || bullishCount === bearishCount) {
-    dominant = 'محايد';
-  } else if (bullishCount === max) {
-    dominant = 'إيجابي';
-  } else {
-    dominant = 'سلبي';
-  }
-
-  return `${dominant} (${bullishCount} صاعد / ${bearishCount} هابط / ${neutralCount} محايد من ${totalSignals} إشارة)`;
-}
-
-// أولوية العرض: VAL ثم POC ثم VAH ثم الدعم ثم المقاومة.
-// إزالة القيم الرقمية المكررة (لو تطابقت قيمتان رقميًا).
-function buildCriticalLevels(input: TradeEngineInput | undefined): string[] {
-  const stock = input?.stock;
-  if (!stock) return [];
-
-  const candidates: { label: string; value: number | null | undefined }[] = [
-    { label: 'VAL', value: stock.val },
-    { label: 'POC', value: stock.poc },
-    { label: 'VAH', value: stock.vah },
-    { label: 'دعم', value: stock.support },
-    { label: 'مقاومة', value: stock.resistance },
-  ];
-
-  const seenValues = new Set<number>();
+function uniqueFiniteLevels(
+  candidates: Array<{
+    label: string;
+    value: unknown;
+  }>
+): string[] {
+  const seen = new Set<number>();
   const levels: string[] = [];
 
   for (const candidate of candidates) {
-    const { value } = candidate;
+    if (!isFiniteNumber(candidate.value)) continue;
+    if (seen.has(candidate.value)) continue;
 
-    if (typeof value !== 'number' || !Number.isFinite(value)) {
-      continue;
-    }
-    if (seenValues.has(value)) {
-      continue;
-    }
-
-    seenValues.add(value);
-    levels.push(`${candidate.label} ${value}`);
+    seen.add(candidate.value);
+    levels.push(`${candidate.label} ${candidate.value}`);
   }
 
   return levels.slice(0, 3);
 }
 
-// forcedWait يُفحص أولًا ويسبق أي حكم مبني على trigger === CONFIRMED،
-// لأن التقرير قد يبقى BUY_CALL/BUY_PUT من محرك الصفقة الأساسي بينما
-// الذكاء الاجتماعي أوقف الدخول فعليًا (forcedWait = true).
-function buildNextAction(report: SociallyAdjustedTradeReport): string {
+function buildTradeCriticalLevels(
+  input: TradeEngineInput | undefined
+): string[] {
+  const stock = input?.stock;
+
+  if (!stock) return [];
+
+  return uniqueFiniteLevels([
+    { label: 'VAL', value: stock.val },
+    { label: 'POC', value: stock.poc },
+    { label: 'VAH', value: stock.vah },
+    { label: 'ط¯ط¹ظ…', value: stock.support },
+    { label: 'ظ…ظ‚ط§ظˆظ…ط©', value: stock.resistance },
+  ]);
+}
+
+function buildTradeSocialBias(
+  context: SociallyAdjustedTradeReport['socialIntelligence']
+): string {
+  if (context.totalSignals === 0) {
+    return 'ظ„ط§ طھظˆط¬ط¯ ط¥ط´ط§ط±ط§طھ ط§ط¬طھظ…ط§ط¹ظٹط© ط­ط¯ظٹط«ط©';
+  }
+
+  const maxCount = Math.max(
+    context.bullishCount,
+    context.bearishCount,
+    context.neutralCount
+  );
+
+  const dominant =
+    context.neutralCount === maxCount ||
+    context.bullishCount === context.bearishCount
+      ? 'ظ…ط­ط§ظٹط¯'
+      : context.bullishCount === maxCount
+        ? 'ط¥ظٹط¬ط§ط¨ظٹ'
+        : 'ط³ظ„ط¨ظٹ';
+
+  return `${dominant} (${context.bullishCount} طµط§ط¹ط¯ / ${context.bearishCount} ظ‡ط§ط¨ط· / ${context.neutralCount} ظ…ط­ط§ظٹط¯)`;
+}
+
+function buildTradeNextAction(
+  report: SociallyAdjustedTradeReport
+): string {
   const social = report.socialIntelligence;
 
   if (social.forcedWait) {
-    if (social.pendingHighImpactCount > 0) {
-      return 'انتظر اتضاح نتيجة الحدث مرتفع التأثير ثم أعد التحليل';
-    }
-    return 'لا تدخل الآن بسبب تعارض الحدث مرتفع التأثير مع اتجاه الصفقة';
+    return social.pendingHighImpactCount > 0
+      ? 'ط§ظ†طھط¸ط± ط§طھط¶ط§ط­ ظ†طھظٹط¬ط© ط§ظ„ط­ط¯ط« ظ…ط±طھظپط¹ ط§ظ„طھط£ط«ظٹط± ط«ظ… ط£ط¹ط¯ ط§ظ„طھط­ظ„ظٹظ„'
+      : 'ظ„ط§ طھط¯ط®ظ„ ط§ظ„ط¢ظ† ط¨ط³ط¨ط¨ طھط¹ط§ط±ط¶ ط§ظ„ط­ط¯ط« ظ…ط±طھظپط¹ ط§ظ„طھط£ط«ظٹط± ظ…ط¹ ط§طھط¬ط§ظ‡ ط§ظ„طµظپظ‚ط©';
   }
 
   if (report.decision === 'REJECT_CONTRACT') {
-    return 'لا تدخل — العقد مرفوض حسب معايير الجودة والسيولة';
+    return 'ظ„ط§ طھط¯ط®ظ„ â€” ط§ظ„ط¹ظ‚ط¯ ظ…ط±ظپظˆط¶ ط­ط³ط¨ ظ…ط¹ط§ظٹظٹط± ط§ظ„ط¬ظˆط¯ط© ظˆط§ظ„ط³ظٹظˆظ„ط©';
   }
 
   if (report.trigger === 'FAILED') {
-    return 'التفعيل فشل — لا تدخل على هذا الإعداد حاليًا';
+    return 'ط§ظ„طھظپط¹ظٹظ„ ظپط´ظ„ â€” ظ„ط§ طھط¯ط®ظ„ ط¹ظ„ظ‰ ظ‡ط°ط§ ط§ظ„ط¥ط¹ط¯ط§ط¯ ط­ط§ظ„ظٹظ‹ط§';
   }
 
   if (report.trigger === 'WAITING') {
-    return 'انتظر تأكيد الشمعة (Trigger) قبل الدخول';
+    return 'ط§ظ†طھط¸ط± طھط£ظƒظٹط¯ ط§ظ„ط´ظ…ط¹ط© ظ‚ط¨ظ„ ط§ظ„ط¯ط®ظˆظ„';
   }
 
-  if (report.decision === 'BUY_CALL' || report.decision === 'BUY_PUT') {
-    return 'التفعيل مؤكد وفق الخطة — التزم بإدارة المخاطر المحددة';
+  if (
+    report.decision === 'BUY_CALL' ||
+    report.decision === 'BUY_PUT'
+  ) {
+    return 'ط§ظ„طھظپط¹ظٹظ„ ظ…ط¤ظƒط¯ â€” ط§ظ„طھط²ظ… ط¨ط¥ط¯ط§ط±ط© ط§ظ„ظ…ط®ط§ط·ط± ط§ظ„ظ…ط­ط¯ط¯ط©';
   }
 
-  return 'راقب السهم وانتظر تأكيدًا أوضح قبل أي قرار';
+  return 'ط±ط§ظ‚ط¨ ط§ظ„ط³ظ‡ظ… ظˆط§ظ†طھط¸ط± طھط£ظƒظٹط¯ظ‹ط§ ط£ظˆط¶ط­';
 }
 
-function mapAnalyzeTradeOutput(
+function mapAnalyzeTrade(
   report: SociallyAdjustedTradeReport,
   rawInput: unknown
 ): FahdCompactResponse {
-  const context = report.socialIntelligence;
-  const tradeInput = extractTradeEngineInput(rawInput);
-
-  const reasons =
-    report.reasons.length > 0
-      ? report.reasons.slice(0, 4)
-      : ['لا تتوفر أسباب مفصلة من المحرك.'];
+  const input = extractTradeEngineInput(rawInput);
 
   return {
     symbol: report.symbol,
-    decision: DECISION_TO_COMPACT[report.decision],
-    confidence: report.confidence,
-    reasons,
-    technicalBias: buildTechnicalBias(report),
-    socialBias: buildSocialBias(context),
-    conflict: context.conflict,
-    criticalLevels: buildCriticalLevels(tradeInput),
-    nextAction: buildNextAction(report),
+    decision: TRADE_DECISION_TO_COMPACT[report.decision],
+    confidence: Math.round(report.confidence),
+    reasons:
+      report.reasons.length > 0
+        ? report.reasons.slice(0, 4)
+        : ['ظ„ط§ طھطھظˆظپط± ط£ط³ط¨ط§ط¨ ظ…ظپطµظ„ط© ظ…ظ† ظ…ط­ط±ظƒ ط§ظ„طµظپظ‚ط©'],
+    technicalBias:
+      `ط§ظ„ط³ظ‡ظ… ${DIRECTION_LABELS[report.directions.stock]} ` +
+      `ظˆط§ظ„ط³ظˆظ‚ ${DIRECTION_LABELS[report.directions.market]}`,
+    socialBias: buildTradeSocialBias(report.socialIntelligence),
+    conflict: report.socialIntelligence.conflict,
+    criticalLevels: buildTradeCriticalLevels(input),
+    nextAction: buildTradeNextAction(report),
   };
 }
 
-// ============================================================
-// 4) نقطة الاستخراج الرئيسية
-// ============================================================
+function stockReasons(stock: StockDecisionOutput): string[] {
+  const directional =
+    stock.bias === 'CALL_BIAS'
+      ? stock.reasons.bullish
+      : stock.bias === 'PUT_BIAS'
+        ? stock.reasons.bearish
+        : [
+            ...stock.reasons.bullish,
+            ...stock.reasons.bearish,
+          ];
+
+  const reasons = [
+    ...directional,
+    ...stock.reasons.risks,
+  ];
+
+  return reasons.length > 0
+    ? [...new Set(reasons)].slice(0, 4)
+    : ['ظ„ط§ ظٹظˆط¬ط¯ Trigger ظ…ط¤ظƒط¯ ظ„ظ„ط¯ط®ظˆظ„ ط­ط§ظ„ظٹظ‹ط§'];
+}
+
+function stockTechnicalBias(stock: StockDecisionOutput): string {
+  const label =
+    stock.bias === 'CALL_BIAS'
+      ? 'طµط§ط¹ط¯'
+      : stock.bias === 'PUT_BIAS'
+        ? 'ظ‡ط§ط¨ط·'
+        : 'ظ…ط­ط§ظٹط¯';
+
+  const marketBias = stock.marketContext?.marketBias;
+
+  return marketBias
+    ? `ط§ظ„ط³ظ‡ظ… ${label} ظˆط§ظ„ط³ظˆظ‚ ${marketBias}`
+    : `ط§ظ„ط³ظ‡ظ… ${label}`;
+}
+
+function stockCriticalLevels(stock: StockDecisionOutput): string[] {
+  return uniqueFiniteLevels([
+    { label: 'VAL', value: stock.levels.val },
+    { label: 'POC', value: stock.levels.poc },
+    { label: 'VAH', value: stock.levels.vah },
+    { label: 'ط¯ط¹ظ…', value: stock.levels.support },
+    { label: 'ظ…ظ‚ط§ظˆظ…ط©', value: stock.levels.resistance },
+  ]);
+}
+
+function socialBiasLabel(
+  social: SocialSummaryOutput | undefined
+): string {
+  if (!social || social.total === 0) {
+    return 'ظ„ط§ طھظˆط¬ط¯ ط¥ط´ط§ط±ط§طھ ط§ط¬طھظ…ط§ط¹ظٹط© ط­ط¯ظٹط«ط©';
+  }
+
+  const label =
+    social.bias === 'BULLISH'
+      ? 'ط¥ظٹط¬ط§ط¨ظٹ'
+      : social.bias === 'BEARISH'
+        ? 'ط³ظ„ط¨ظٹ'
+        : 'ظ…ط­ط§ظٹط¯';
+
+  return `${label} (${social.bullish} طµط§ط¹ط¯ / ${social.bearish} ظ‡ط§ط¨ط· / ${social.neutral} ظ…ط­ط§ظٹط¯)`;
+}
+
+function hasStockSocialConflict(
+  stock: StockDecisionOutput,
+  social: SocialSummaryOutput | undefined
+): boolean {
+  if (!social) return false;
+
+  return (
+    (stock.bias === 'CALL_BIAS' && social.bias === 'BEARISH') ||
+    (stock.bias === 'PUT_BIAS' && social.bias === 'BULLISH')
+  );
+}
+
+function mapStockDecision(
+  stock: StockDecisionOutput,
+  social: SocialSummaryOutput | undefined
+): FahdCompactResponse {
+  const conflict = hasStockSocialConflict(stock, social);
+  const highImpact = (social?.highImpactCount ?? 0) > 0;
+
+  const socialReason = highImpact
+    ? 'طھظˆط¬ط¯ ط¥ط´ط§ط±ط© ط§ط¬طھظ…ط§ط¹ظٹط© ظ…ط±طھظپط¹ط© ط§ظ„طھط£ط«ظٹط± ظˆطھط­طھط§ط¬ طھط£ظƒظٹط¯ظ‹ط§ ظ‚ط¨ظ„ ط§ظ„ط¯ط®ظˆظ„'
+    : null;
+
+  const reasons = stockReasons(stock);
+
+  if (socialReason && reasons.length < 4) {
+    reasons.push(socialReason);
+  }
+
+  const nextAction =
+    highImpact
+      ? 'ط§ظ†طھط¸ط± طھط£ظƒظٹط¯ ط§ظ„ط­ط¯ط« ظˆTrigger ط§ظ„ط³ظ‡ظ… ظ‚ط¨ظ„ ط£ظٹ ط¯ط®ظˆظ„'
+      : stock.trigger[0] ??
+        'ط§ظ†طھط¸ط± Trigger ظپظ†ظٹ ظˆط§ط¶ط­ ظ‚ط¨ظ„ ط§ظ„ط¯ط®ظˆظ„';
+
+  return {
+    symbol: stock.symbol,
+    // get_stock_decision ظٹط¹ظٹط¯ ط§ظ†ط­ظٹط§ط²ظ‹ط§ ظپظ‚ط· ظˆظٹط´طھط±ط· Triggerط› ظ„ط°ظ„ظƒ ط§ظ„ظ‚ط±ط§ط± ط§ظ„طھظ†ظپظٹط°ظٹ WAIT.
+    decision: 'WAIT',
+    confidence: Math.round(stock.confidence),
+    reasons: reasons.slice(0, 4),
+    technicalBias: stockTechnicalBias(stock),
+    socialBias: socialBiasLabel(social),
+    conflict,
+    criticalLevels: stockCriticalLevels(stock),
+    nextAction,
+  };
+}
 
 export function extractCompactResponse(
   collectedToolResults: CollectedToolResult[]
@@ -306,105 +495,116 @@ export function extractCompactResponse(
     'analyze_trade'
   );
 
-  if (tradeResult && isSociallyAdjustedTradeReport(tradeResult.output)) {
-    return mapAnalyzeTradeOutput(tradeResult.output, tradeResult.input);
+  if (
+    tradeResult &&
+    isSociallyAdjustedTradeReport(tradeResult.output)
+  ) {
+    return mapAnalyzeTrade(
+      tradeResult.output,
+      tradeResult.input
+    );
   }
 
-  // TODO (الأولوية 2 - بانتظار الأشكال الفعلية):
-  // دمج get_stock_decision + get_market_decision + get_recent_social_signals
-  // عندما لا يتوفر analyze_trade. غير مُفعّلة الآن — لا نخمّن أسماء حقول.
+  const stockResult = findLatestToolResult(
+    collectedToolResults,
+    'get_stock_decision'
+  );
+
+  if (
+    stockResult &&
+    isStockDecisionOutput(stockResult.output)
+  ) {
+    const socialResult = findLatestToolResult(
+      collectedToolResults,
+      'get_recent_social_signals'
+    );
+
+    const social =
+      socialResult &&
+      isSocialSummaryOutput(socialResult.output)
+        ? socialResult.output
+        : undefined;
+
+    return mapStockDecision(stockResult.output, social);
+  }
 
   return null;
 }
 
-// ============================================================
-// 5) بناء الرد النهائي من القالب الثابت (بدون Regex إطلاقًا)
-// ============================================================
-
 const MAX_COMPACT_WORDS = 180;
 
-// تقسيم بسيط بـ Regex لعدّ الكلمات فقط (يدعم أسطر متعددة وTabs) —
-// هذا ليس تحليلًا لمحتوى النص، فقط تجزئة على الفراغات لأغراض العدّ.
 function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
-function enforceWordLimit(text: string, maxWords: number): string {
+function enforceWordLimit(
+  text: string,
+  maxWords: number
+): string {
   if (countWords(text) <= maxWords) return text;
 
-  const lines = text.split('\n');
+  const words = text.trim().split(/\s+/).filter(Boolean);
 
-  while (countWords(lines.join(' ')) > maxWords && lines.length > 0) {
-    const lastLine = lines[lines.length - 1];
-    const words = lastLine.trim().split(/\s+/).filter(Boolean);
-
-    if (words.length <= 1) {
-      lines.pop();
-    } else {
-      words.pop();
-      lines[lines.length - 1] = words.join(' ');
-    }
-  }
-
-  return lines.join('\n');
+  return `${words.slice(0, maxWords).join(' ')}â€¦`;
 }
 
-export function formatCompactResponse(data: FahdCompactResponse): string {
-  const reasonsBlock = data.reasons
+export function formatCompactResponse(
+  data: FahdCompactResponse
+): string {
+  const reasons = data.reasons
     .slice(0, 4)
     .map((reason) => `- ${reason}`)
     .join('\n');
 
-  const criticalLevelsBlock =
+  const levels =
     data.criticalLevels.length > 0
       ? data.criticalLevels.join(' / ')
-      : 'غير محدد';
-
-  const conflictText = data.conflict
-    ? 'نعم، يوجد تعارض بين الانحياز الفني والاجتماعي'
-    : 'لا يوجد تعارض';
+      : 'ط؛ظٹط± ظ…ط­ط¯ط¯';
 
   const response = [
-    `🚦 ${data.symbol} — القرار النهائي`,
+    `ًںڑ¦ ${data.symbol} â€” ط§ظ„ظ‚ط±ط§ط± ط§ظ„ظ†ظ‡ط§ط¦ظٹ`,
     '',
-    `القرار: ${data.decision}`,
-    `الثقة النهائية: ${data.confidence}%`,
+    `ط§ظ„ظ‚ط±ط§ط±: ${data.decision}`,
+    `ط§ظ„ط«ظ‚ط© ط§ظ„ظ†ظ‡ط§ط¦ظٹط©: ${data.confidence}%`,
     '',
-    'الأسباب:',
-    reasonsBlock,
+    'ط§ظ„ط£ط³ط¨ط§ط¨:',
+    reasons,
     '',
-    `الانحياز الفني: ${data.technicalBias}`,
-    `الانحياز الاجتماعي: ${data.socialBias}`,
-    `التعارض: ${conflictText}`,
-    `المستوى الحاسم: ${criticalLevelsBlock}`,
-    `الخطة: ${data.nextAction}`,
+    `ط§ظ„ط§ظ†ط­ظٹط§ط² ط§ظ„ظپظ†ظٹ: ${data.technicalBias}`,
+    `ط§ظ„ط§ظ†ط­ظٹط§ط² ط§ظ„ط§ط¬طھظ…ط§ط¹ظٹ: ${data.socialBias}`,
+    `ط§ظ„طھط¹ط§ط±ط¶: ${data.conflict ? 'ظ†ط¹ظ…' : 'ظ„ط§'}`,
+    `ط§ظ„ظ…ط³طھظˆظ‰ ط§ظ„ط­ط§ط³ظ…: ${levels}`,
+    `ط§ظ„ط®ط·ط©: ${data.nextAction}`,
   ].join('\n');
 
-  return enforceWordLimit(response, MAX_COMPACT_WORDS);
+  return enforceWordLimit(
+    response,
+    MAX_COMPACT_WORDS
+  );
 }
-
-// ============================================================
-// 6) نقطة الدخول الوحيدة التي يستدعيها route.ts
-// ============================================================
 
 export function buildFahdResponse(params: {
   userMessage: string;
   assistantText: string;
   collectedToolResults: CollectedToolResult[];
 }): string {
-  const { userMessage, assistantText, collectedToolResults } = params;
+  const {
+    userMessage,
+    assistantText,
+    collectedToolResults,
+  } = params;
 
-  // الوضع المفصل: assistantText يُستخدم كما هو، بدون أي تحليل له.
   if (isDetailedRequestMode(userMessage)) {
     return assistantText;
   }
 
-  // الوضع المختصر: المصدر الوحيد هو collectedToolResults.
-  // assistantText لا يُقرأ هنا إطلاقًا.
-  const compact = extractCompactResponse(collectedToolResults);
+  const compact = extractCompactResponse(
+    collectedToolResults
+  );
 
   if (!compact) {
-    return 'تعذر بناء ملخص مختصر موثوق من نتائج التحليل الحالية. اكتب "تحليل كامل" للحصول على التقرير التفصيلي.';
+    // ط§ظ„ط·ظ„ط¨ط§طھ ط؛ظٹط± ط§ظ„طھط­ظ„ظٹظ„ظٹط© طھط¨ظ‚ظ‰ ط¨ط±ط¯ Claude ط§ظ„ط·ط¨ظٹط¹ظٹ ط¨ط¯ظ„ ط±ط³ط§ظ„ط© ظپط´ظ„ ظ…ط²ط¹ط¬ط©.
+    return assistantText;
   }
 
   return formatCompactResponse(compact);
