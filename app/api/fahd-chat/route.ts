@@ -25,6 +25,9 @@ import {
 import {
   applySocialIntelligenceToTradeReport,
 } from '@/lib/social/social-decision-context';
+import {
+  buildFahdResponse,
+} from '@/lib/fahd/compact-response';
 
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 
@@ -1342,21 +1345,26 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const finalReply = buildFahdResponse({
+      userMessage: message,
+      assistantText,
+      collectedToolResults,
+    });
+
     await supabase.from('fahd_conversations').insert([
       { role: 'user', content: message },
-      { role: 'assistant', content: assistantText },
+      { role: 'assistant', content: finalReply },
     ]);
 
     // ط§ظ„ط­ظپط¸ ط§ظ„طھظ„ظ‚ط§ط¦ظٹ ظ„ظ„ط°ط§ظƒط±ط© ط·ظˆظٹظ„ط© ط§ظ„ظ…ط¯ظ‰ - ط¨ط³ ظ„ظˆ ط§ظ„ظپظ„طھط± ط§ظ„ط³ط±ظٹط¹ ط§ط´طھط¨ظ‡ ظپظٹظ‡ط§طŒ
     // ط¹ط´ط§ظ† ظ†طھط¬ظ†ط¨ ط§ط³طھط¯ط¹ط§ط، Claude ط¥ط¶ط§ظپظٹ ط¹ظ„ظ‰ ظƒظ„ ط±ط³ط§ظ„ط© ط¹ط§ط¯ظٹط©
     if (mightContainSaveworthyInfo(message)) {
-      await autoSaveMemory(message, assistantText);
+      await autoSaveMemory(message, finalReply);
     }
 
-    return NextResponse.json({ reply: assistantText, toolResults: collectedToolResults });
+    return NextResponse.json({ reply: finalReply, toolResults: collectedToolResults });
   } catch (error) {
     console.error('Fahd chat route error:', error);
     return NextResponse.json({ error: 'ط­ط¯ط« ط®ط·ط£ ط؛ظٹط± ظ…طھظˆظ‚ط¹' }, { status: 500 });
   }
 }
-
