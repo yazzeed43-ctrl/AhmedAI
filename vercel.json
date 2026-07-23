@@ -2,8 +2,8 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
     {
-      "path": "/api/cron/x-signals?windowSeconds=600",
-      "schedule": "*/10 * * * *"
+      "path": "/api/cron/x-signals?windowSeconds=3600",
+      "schedule": "0 14 * * *"
     }
   ]
 }

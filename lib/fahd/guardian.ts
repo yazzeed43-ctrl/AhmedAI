@@ -1,6 +1,6 @@
 export interface GuardianTradeInput {
   marketScore: number;
-  stockScore: number;
+  directionalStockScore: number;
   optionScore: number;
   spreadPercent: number;
   openInterest: number;
@@ -18,13 +18,38 @@ export function approveTrade(
 ): GuardianResult {
   const reasons: string[] = [];
 
-  if (trade.marketScore < 90) reasons.push("Market score too low");
-  if (trade.stockScore < 90) reasons.push("Stock score too low");
-  if (trade.optionScore < 95) reasons.push("Option score too low");
-  if (trade.spreadPercent > 5) reasons.push("Spread too wide");
-  if (trade.openInterest < 1000) reasons.push("Open interest too low");
-  if (trade.volume < 500) reasons.push("Volume too low");
-  if (trade.highImpactNews) reasons.push("High impact news");
+  // Market Brain
+  if (trade.marketScore < 60) {
+    reasons.push("Market score too low");
+  }
+
+  // Stock Brain (Directional)
+  if (trade.directionalStockScore < 75) {
+    reasons.push("Directional stock score too low");
+  }
+
+  // Option Brain
+  if (trade.optionScore < 85) {
+    reasons.push("Option score too low");
+  }
+
+  // Liquidity
+  if (trade.spreadPercent > 5) {
+    reasons.push("Spread too wide");
+  }
+
+  if (trade.openInterest < 1000) {
+    reasons.push("Open interest too low");
+  }
+
+  if (trade.volume < 500) {
+    reasons.push("Volume too low");
+  }
+
+  // News
+  if (trade.highImpactNews === true) {
+    reasons.push("High impact news");
+  }
 
   return {
     approved: reasons.length === 0,
