@@ -41,7 +41,7 @@ function getWindowSeconds(
 
   return Math.max(
     60,
-    Math.min(Math.floor(parsed), 600)
+    Math.min(Math.floor(parsed), 3600)
   );
 }
 
