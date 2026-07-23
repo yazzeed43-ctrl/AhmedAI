@@ -1,40 +1,45 @@
 ﻿import {
   NextRequest,
   NextResponse,
-} from 'next/server';
+} from "next/server";
 
 import {
   runFahdScannerV3,
-} from '@/lib/trading/fahd-scanner-v3';
+} from "@/lib/trading/fahd-scanner-v3";
 
 import {
   getTechnicalIndicators,
-} from '@/lib/market-indicators';
+} from "@/lib/market-indicators";
 
 import {
   scoreStock,
-} from '@/lib/fahd/stock-brain';
+} from "@/lib/fahd/stock-brain";
 
 import {
   approveTrade,
-} from '@/lib/fahd/guardian';
+} from "@/lib/fahd/guardian";
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
+import {
+  makeTradeDecision,
+} from "@/lib/fahd/decision-brain";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const DEFAULT_SYMBOLS = [
-  'SPX',
-  'SPY',
-  'QQQ',
-  'AAPL',
-  'NVDA',
-  'TSLA',
-  'AMZN',
-  'META',
-  'AMD',
-  'MSFT',
+  "SPX",
+  "SPY",
+  "QQQ",
+  "AAPL",
+  "NVDA",
+  "TSLA",
+  "AMZN",
+  "META",
+  "AMD",
+  "MSFT",
 ];
+
 type RequestBody = {
   symbols?: unknown;
   maxRiskUsd?: unknown;
@@ -44,9 +49,9 @@ type RequestBody = {
 };
 
 type SupportedTimeframe =
-  | '15min'
-  | '1h'
-  | '1day';
+  | "15min"
+  | "1h"
+  | "1day";
 
 function normalizeSymbols(
   value: unknown
@@ -58,7 +63,7 @@ function normalizeSymbols(
   const symbols = value
     .filter(
       (item): item is string =>
-        typeof item === 'string'
+        typeof item === "string"
     )
     .map((item) =>
       item.trim().toUpperCase()
@@ -93,10 +98,10 @@ function numberBetween(
 function normalizeTimeframe(
   value: unknown
 ): SupportedTimeframe {
-  return value === '1h' ||
-    value === '1day'
+  return value === "1h" ||
+    value === "1day"
     ? value
-    : '15min';
+    : "15min";
 }
 
 function buildRiskPlan(
@@ -159,16 +164,15 @@ function buildRiskPlan(
 }
 
 function isTechnicalError(
-  value:
-    | Awaited<
-        ReturnType<
-          typeof getTechnicalIndicators
-        >
-      >
+  value: Awaited<
+    ReturnType<
+      typeof getTechnicalIndicators
+    >
+  >
 ): value is {
   error: string;
 } {
-  return 'error' in value;
+  return "error" in value;
 }
 
 export async function POST(
@@ -232,14 +236,15 @@ export async function POST(
       });
 
     if (
-      result.status === 'WAIT' ||
+      result.status === "WAIT" ||
       result.opportunities.length === 0
     ) {
       return NextResponse.json({
         success: true,
-        action: 'WAIT',
+        action: "WAIT",
         market: result.market,
         recommendations: [],
+        rejected: [],
         message: result.message,
         generatedAt:
           new Date().toISOString(),
@@ -262,8 +267,10 @@ export async function POST(
               )
             ) {
               return {
+                action:
+                  "REJECT" as const,
                 approved: false,
-                rejectReasons: [
+                blockingReasons: [
                   `Stock indicators unavailable: ${technical.error}`,
                 ],
                 recommendation: null,
@@ -279,7 +286,8 @@ export async function POST(
                   price:
                     item.underlyingPrice,
                   changePercent:
-                    item.underlyingChangePercent ?? 0,
+                    item.underlyingChangePercent ??
+                    0,
                   marketChangePercent:
                     null,
                   ema9:
@@ -317,33 +325,61 @@ export async function POST(
                 maxRiskUsd
               );
 
-           const guardian = approveTrade({
-    marketScore: item.marketScore,
-    directionalStockScore:
+            const guardian =
+              approveTrade({
+                marketScore:
+                  item.marketScore,
+                directionalStockScore:
                   stock.directionalScore,
-    optionScore: item.finalScore,
-    spreadPercent: item.spreadPercent,
-    openInterest: item.openInterest,
-    volume: item.volume,
-    highImpactNews: false
-});
+                optionScore:
+                  item.finalScore,
+                spreadPercent:
+                  item.spreadPercent,
+                openInterest:
+                  item.openInterest,
+                volume:
+                  item.volume,
+                highImpactNews:
+                  false,
+              });
 
-            const executable =
-              guardian.approved &&
-              riskPlan.suggestedContracts >= 1;
+            const decision =
+              makeTradeDecision({
+                marketScore:
+                  item.marketScore,
+                directionalStockScore:
+                  stock.directionalScore,
+                optionScore:
+                  item.finalScore,
+                guardianApproved:
+                  guardian.approved,
+                suggestedContracts:
+                  riskPlan.suggestedContracts,
+                ivRank:
+                  item.ivContext.ivRank,
+                ivPercentile:
+                  item.ivContext.ivPercentile,
+                ivSamples:
+                  item.ivContext.samples,
+                highImpactNews:
+                  false,
+              });
 
             const recommendation = {
-              rank: item.rank,
+              rank:
+                item.rank,
               action:
-                executable
-                  ? 'BUY'
-                  : 'WAIT',
+                decision.action,
               approved:
-                executable,
-              rejectReasons:
-                executable
-                  ? []
-                  : guardian.reasons,
+                decision.approved,
+              confidence:
+                decision.confidence,
+              decisionReasons:
+                decision.reasons,
+              blockingReasons:
+                decision.blockingReasons,
+              decisionComponents:
+                decision.components,
               underlying:
                 item.underlying,
               direction:
@@ -358,8 +394,9 @@ export async function POST(
                 item.strike,
               underlyingPrice:
                 item.underlyingPrice,
-             changePercent:
-  item.underlyingChangePercent ?? 0,
+              underlyingChangePercent:
+                item.underlyingChangePercent ??
+                0,
               bid:
                 item.bid,
               ask:
@@ -368,8 +405,12 @@ export async function POST(
                 item.midpoint,
               delta:
                 item.delta,
+              gamma:
+                item.gamma,
               theta:
                 item.theta,
+              vega:
+                item.vega,
               impliedVolatility:
                 item.impliedVolatility,
               volume:
@@ -380,6 +421,10 @@ export async function POST(
                 item.spreadPercent,
               contractScore:
                 item.score,
+              optionBrain:
+                item.optionBrain,
+              ivContext:
+                item.ivContext,
               marketScore:
                 item.marketScore,
               stockScore:
@@ -396,34 +441,48 @@ export async function POST(
                 stock.components,
               finalScore:
                 item.finalScore,
+              guardian: {
+                approved:
+                  guardian.approved,
+                reasons:
+                  guardian.reasons,
+              },
               reasons:
                 item.reasons,
               warnings:
                 item.warnings,
               riskPlan,
               trigger:
-                executable
-                  ? 'ط§ظ†طھط¸ط± طھط£ظƒظٹط¯ ط§ظ„ط§ط®طھط±ط§ظ‚ ط£ظˆ ط§ظ„ظƒط³ط± ظ‚ط¨ظ„ ط§ظ„طھظ†ظپظٹط°'
-                  : 'ظ„ط§ طھط¯ط®ظ„ط› ط§ظ„طµظپظ‚ط© ظ„ظ… طھط¬طھط² ط¬ظ…ظٹط¹ ظپظ„ط§طھط± ظپظ‡ط¯',
+                decision.action === "BUY"
+                  ? "انتظر تأكيد الاختراق أو الكسر قبل التنفيذ"
+                  : decision.action === "WATCH"
+                    ? "راقب العقد وانتظر تحسن التأكيد قبل الدخول"
+                    : "لا تدخل؛ الصفقة لم تجتز قرار فهد النهائي",
             };
 
             return {
+              action:
+                decision.action,
               approved:
-                executable,
-              rejectReasons:
-                recommendation.rejectReasons,
+                decision.approved,
+              blockingReasons:
+                decision.blockingReasons,
               recommendation,
             };
           }
         )
       );
 
-    const approvedRecommendations =
+    const recommendations =
       evaluated
         .filter(
           (item) =>
-            item.approved &&
-            item.recommendation !== null
+            item.recommendation !==
+              null &&
+            (
+              item.action === "BUY" ||
+              item.action === "WATCH"
+            )
         )
         .map(
           (item) =>
@@ -434,48 +493,49 @@ export async function POST(
       evaluated
         .filter(
           (item) =>
-            !item.approved
+            item.recommendation ===
+              null ||
+            (
+              item.action !== "BUY" &&
+              item.action !== "WATCH"
+            )
         )
         .map(
           (item) => ({
-            rejectReasons:
-              item.rejectReasons,
+            action:
+              item.action,
+            blockingReasons:
+              item.blockingReasons,
             recommendation:
               item.recommendation,
           })
         );
 
-    if (
-      approvedRecommendations.length === 0
-    ) {
-      return NextResponse.json({
-        success: true,
-        action: 'WAIT',
-        market: result.market,
-        recommendations: [],
-        rejected,
-        scanSummary: {
-          symbolsScanned:
-            symbols,
-          contractsScanned:
-            result.contractsScanned,
-          qualifiedContracts:
-            result.qualifiedContracts,
-        },
-        message:
-          'ظ„ط§ طھظˆط¬ط¯ طµظپظ‚ط© ط£ظˆط¨ط´ظ† ط§ط¬طھط§ط²طھ ط¬ظ…ظٹط¹ ظپظ„ط§طھط± ط§ظ„ط³ظˆظ‚ ظˆط§ظ„ط³ظ‡ظ… ظˆط§ظ„ط¹ظ‚ط¯ ظˆط§ظ„ظ…ط®ط§ط·ط±.',
-        generatedAt:
-          new Date().toISOString(),
-      });
-    }
+    const hasBuy =
+      recommendations.some(
+        (item) =>
+          item?.action === "BUY"
+      );
+
+    const hasWatch =
+      recommendations.some(
+        (item) =>
+          item?.action === "WATCH"
+      );
+
+    const action =
+      hasBuy
+        ? "OPPORTUNITIES_FOUND"
+        : hasWatch
+          ? "WATCH"
+          : "WAIT";
 
     return NextResponse.json({
       success: true,
-      action:
-        'OPPORTUNITIES_FOUND',
-      market: result.market,
-      recommendations:
-        approvedRecommendations,
+      action,
+      market:
+        result.market,
+      recommendations,
       rejected,
       scanSummary: {
         symbolsScanned:
@@ -486,11 +546,17 @@ export async function POST(
           result.qualifiedContracts,
       },
       message:
-        'ظˆط¬ط¯ ظپظ‡ط¯ ظپط±طµ ط£ظˆط¨ط´ظ† ط§ط¬طھط§ط²طھ طھط­ظ„ظٹظ„ ط§ظ„ط³ظˆظ‚ ظˆط§ظ„ط³ظ‡ظ… ظˆط§ظ„ط¹ظ‚ط¯ ظˆط§ظ„ظ…ط®ط§ط·ط±.',
+        hasBuy
+          ? "وجد فهد فرص أوبشن اجتازت قرار السوق والسهم والعقد والمخاطر."
+          : hasWatch
+            ? "وجد فهد عقودًا تستحق المراقبة، لكن الدخول يحتاج تأكيدًا إضافيًا."
+            : "لا توجد صفقة أوبشن اجتازت قرار فهد النهائي.",
       generatedAt:
         new Date().toISOString(),
     });
-  } catch (error: unknown) {
+  } catch (
+    error: unknown
+  ) {
     const message =
       error instanceof Error
         ? error.message
@@ -500,7 +566,7 @@ export async function POST(
       {
         success: false,
         error:
-          'FAHD_RECOMMENDATIONS_FAILED',
+          "FAHD_RECOMMENDATIONS_FAILED",
         message,
       },
       {
@@ -514,20 +580,23 @@ export async function GET() {
   return NextResponse.json({
     success: true,
     service:
-      'Fahd Options Recommendations V2',
-    method: 'POST',
+      "Fahd Options Recommendations V3",
+    method:
+      "POST",
     pipeline: [
-      'Market Brain',
-      'Stock Brain',
-      'Option Brain',
-      'Guardian',
-      'Risk Plan',
+      "Market Brain",
+      "Stock Brain",
+      "Option Brain V2",
+      "IV History",
+      "Guardian",
+      "Decision Brain",
+      "Risk Plan",
     ],
     defaults: {
       symbols:
         DEFAULT_SYMBOLS,
       timeframe:
-        '15min',
+        "15min",
       maxRiskUsd:
         100,
       maxResults:
@@ -537,4 +606,3 @@ export async function GET() {
     },
   });
 }
-
