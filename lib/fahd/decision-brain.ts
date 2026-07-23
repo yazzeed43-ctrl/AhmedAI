@@ -10,10 +10,14 @@ export interface DecisionBrainInput {
   optionScore: number;
   guardianApproved: boolean;
   suggestedContracts: number;
+
   ivRank?: number | null;
   ivPercentile?: number | null;
   ivSamples?: number;
+
   highImpactNews?: boolean;
+  marketDataFresh?: boolean;
+  triggerConfirmed?: boolean;
 }
 
 export interface DecisionBrainResult {
@@ -134,6 +138,22 @@ export function makeTradeDecision(
     );
   }
 
+  if (
+    input.marketDataFresh === false
+  ) {
+    blockingReasons.push(
+      "Market data is stale"
+    );
+  }
+
+  if (
+    input.triggerConfirmed === false
+  ) {
+    blockingReasons.push(
+      "Entry trigger has not been confirmed"
+    );
+  }
+
   const ivScore =
     scoreIV(
       input.ivRank,
@@ -226,10 +246,29 @@ export function makeTradeDecision(
     );
   }
 
-  let action: DecisionAction;
+  if (
+    input.marketDataFresh !== false
+  ) {
+    reasons.push(
+      "Market data freshness passed"
+    );
+  }
 
   if (
-    blockingReasons.length === 0 &&
+    input.triggerConfirmed !== false
+  ) {
+    reasons.push(
+      "Entry trigger confirmed"
+    );
+  }
+
+  let action: DecisionAction;
+
+  const buyBlocked =
+    blockingReasons.length > 0;
+
+  if (
+    !buyBlocked &&
     confidence >= MIN_BUY_CONFIDENCE
   ) {
     action = "BUY";

@@ -358,6 +358,13 @@ const guardian = approveTrade({
                   item.ivContext.samples,
                 highImpactNews:
                   false,
+                marketDataFresh:
+                  result.market.primary
+                    ?.dataStatus
+                    ?.freshness === "fresh",
+                triggerConfirmed:
+                  result.market
+                    .triggerRequired === false,
               });
 
             const recommendation = {
