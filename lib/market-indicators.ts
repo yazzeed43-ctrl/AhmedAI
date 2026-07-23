@@ -2,6 +2,10 @@ import {
   rsi,
   macd,
   bollingerBands,
+  ema,
+  atr,
+  vwap,
+  averageVolume,
   findSupportResistance,
 } from '@/lib/technical-indicators';
 
@@ -112,6 +116,22 @@ export interface TechnicalIndicatorsResult {
     lower: number;
     positionPercent: number | null;
     signal: string;
+  };
+
+  stockMetrics: {
+    ema9: number;
+    ema20: number;
+    ema50: number;
+    vwap: number | null;
+    atr14: number;
+    volume: number | null;
+    averageVolume20: number | null;
+    relativeVolume: number | null;
+    previousHigh: number;
+    previousLow: number;
+    currentHigh: number;
+    currentLow: number;
+    structure: 'HIGHER_HIGH_HIGHER_LOW' | 'LOWER_HIGH_LOWER_LOW' | 'MIXED';
   };
 
   supportResistance: {
@@ -484,6 +504,20 @@ function parsePriceArray(
   );
 }
 
+function parseVolumeArray(
+  values: CandleValue[]
+): number[] {
+  return values.map((value) => {
+    const parsed = Number.parseFloat(
+      value.volume ?? '0'
+    );
+
+    return Number.isFinite(parsed)
+      ? Math.max(0, parsed)
+      : 0;
+  });
+}
+
 function hasValidCandles(
   data: TwelveDataResponse
 ): data is TwelveDataResponse & {
@@ -821,6 +855,11 @@ async function getTechnicalIndicatorsUncached(
         'low'
       );
 
+    const volumes =
+      parseVolumeArray(
+        completedValues
+      );
+
     if (
       closes.some(
         (value) =>
@@ -857,6 +896,32 @@ async function getTechnicalIndicatorsUncached(
         closes,
         20,
         2
+      );
+
+    const ema9Series =
+      ema(closes, 9);
+
+    const ema20Series =
+      ema(closes, 20);
+
+    const ema50Series =
+      ema(closes, 50);
+
+    const atr14Series =
+      atr(highs, lows, closes, 14);
+
+    const vwapSeries =
+      vwap(
+        highs,
+        lows,
+        closes,
+        volumes
+      );
+
+    const averageVolume20Series =
+      averageVolume(
+        volumes,
+        20
       );
 
     const lastIdx =
@@ -896,6 +961,48 @@ async function getTechnicalIndicatorsUncached(
 
     const lastBbLower =
       bbResult.lower[lastIdx];
+
+    const lastEma9 =
+      ema9Series[lastIdx];
+
+    const lastEma20 =
+      ema20Series[lastIdx];
+
+    const lastEma50 =
+      ema50Series[lastIdx];
+
+    const lastAtr14 =
+      atr14Series[lastIdx];
+
+    const lastVwap =
+      vwapSeries[lastIdx];
+
+    const lastVolume =
+      volumes[lastIdx] ?? 0;
+
+    const lastAverageVolume20 =
+      averageVolume20Series[lastIdx];
+
+    const previousHigh =
+      highs[previousIdx];
+
+    const previousLow =
+      lows[previousIdx];
+
+    const currentHigh =
+      highs[lastIdx];
+
+    const currentLow =
+      lows[lastIdx];
+
+    const structure =
+      currentHigh > previousHigh &&
+      currentLow > previousLow
+        ? 'HIGHER_HIGH_HIGHER_LOW'
+        : currentHigh < previousHigh &&
+            currentLow < previousLow
+          ? 'LOWER_HIGH_LOWER_LOW'
+          : 'MIXED';
 
     assertFiniteNumber(
       lastPrice,
@@ -1268,6 +1375,48 @@ async function getTechnicalIndicatorsUncached(
 
         signal:
           bbSignal,
+      },
+
+      stockMetrics: {
+        ema9:
+          Number(lastEma9.toFixed(4)),
+        ema20:
+          Number(lastEma20.toFixed(4)),
+        ema50:
+          Number(lastEma50.toFixed(4)),
+        vwap:
+          Number.isFinite(lastVwap)
+            ? Number(lastVwap.toFixed(4))
+            : null,
+        atr14:
+          Number(lastAtr14.toFixed(4)),
+        volume:
+          lastVolume > 0
+            ? lastVolume
+            : null,
+        averageVolume20:
+          Number.isFinite(lastAverageVolume20)
+            ? Number(lastAverageVolume20.toFixed(2))
+            : null,
+        relativeVolume:
+          Number.isFinite(lastAverageVolume20) &&
+          lastAverageVolume20 > 0
+            ? Number(
+                (
+                  lastVolume /
+                  lastAverageVolume20
+                ).toFixed(2)
+              )
+            : null,
+        previousHigh:
+          Number(previousHigh.toFixed(4)),
+        previousLow:
+          Number(previousLow.toFixed(4)),
+        currentHigh:
+          Number(currentHigh.toFixed(4)),
+        currentLow:
+          Number(currentLow.toFixed(4)),
+        structure,
       },
 
       supportResistance,
