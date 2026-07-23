@@ -325,24 +325,19 @@ export async function POST(
                 maxRiskUsd
               );
 
-            const guardian =
-              approveTrade({
-                marketScore:
-                  item.marketScore,
-                directionalStockScore:
-                  stock.directionalScore,
-                optionScore:
-                  item.finalScore,
-                spreadPercent:
-                  item.spreadPercent,
-                openInterest:
-                  item.openInterest,
-                volume:
-                  item.volume,
-                highImpactNews:
-                  false,
-              });
+const guardian = approveTrade({
+  marketScore: item.marketScore,
+  directionalStockScore: item.directionalStockScore,
+  optionScore: item.finalScore,
 
+  spreadPercent: item.spreadPercent,
+  openInterest: item.openInterest,
+  volume: item.volume,
+
+  ivRank: item.ivContext?.ivRank ?? 50,
+
+  highImpactNews: false,
+});
             const decision =
               makeTradeDecision({
                 marketScore:
