@@ -7,6 +7,18 @@ import {
   runFahdScannerV3,
 } from '@/lib/trading/fahd-scanner-v3';
 
+import {
+  getTechnicalIndicators,
+} from '@/lib/market-indicators';
+
+import {
+  scoreStock,
+} from '@/lib/fahd/stock-brain';
+
+import {
+  approveTrade,
+} from '@/lib/fahd/guardian';
+
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -31,15 +43,29 @@ type RequestBody = {
   maxDte?: unknown;
 };
 
-function normalizeSymbols(value: unknown): string[] {
+type SupportedTimeframe =
+  | '15min'
+  | '1h'
+  | '1day';
+
+function normalizeSymbols(
+  value: unknown
+): string[] {
   if (!Array.isArray(value)) {
     return DEFAULT_SYMBOLS;
   }
 
   const symbols = value
-    .filter((item): item is string => typeof item === 'string')
-    .map((item) => item.trim().toUpperCase())
-    .filter((item) => /^[A-Z][A-Z0-9.]{0,9}$/.test(item));
+    .filter(
+      (item): item is string =>
+        typeof item === 'string'
+    )
+    .map((item) =>
+      item.trim().toUpperCase()
+    )
+    .filter((item) =>
+      /^[A-Z][A-Z0-9.]{0,9}$/.test(item)
+    );
 
   return symbols.length > 0
     ? [...new Set(symbols)].slice(0, 20)
@@ -58,13 +84,17 @@ function numberBetween(
     return fallback;
   }
 
-  return Math.max(minimum, Math.min(maximum, parsed));
+  return Math.max(
+    minimum,
+    Math.min(maximum, parsed)
+  );
 }
 
 function normalizeTimeframe(
   value: unknown
-): '15min' | '1h' | '1day' {
-  return value === '1h' || value === '1day'
+): SupportedTimeframe {
+  return value === '1h' ||
+    value === '1day'
     ? value
     : '15min';
 }
@@ -75,19 +105,41 @@ function buildRiskPlan(
   maxRiskUsd: number
 ) {
   const entry = midpoint;
-  const stopPercent = score >= 90 ? 0.25 : 0.3;
+
+  const stopPercent =
+    score >= 90
+      ? 0.25
+      : 0.3;
+
   const stop = Number(
-    Math.max(0.01, entry * (1 - stopPercent)).toFixed(2)
+    Math.max(
+      0.01,
+      entry * (1 - stopPercent)
+    ).toFixed(2)
   );
-  const target1 = Number((entry * 1.35).toFixed(2));
-  const target2 = Number((entry * 1.7).toFixed(2));
+
+  const target1 = Number(
+    (entry * 1.35).toFixed(2)
+  );
+
+  const target2 = Number(
+    (entry * 1.7).toFixed(2)
+  );
+
   const riskPerContract = Number(
     ((entry - stop) * 100).toFixed(2)
   );
-  const costPerContract = Number((entry * 100).toFixed(2));
+
+  const costPerContract = Number(
+    (entry * 100).toFixed(2)
+  );
+
   const suggestedContracts =
     riskPerContract > 0
-      ? Math.floor(maxRiskUsd / riskPerContract)
+      ? Math.floor(
+          maxRiskUsd /
+          riskPerContract
+        )
       : 0;
 
   return {
@@ -98,42 +150,86 @@ function buildRiskPlan(
     riskPerContract,
     costPerContract,
     maxRiskUsd,
-    suggestedContracts: Math.max(0, suggestedContracts),
+    suggestedContracts:
+      Math.max(
+        0,
+        suggestedContracts
+      ),
   };
 }
 
-export async function POST(request: NextRequest) {
-  try {
-    const body = (await request.json()) as RequestBody;
-    const symbols = normalizeSymbols(body.symbols);
-    const maxRiskUsd = numberBetween(
-      body.maxRiskUsd,
-      100,
-      25,
-      10_000
-    );
-    const maxResults = Math.floor(
-      numberBetween(body.maxResults, 2, 1, 2)
-    );
-    const maxDte = Math.floor(
-      numberBetween(body.maxDte, 7, 1, 14)
-    );
+function isTechnicalError(
+  value:
+    | Awaited<
+        ReturnType<
+          typeof getTechnicalIndicators
+        >
+      >
+): value is {
+  error: string;
+} {
+  return 'error' in value;
+}
 
-    const result = await runFahdScannerV3({
-      symbols,
-      timeframe: normalizeTimeframe(body.timeframe),
-      maxDte,
-      expirationsPerSymbol: 3,
-      maxResults,
-      minPrice: 0.3,
-      maxPrice: 15,
-      minVolume: 100,
-      minOpenInterest: 500,
-      maxSpreadPercent: 12,
-      minDelta: 0.45,
-      maxDelta: 0.7,
-      minimumFinalScore: 80,
-    });
+export async function POST(
+  request: NextRequest
+) {
+  try {
+    const body =
+      (await request.json()) as RequestBody;
+
+    const symbols =
+      normalizeSymbols(body.symbols);
+
+    const timeframe =
+      normalizeTimeframe(
+        body.timeframe
+      );
+
+    const maxRiskUsd =
+      numberBetween(
+        body.maxRiskUsd,
+        100,
+        25,
+        10_000
+      );
+
+    const maxResults =
+      Math.floor(
+        numberBetween(
+          body.maxResults,
+          2,
+          1,
+          2
+        )
+      );
+
+    const maxDte =
+      Math.floor(
+        numberBetween(
+          body.maxDte,
+          7,
+          1,
+          14
+        )
+      );
+
+    const result =
+      await runFahdScannerV3({
+        symbols,
+        timeframe,
+        maxDte,
+        expirationsPerSymbol: 3,
+        maxResults,
+        minPrice: 0.3,
+        maxPrice: 15,
+        minVolume: 100,
+        minOpenInterest: 500,
+        maxSpreadPercent: 12,
+        minDelta: 0.45,
+        maxDelta: 0.7,
+        minimumFinalScore: 80,
+      });
 
     if (
       result.status === 'WAIT' ||
@@ -145,82 +241,278 @@ export async function POST(request: NextRequest) {
         market: result.market,
         recommendations: [],
         message: result.message,
-        generatedAt: new Date().toISOString(),
+        generatedAt:
+          new Date().toISOString(),
       });
     }
 
-    const recommendations = result.opportunities.map((item) => {
-      const riskPlan = buildRiskPlan(
-        item.midpoint,
-        item.finalScore,
-        maxRiskUsd
+    const evaluated =
+      await Promise.all(
+        result.opportunities.map(
+          async (item) => {
+            const technical =
+              await getTechnicalIndicators(
+                item.underlying,
+                timeframe
+              );
+
+            if (
+              isTechnicalError(
+                technical
+              )
+            ) {
+              return {
+                approved: false,
+                rejectReasons: [
+                  `Stock indicators unavailable: ${technical.error}`,
+                ],
+                recommendation: null,
+              };
+            }
+
+            const metrics =
+              technical.stockMetrics;
+
+            const stock =
+              scoreStock(
+                {
+                  price:
+                    item.underlyingPrice,
+                  changePercent:
+                    item.underlyingChangePercent,
+                  marketChangePercent:
+                    null,
+                  ema9:
+                    metrics.ema9,
+                  ema20:
+                    metrics.ema20,
+                  ema50:
+                    metrics.ema50,
+                  vwap:
+                    metrics.vwap,
+                  atr14:
+                    metrics.atr14,
+                  volume:
+                    metrics.volume,
+                  averageVolume20:
+                    metrics.averageVolume20,
+                  relativeVolume:
+                    metrics.relativeVolume,
+                  previousHigh:
+                    metrics.previousHigh,
+                  previousLow:
+                    metrics.previousLow,
+                  currentHigh:
+                    metrics.currentHigh,
+                  currentLow:
+                    metrics.currentLow,
+                },
+                item.direction
+              );
+
+            const riskPlan =
+              buildRiskPlan(
+                item.midpoint,
+                item.finalScore,
+                maxRiskUsd
+              );
+
+            const guardian =
+              approveTrade({
+                marketScore:
+                  item.marketScore,
+                stockScore:
+                  stock.directionalScore,
+                optionScore:
+                  item.finalScore,
+                spreadPercent:
+                  item.spreadPercent,
+                openInterest:
+                  item.openInterest,
+                volume:
+                  item.volume,
+                highImpactNews:
+                  false,
+              });
+
+            const executable =
+              guardian.approved &&
+              riskPlan.suggestedContracts >= 1;
+
+            const recommendation = {
+              rank: item.rank,
+              action:
+                executable
+                  ? 'BUY'
+                  : 'WAIT',
+              approved:
+                executable,
+              rejectReasons:
+                executable
+                  ? []
+                  : guardian.reasons,
+              underlying:
+                item.underlying,
+              direction:
+                item.direction,
+              contractSymbol:
+                item.contractSymbol,
+              expiration:
+                item.expiration,
+              daysToExpiration:
+                item.daysToExpiration,
+              strike:
+                item.strike,
+              underlyingPrice:
+                item.underlyingPrice,
+              underlyingChangePercent:
+                item.underlyingChangePercent,
+              bid:
+                item.bid,
+              ask:
+                item.ask,
+              midpoint:
+                item.midpoint,
+              delta:
+                item.delta,
+              theta:
+                item.theta,
+              impliedVolatility:
+                item.impliedVolatility,
+              volume:
+                item.volume,
+              openInterest:
+                item.openInterest,
+              spreadPercent:
+                item.spreadPercent,
+              contractScore:
+                item.score,
+              marketScore:
+                item.marketScore,
+              stockScore:
+                stock.score,
+              directionalStockScore:
+                stock.directionalScore,
+              stockTrend:
+                stock.trend,
+              stockReasons:
+                stock.reasons,
+              stockWarnings:
+                stock.warnings,
+              stockComponents:
+                stock.components,
+              finalScore:
+                item.finalScore,
+              reasons:
+                item.reasons,
+              warnings:
+                item.warnings,
+              riskPlan,
+              trigger:
+                executable
+                  ? 'انتظر تأكيد الاختراق أو الكسر قبل التنفيذ'
+                  : 'لا تدخل؛ الصفقة لم تجتز جميع فلاتر فهد',
+            };
+
+            return {
+              approved:
+                executable,
+              rejectReasons:
+                recommendation.rejectReasons,
+              recommendation,
+            };
+          }
+        )
       );
 
-      const executable =
-        item.finalScore >= 85 &&
-        item.score >= 80 &&
-        riskPlan.suggestedContracts >= 1;
+    const approvedRecommendations =
+      evaluated
+        .filter(
+          (item) =>
+            item.approved &&
+            item.recommendation !== null
+        )
+        .map(
+          (item) =>
+            item.recommendation
+        );
 
-      return {
-        rank: item.rank,
-        action: executable ? 'BUY' : 'WATCH',
-        underlying: item.underlying,
-        direction: item.direction,
-        contractSymbol: item.contractSymbol,
-        expiration: item.expiration,
-        daysToExpiration: item.daysToExpiration,
-        strike: item.strike,
-        underlyingPrice: item.underlyingPrice,
-        underlyingChangePercent: item.underlyingChangePercent,
-        bid: item.bid,
-        ask: item.ask,
-        midpoint: item.midpoint,
-        delta: item.delta,
-        theta: item.theta,
-        impliedVolatility: item.impliedVolatility,
-        volume: item.volume,
-        openInterest: item.openInterest,
-        spreadPercent: item.spreadPercent,
-        contractScore: item.score,
-        marketScore: item.marketScore,
-        finalScore: item.finalScore,
-        reasons: item.reasons,
-        warnings: item.warnings,
-        riskPlan,
-        trigger: executable
-          ? 'انتظر تأكيد الاختراق أو الكسر قبل التنفيذ'
-          : 'راقب ولا تدخل حتى تتحسن الدرجة والتفعيل',
-      };
-    });
+    const rejected =
+      evaluated
+        .filter(
+          (item) =>
+            !item.approved
+        )
+        .map(
+          (item) => ({
+            rejectReasons:
+              item.rejectReasons,
+            recommendation:
+              item.recommendation,
+          })
+        );
+
+    if (
+      approvedRecommendations.length === 0
+    ) {
+      return NextResponse.json({
+        success: true,
+        action: 'WAIT',
+        market: result.market,
+        recommendations: [],
+        rejected,
+        scanSummary: {
+          symbolsScanned:
+            symbols,
+          contractsScanned:
+            result.contractsScanned,
+          qualifiedContracts:
+            result.qualifiedContracts,
+        },
+        message:
+          'لا توجد صفقة أوبشن اجتازت جميع فلاتر السوق والسهم والعقد والمخاطر.',
+        generatedAt:
+          new Date().toISOString(),
+      });
+    }
 
     return NextResponse.json({
       success: true,
-      action: recommendations.some((item) => item.action === 'BUY')
-        ? 'OPPORTUNITIES_FOUND'
-        : 'WATCH',
+      action:
+        'OPPORTUNITIES_FOUND',
       market: result.market,
-      recommendations,
+      recommendations:
+        approvedRecommendations,
+      rejected,
       scanSummary: {
-        symbolsScanned: symbols,
-        contractsScanned: result.contractsScanned,
-        qualifiedContracts: result.qualifiedContracts,
+        symbolsScanned:
+          symbols,
+        contractsScanned:
+          result.contractsScanned,
+        qualifiedContracts:
+          result.qualifiedContracts,
       },
-      message: recommendations.some((item) => item.action === 'BUY')
-        ? 'وجد فهد فرص أوبشن متوافقة مع اتجاه السوق وجودة العقد.'
-        : 'وجد فهد عقودًا جيدة، لكن الدخول يحتاج تأكيدًا إضافيًا.',
-      generatedAt: new Date().toISOString(),
+      message:
+        'وجد فهد فرص أوبشن اجتازت تحليل السوق والسهم والعقد والمخاطر.',
+      generatedAt:
+        new Date().toISOString(),
     });
   } catch (error: unknown) {
     const message =
-      error instanceof Error ? error.message : String(error);
+      error instanceof Error
+        ? error.message
+        : String(error);
 
     return NextResponse.json(
       {
         success: false,
-        error: 'FAHD_RECOMMENDATIONS_FAILED',
+        error:
+          'FAHD_RECOMMENDATIONS_FAILED',
         message,
       },
-      { status: 500 }
+      {
+        status: 500,
+      }
     );
   }
 }
@@ -228,14 +520,27 @@ export async function POST(request: NextRequest) {
 export async function GET() {
   return NextResponse.json({
     success: true,
-    service: 'Fahd Options Recommendations V1',
+    service:
+      'Fahd Options Recommendations V2',
     method: 'POST',
+    pipeline: [
+      'Market Brain',
+      'Stock Brain',
+      'Option Brain',
+      'Guardian',
+      'Risk Plan',
+    ],
     defaults: {
-      symbols: DEFAULT_SYMBOLS,
-      timeframe: '15min',
-      maxRiskUsd: 100,
-      maxResults: 2,
-      maxDte: 7,
+      symbols:
+        DEFAULT_SYMBOLS,
+      timeframe:
+        '15min',
+      maxRiskUsd:
+        100,
+      maxResults:
+        2,
+      maxDte:
+        7,
     },
   });
 }
