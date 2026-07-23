@@ -24,6 +24,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 const DEFAULT_SYMBOLS = [
+  'SPX',
   'SPY',
   'QQQ',
   'AAPL',
@@ -34,7 +35,6 @@ const DEFAULT_SYMBOLS = [
   'AMD',
   'MSFT',
 ];
-
 type RequestBody = {
   symbols?: unknown;
   maxRiskUsd?: unknown;
