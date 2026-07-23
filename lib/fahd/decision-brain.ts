@@ -31,6 +31,12 @@ export interface DecisionBrainResult {
   };
 }
 
+const MIN_MARKET_SCORE = 60;
+const MIN_DIRECTIONAL_STOCK_SCORE = 55;
+const MIN_OPTION_SCORE = 80;
+const MIN_BUY_CONFIDENCE = 75;
+const MIN_WATCH_CONFIDENCE = 65;
+
 function clamp(
   value: number,
   minimum = 0,
@@ -81,21 +87,28 @@ export function makeTradeDecision(
   const blockingReasons: string[] = [];
   const reasons: string[] = [];
 
-  if (input.marketScore < 60) {
+  if (
+    input.marketScore <
+    MIN_MARKET_SCORE
+  ) {
     blockingReasons.push(
       "Market score is below the minimum"
     );
   }
 
   if (
-    input.directionalStockScore < 75
+    input.directionalStockScore <
+    MIN_DIRECTIONAL_STOCK_SCORE
   ) {
     blockingReasons.push(
       "Directional stock score is below the minimum"
     );
   }
 
-  if (input.optionScore < 85) {
+  if (
+    input.optionScore <
+    MIN_OPTION_SCORE
+  ) {
     blockingReasons.push(
       "Option score is below the minimum"
     );
@@ -107,7 +120,9 @@ export function makeTradeDecision(
     );
   }
 
-  if (input.suggestedContracts < 1) {
+  if (
+    input.suggestedContracts < 1
+  ) {
     blockingReasons.push(
       "Risk budget does not allow one contract"
     );
@@ -143,21 +158,41 @@ export function makeTradeDecision(
       )
     );
 
-  if (input.marketScore >= 75) {
+  if (
+    input.marketScore >= 70
+  ) {
     reasons.push(
       "Strong market alignment"
     );
   }
 
   if (
-    input.directionalStockScore >= 85
+    input.directionalStockScore >= 55
+  ) {
+    reasons.push(
+      "Stock direction is acceptable"
+    );
+  }
+
+  if (
+    input.directionalStockScore >= 75
   ) {
     reasons.push(
       "Strong stock alignment"
     );
   }
 
-  if (input.optionScore >= 90) {
+  if (
+    input.optionScore >= 80
+  ) {
+    reasons.push(
+      "Option contract passed quality requirements"
+    );
+  }
+
+  if (
+    input.optionScore >= 90
+  ) {
     reasons.push(
       "High-quality option contract"
     );
@@ -174,6 +209,15 @@ export function makeTradeDecision(
   }
 
   if (
+    input.ivSamples === undefined ||
+    input.ivSamples < 10
+  ) {
+    reasons.push(
+      "IV history is still being collected"
+    );
+  }
+
+  if (
     input.guardianApproved &&
     input.suggestedContracts >= 1
   ) {
@@ -186,17 +230,17 @@ export function makeTradeDecision(
 
   if (
     blockingReasons.length === 0 &&
-    confidence >= 85
+    confidence >= MIN_BUY_CONFIDENCE
   ) {
     action = "BUY";
   } else if (
     input.guardianApproved &&
     input.suggestedContracts >= 1 &&
-    confidence >= 75
+    confidence >= MIN_WATCH_CONFIDENCE
   ) {
     action = "WATCH";
   } else if (
-    confidence >= 60
+    confidence >= 55
   ) {
     action = "WAIT";
   } else {
