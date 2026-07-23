@@ -11,6 +11,11 @@ import {
   type OptionBrainResult,
 } from "@/lib/fahd/option-brain";
 
+import {
+  getIVMetrics,
+  saveIVHistory,
+} from "@/lib/fahd/iv-history";
+
 export interface TradierScannerConfig {
   symbols: string[];
   maxDte?: number;
@@ -23,6 +28,18 @@ export interface TradierScannerConfig {
   maxSpreadPercent?: number;
   minDelta?: number;
   maxDelta?: number;
+}
+
+export interface IVContext {
+  ivRank: number | null;
+  ivPercentile: number | null;
+  samples: number;
+  signal:
+    | "LOW"
+    | "NORMAL"
+    | "HIGH"
+    | "INSUFFICIENT_DATA";
+  scoreAdjustment: number;
 }
 
 export interface TradierOpportunity {
@@ -53,9 +70,16 @@ export interface TradierOpportunity {
   reasons: string[];
   warnings: string[];
   optionBrain: OptionBrainResult;
+  ivContext: IVContext;
 }
 
+type BaseOpportunity = Omit<
+  TradierOpportunity,
+  "rank" | "ivContext"
+>;
+
 const DAY_MS = 86_400_000;
+const MIN_IV_SAMPLES = 10;
 
 function daysToExpiration(
   expiration: string
@@ -113,26 +137,95 @@ function quotePrice(
 }
 
 function normalizeTier(
-  tier: OptionBrainResult["tier"]
+  score: number
 ): TradierOpportunity["tier"] {
-  if (tier === "GOLD") {
+  if (score >= 85) {
     return "GOLD";
   }
 
-  if (tier === "STRONG") {
+  if (score >= 72) {
     return "STRONG";
   }
 
   return "WATCH";
 }
 
+function clampScore(
+  score: number
+): number {
+  return Math.max(
+    0,
+    Math.min(
+      100,
+      Math.round(score)
+    )
+  );
+}
+
+function emptyIVContext(): IVContext {
+  return {
+    ivRank: null,
+    ivPercentile: null,
+    samples: 0,
+    signal: "INSUFFICIENT_DATA",
+    scoreAdjustment: 0,
+  };
+}
+
+function buildIVContext(
+  ivRank: number,
+  ivPercentile: number,
+  samples: number
+): IVContext {
+  if (samples < MIN_IV_SAMPLES) {
+    return {
+      ivRank,
+      ivPercentile,
+      samples,
+      signal: "INSUFFICIENT_DATA",
+      scoreAdjustment: 0,
+    };
+  }
+
+  if (
+    ivRank >= 80 ||
+    ivPercentile >= 80
+  ) {
+    return {
+      ivRank,
+      ivPercentile,
+      samples,
+      signal: "HIGH",
+      scoreAdjustment: -5,
+    };
+  }
+
+  if (
+    ivRank <= 20 &&
+    ivPercentile <= 25
+  ) {
+    return {
+      ivRank,
+      ivPercentile,
+      samples,
+      signal: "LOW",
+      scoreAdjustment: 4,
+    };
+  }
+
+  return {
+    ivRank,
+    ivPercentile,
+    samples,
+    signal: "NORMAL",
+    scoreAdjustment: 2,
+  };
+}
+
 function scoreContract(
   option: TradierOption,
   quote: TradierQuote
-): Omit<
-  TradierOpportunity,
-  "rank"
-> | null {
+): BaseOpportunity | null {
   const underlyingPrice =
     quotePrice(quote);
 
@@ -222,14 +315,6 @@ function scoreContract(
       openInterest,
     });
 
-  const proximityPercent =
-    optionBrain.metrics
-      .moneynessPercent;
-
-  const spreadPercent =
-    optionBrain.metrics
-      .spreadPercent;
-
   const reasons = [
     ...optionBrain.reasons,
   ];
@@ -261,7 +346,7 @@ function scoreContract(
     directionMatches
   ) {
     reasons.push(
-      "متوافق مع حركة الأصل الحالية"
+      "Direction matches current underlying move"
     );
   } else if (
     Math.abs(
@@ -269,14 +354,14 @@ function scoreContract(
     ) >= 0.25
   ) {
     warnings.push(
-      "اتجاه العقد لا يتوافق مع حركة الأصل الحالية"
+      "Contract direction conflicts with current underlying move"
     );
   }
 
   return {
     tier:
       normalizeTier(
-        optionBrain.tier
+        optionBrain.score
       ),
     underlying:
       quote.symbol,
@@ -305,7 +390,9 @@ function scoreContract(
       Number(
         midpoint.toFixed(2)
       ),
-    spreadPercent,
+    spreadPercent:
+      optionBrain.metrics
+        .spreadPercent,
     last:
       nullableNumber(
         option.last
@@ -317,13 +404,125 @@ function scoreContract(
     impliedVolatility,
     volume,
     openInterest,
-    proximityPercent,
+    proximityPercent:
+      optionBrain.metrics
+        .moneynessPercent,
     score:
       optionBrain.score,
     reasons,
     warnings,
     optionBrain,
   };
+}
+
+async function enrichWithIVHistory(
+  item: BaseOpportunity
+): Promise<
+  Omit<
+    TradierOpportunity,
+    "rank"
+  >
+> {
+  if (
+    item.impliedVolatility === null ||
+    !Number.isFinite(
+      item.impliedVolatility
+    )
+  ) {
+    return {
+      ...item,
+      ivContext:
+        emptyIVContext(),
+    };
+  }
+
+  try {
+    const metrics =
+      await getIVMetrics(
+        item.contractSymbol,
+        item.impliedVolatility
+      );
+
+    const ivContext =
+      buildIVContext(
+        metrics.ivRank,
+        metrics.ivPercentile,
+        metrics.samples
+      );
+
+    const score =
+      clampScore(
+        item.score +
+        ivContext.scoreAdjustment
+      );
+
+    const reasons = [
+      ...item.reasons,
+    ];
+
+    const warnings = [
+      ...item.warnings,
+    ];
+
+    if (
+      ivContext.signal === "LOW"
+    ) {
+      reasons.push(
+        "IV is low versus contract history"
+      );
+    } else if (
+      ivContext.signal === "NORMAL"
+    ) {
+      reasons.push(
+        "IV is within a normal historical range"
+      );
+    } else if (
+      ivContext.signal === "HIGH"
+    ) {
+      warnings.push(
+        "IV is elevated versus contract history"
+      );
+    } else {
+      warnings.push(
+        "Insufficient IV history for reliable rank"
+      );
+    }
+
+    await saveIVHistory({
+      contractSymbol:
+        item.contractSymbol,
+      underlying:
+        item.underlying,
+      expiration:
+        item.expiration,
+      strike:
+        item.strike,
+      optionType:
+        item.direction,
+      impliedVolatility:
+        item.impliedVolatility,
+    });
+
+    return {
+      ...item,
+      score,
+      tier:
+        normalizeTier(score),
+      reasons,
+      warnings,
+      ivContext,
+    };
+  } catch {
+    return {
+      ...item,
+      ivContext:
+        emptyIVContext(),
+      warnings: [
+        ...item.warnings,
+        "IV history service unavailable",
+      ],
+    };
+  }
 }
 
 export async function scanTradierOpportunities(
@@ -397,10 +596,7 @@ export async function scanTradierOpportunities(
     );
 
   const opportunities:
-    Omit<
-      TradierOpportunity,
-      "rank"
-    >[] = [];
+    BaseOpportunity[] = [];
 
   let contractsScanned = 0;
 
@@ -495,21 +691,57 @@ export async function scanTradierOpportunities(
     }
   }
 
-  const ranked:
-    TradierOpportunity[] =
+  const shortlistLimit =
+    Math.min(
+      opportunities.length,
+      Math.max(
+        resultLimit * 3,
+        10
+      )
+    );
+
+  const shortlist =
     opportunities
       .sort(
         (first, second) =>
           second.score -
             first.score ||
-          (
-            second.optionBrain
-              .metrics
-              .activityScore -
+          second.optionBrain
+            .metrics
+            .activityScore -
             first.optionBrain
               .metrics
-              .activityScore
-          ) ||
+              .activityScore ||
+          second.volume -
+            first.volume ||
+          second.openInterest -
+            first.openInterest
+      )
+      .slice(
+        0,
+        shortlistLimit
+      );
+
+  const enriched =
+    await Promise.all(
+      shortlist.map(
+        enrichWithIVHistory
+      )
+    );
+
+  const ranked:
+    TradierOpportunity[] =
+    enriched
+      .sort(
+        (first, second) =>
+          second.score -
+            first.score ||
+          second.optionBrain
+            .metrics
+            .activityScore -
+            first.optionBrain
+              .metrics
+              .activityScore ||
           second.volume -
             first.volume ||
           second.openInterest -
@@ -531,7 +763,7 @@ export async function scanTradierOpportunities(
     source:
       "Tradier Brokerage API",
     engine:
-      "Fahd Option Brain V2",
+      "Fahd Option Brain V2 + IV History",
     generatedAt:
       new Date().toISOString(),
     symbolsScanned:
@@ -539,11 +771,13 @@ export async function scanTradierOpportunities(
     contractsScanned,
     qualifiedContracts:
       opportunities.length,
+    ivHistoryEnriched:
+      enriched.length,
     opportunities:
       ranked,
     message:
       ranked.length > 0
-        ? `تم العثور على ${ranked.length} من أفضل عقود الأوبشن المتاحة.`
-        : "لا توجد عقود تحقق شروط Option Brain والسيولة والسبريد والدلتا حاليًا.",
+        ? `Found ${ranked.length} qualified option contracts.`
+        : "No contracts passed Option Brain, liquidity, spread, and delta filters.",
   };
 }
