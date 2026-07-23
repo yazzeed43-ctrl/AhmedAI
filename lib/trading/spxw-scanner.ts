@@ -16,10 +16,16 @@ export interface SpxwScannerConfig {
 }
 
 export async function scanSpxwOpportunities(
-  config: SpxwScannerConfig = {}
+  config:
+    SpxwScannerConfig = {}
 ) {
   const maxDte =
-    config.maxDte ?? 2;
+    Math.max(
+      0,
+      Math.floor(
+        config.maxDte ?? 2
+      )
+    );
 
   const maxResults =
     Math.max(
@@ -32,7 +38,8 @@ export async function scanSpxwOpportunities(
 
   const result =
     await scanSpxwOpportunitiesV3({
-      maxResults: 2,
+      maxDte,
+      maxResults,
       minimumFinalScore:
         config.minimumFinalScore ??
         72,
@@ -66,11 +73,6 @@ export async function scanSpxwOpportunities(
 
   const opportunities =
     result.opportunities
-      .filter(
-        (item) =>
-          item.daysToExpiration <=
-          maxDte
-      )
       .slice(
         0,
         maxResults
@@ -78,7 +80,8 @@ export async function scanSpxwOpportunities(
       .map(
         (item, index) => ({
           ...item,
-          rank: index + 1,
+          rank:
+            index + 1,
         })
       );
 
@@ -95,15 +98,9 @@ export async function scanSpxwOpportunities(
       result.market,
     underlyingPrice:
       result.underlyingPrice,
-   expirationsScanned:
-  (
-    result.expirationsScanned ?? []
-  ).filter(
-    (expiration) =>
-      daysToExpiration(
-        expiration
-      ) <= maxDte
-  ),
+    expirationsScanned:
+      result.expirationsScanned ??
+      [],
     contractsScanned:
       result.contractsScanned,
     spxwContractsFound:
@@ -114,24 +111,4 @@ export async function scanSpxwOpportunities(
         ? `وجد فهد ${opportunities.length} فرصة SPXW متوافقة مع السوق.`
         : "لا يوجد عقد SPXW يحقق الشروط الآن.",
   };
-}
-
-function daysToExpiration(
-  expiration: string
-): number {
-  const end =
-    new Date(
-      `${expiration}T20:00:00Z`
-    ).getTime();
-
-  return Math.max(
-    0,
-    Math.ceil(
-      (
-        end -
-        Date.now()
-      ) /
-      86_400_000
-    )
-  );
 }
