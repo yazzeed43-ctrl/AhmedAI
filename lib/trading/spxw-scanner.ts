@@ -1,6 +1,4 @@
-import {
-  scanSpxwOpportunitiesV3,
-} from "./spxw-scanner-v3";
+import { scanSpxwOpportunitiesV3 } from "./spxw-scanner-v3";
 
 export interface SpxwScannerConfig {
   maxDte?: number;
@@ -15,96 +13,47 @@ export interface SpxwScannerConfig {
   maxDelta?: number;
 }
 
-export async function scanSpxwOpportunities(
-  config:
-    SpxwScannerConfig = {}
-) {
-  const maxDte =
-    Math.max(
-      0,
-      Math.floor(
-        config.maxDte ?? 2
-      )
-    );
+export async function scanSpxwOpportunities(config: SpxwScannerConfig = {}) {
+  const maxDte = Math.max(0, Math.floor(config.maxDte ?? 2));
 
-  const maxResults =
-    Math.max(
-      1,
-      Math.min(
-        2,
-        config.maxResults ?? 2
-      )
-    );
+  const maxResults = Math.max(1, Math.min(2, config.maxResults ?? 2));
 
-  const result =
-    await scanSpxwOpportunitiesV3({
-      maxDte,
-      maxResults,
-      minimumFinalScore:
-        config.minimumFinalScore ??
-        72,
-      minPrice:
-        config.minPrice ?? 0.5,
-      maxPrice:
-        config.maxPrice ?? 20,
-      minVolume:
-        config.minVolume ?? 50,
-      minOpenInterest:
-        config.minOpenInterest ??
-        100,
-      maxSpreadPercent:
-        config.maxSpreadPercent ??
-        12,
-      minDelta:
-        config.minDelta ?? 0.45,
-      maxDelta:
-        config.maxDelta ?? 0.7,
-    });
+  const result = await scanSpxwOpportunitiesV3({
+    maxDte,
+    maxResults,
+    minimumFinalScore: config.minimumFinalScore ?? 72,
+    minPrice: config.minPrice ?? 0.5,
+    maxPrice: config.maxPrice ?? 20,
+    minVolume: config.minVolume ?? 50,
+    minOpenInterest: config.minOpenInterest ?? 100,
+    maxSpreadPercent: config.maxSpreadPercent ?? 12,
+    minDelta: config.minDelta ?? 0.45,
+    maxDelta: config.maxDelta ?? 0.7,
+  });
 
-  if (
-    result.status === "WAIT"
-  ) {
+  if (result.status === "WAIT") {
     return {
       ...result,
-      source:
-        "Tradier SPX/SPXW option chains via SPXW Scanner V3",
+      source: "Tradier SPX/SPXW option chains via SPXW Scanner V3",
     };
   }
 
-  const opportunities =
-    result.opportunities
-      .slice(
-        0,
-        maxResults
-      )
-      .map(
-        (item, index) => ({
-          ...item,
-          rank:
-            index + 1,
-        })
-      );
+  const opportunities = result.opportunities
+    .slice(0, maxResults)
+    .map((item, index) => ({
+      ...item,
+      rank: index + 1,
+    }));
 
   return {
-    generatedAt:
-      result.generatedAt,
-    status:
-      opportunities.length > 0
-        ? "OPPORTUNITIES_FOUND"
-        : "NO_MATCH",
-    source:
-      "Tradier SPX/SPXW option chains via SPXW Scanner V3",
-    market:
-      result.market,
-    underlyingPrice:
-      result.underlyingPrice,
-    expirationsScanned:
-      result.expirationsScanned ??
-      [],
-    contractsScanned:
-      result.contractsScanned,
-    spxwContractsFound:
-      result.spxwContractsFound,
+    generatedAt: result.generatedAt,
+    status: opportunities.length > 0 ? "OPPORTUNITIES_FOUND" : "NO_MATCH",
+    source: "Tradier SPX/SPXW option chains via SPXW Scanner V3",
+    market: result.market,
+    underlyingPrice: result.underlyingPrice,
+    expirationsScanned: result.expirationsScanned ?? [],
+    contractsScanned: result.contractsScanned,
+    spxwContractsFound: result.spxwContractsFound,
     opportunities,
     message:
       opportunities.length > 0
