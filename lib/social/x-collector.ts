@@ -16,11 +16,26 @@ import {
   listTrustedXSources,
 } from '@/lib/social/trusted-x-sources';
 
+export type XIgnoreReason =
+  | 'UNTRUSTED_SOURCE'
+  | 'INVALID_DATE'
+  | 'NO_SYMBOLS'
+  | 'DUPLICATE_OR_SAVE_REJECTED';
+
+export type XIgnoredSample = {
+  tweetId: string;
+  source: string;
+  reason: XIgnoreReason;
+  text: string;
+};
+
 export type XCollectorResult = {
   checkedSources: number;
   fetchedTweets: number;
   savedSignals: number;
   ignoredTweets: number;
+  ignoredReasons: Record<XIgnoreReason, number>;
+  ignoredSamples: XIgnoredSample[];
   failedSources: string[];
 };
 
@@ -45,8 +60,6 @@ function normalizeMarketImpact(
   marketImpact: string,
   sourceCategory: string
 ): string {
-  // تدفقات الخيارات تعتبر دليلًا سوقيًا،
-  // وليست حدثًا رسميًا يفرض HIGH بمفرده.
   if (
     sourceCategory === 'OPTIONS_FLOW' &&
     marketImpact === 'HIGH'
@@ -61,6 +74,35 @@ function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) =>
     setTimeout(resolve, milliseconds)
   );
+}
+
+function compactTweetText(text: string): string {
+  return text
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180);
+}
+
+function recordIgnoredTweet(
+  result: XCollectorResult,
+  params: {
+    tweetId: string;
+    source: string;
+    reason: XIgnoreReason;
+    text: string;
+  }
+): void {
+  result.ignoredTweets += 1;
+  result.ignoredReasons[params.reason] += 1;
+
+  if (result.ignoredSamples.length < 8) {
+    result.ignoredSamples.push({
+      tweetId: params.tweetId,
+      source: params.source,
+      reason: params.reason,
+      text: compactTweetText(params.text),
+    });
+  }
 }
 
 export async function collectTrustedXSignals(params?: {
@@ -85,6 +127,13 @@ export async function collectTrustedXSignals(params?: {
     fetchedTweets: 0,
     savedSignals: 0,
     ignoredTweets: 0,
+    ignoredReasons: {
+      UNTRUSTED_SOURCE: 0,
+      INVALID_DATE: 0,
+      NO_SYMBOLS: 0,
+      DUPLICATE_OR_SAVE_REJECTED: 0,
+    },
+    ignoredSamples: [],
     failedSources: [],
   };
 
@@ -106,13 +155,22 @@ export async function collectTrustedXSignals(params?: {
       result.fetchedTweets += tweets.length;
 
       for (const tweet of tweets) {
+        const source =
+          tweet.authorUsername ||
+          configuredSource.username;
+
         const trustedSource =
           getTrustedXSource(
             tweet.authorUsername
           );
 
         if (!trustedSource) {
-          result.ignoredTweets += 1;
+          recordIgnoredTweet(result, {
+            tweetId: tweet.id,
+            source,
+            reason: 'UNTRUSTED_SOURCE',
+            text: tweet.text,
+          });
           continue;
         }
 
@@ -122,7 +180,12 @@ export async function collectTrustedXSignals(params?: {
           );
 
         if (!publishedAt) {
-          result.ignoredTweets += 1;
+          recordIgnoredTweet(result, {
+            tweetId: tweet.id,
+            source,
+            reason: 'INVALID_DATE',
+            text: tweet.text,
+          });
           continue;
         }
 
@@ -132,7 +195,12 @@ export async function collectTrustedXSignals(params?: {
           );
 
         if (parsed.symbols.length === 0) {
-          result.ignoredTweets += 1;
+          recordIgnoredTweet(result, {
+            tweetId: tweet.id,
+            source,
+            reason: 'NO_SYMBOLS',
+            text: tweet.text,
+          });
           continue;
         }
 
@@ -191,7 +259,13 @@ export async function collectTrustedXSignals(params?: {
         if (saved) {
           result.savedSignals += 1;
         } else {
-          result.ignoredTweets += 1;
+          recordIgnoredTweet(result, {
+            tweetId: tweet.id,
+            source,
+            reason:
+              'DUPLICATE_OR_SAVE_REJECTED',
+            text: tweet.text,
+          });
         }
       }
     } catch (error: unknown) {
@@ -213,8 +287,6 @@ export async function collectTrustedXSignals(params?: {
       sourceIndex < sources.length - 1;
 
     if (hasAnotherSource) {
-      // حساب TwitterAPI.io المجاني يسمح
-      // بطلب واحد فقط كل 5 ثوانٍ.
       await sleep(5_500);
     }
   }
