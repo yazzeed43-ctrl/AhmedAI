@@ -58,11 +58,12 @@ export async function GET(
       });
 
     return NextResponse.json({
-      ok: true,
-      result,
-      executedAt:
-        new Date().toISOString(),
-    });
+  ok: true,
+  windowSeconds: 600,
+  result,
+  executedAt:
+    new Date().toISOString(),
+});
   } catch (error: unknown) {
     const message =
       error instanceof Error
