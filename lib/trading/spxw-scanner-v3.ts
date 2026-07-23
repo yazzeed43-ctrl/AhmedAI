@@ -4,6 +4,10 @@ import {
   getTradierQuotes,
   type TradierOption,
 } from "./tradier-client";
+import {
+  scoreOption as scoreOptionBrain,
+  type OptionBrainInput,
+} from "@/lib/fahd/option-brain";
 
 type Direction = "CALL" | "PUT";
 
@@ -51,72 +55,78 @@ function daysToExpiration(expiration: string): number {
   return Math.max(0, Math.ceil((end - Date.now()) / 86_400_000));
 }
 
+// ملاحظة معمارية: هذي الدالة كانت تحسب score محليًا بمنطقها الخاص
+// (منسوخ تقريبًا حرفيًا من spxw-scanner.ts v1)، بشكل منفصل تمامًا
+// عن lib/fahd/option-brain.ts الموحد.
+// الآن أصبحت wrapper: تجهز المدخلات الخام من Tradier فقط،
+// وتفوّض كل منطق التسجيل (spread/volume/OI/delta/gamma/theta/vega/IV)
+// إلى option-brain.ts. لا يوجد سكور محسوب هنا يدويًا بعد الآن.
 function scoreOption(option: TradierOption, underlyingPrice: number) {
   const bid = n(option.bid);
   const ask = n(option.ask);
   if (bid <= 0 || ask <= 0 || ask < bid || underlyingPrice <= 0) return null;
 
   const midpoint = (bid + ask) / 2;
-  const spreadPercent = ((ask - bid) / midpoint) * 100;
   const delta =
     typeof option.greeks?.delta === "number" ? option.greeks.delta : null;
-  const absDelta = delta === null ? 0 : Math.abs(delta);
+  const gamma =
+    typeof option.greeks?.gamma === "number" ? option.greeks.gamma : null;
+  const theta =
+    typeof option.greeks?.theta === "number" ? option.greeks.theta : null;
+  const vega =
+    typeof option.greeks?.vega === "number" ? option.greeks.vega : null;
+  const impliedVolatility =
+    typeof option.greeks?.mid_iv === "number"
+      ? option.greeks.mid_iv
+      : option.greeks?.smv_vol ?? null;
   const volume = n(option.volume);
   const openInterest = n(option.open_interest);
-  const proximityPercent =
-    Math.abs(option.strike - underlyingPrice) / underlyingPrice * 100;
   const dte = daysToExpiration(option.expiration_date);
+  const direction: Direction = option.option_type === "call" ? "CALL" : "PUT";
 
-  let score = 0;
+  const brainInput: OptionBrainInput = {
+    direction,
+    underlyingPrice,
+    strike: option.strike,
+    daysToExpiration: dte,
+    bid,
+    ask,
+    midpoint,
+    delta,
+    gamma,
+    theta,
+    vega,
+    impliedVolatility,
+    volume,
+    openInterest,
+  };
 
-  if (spreadPercent <= 3) score += 25;
-  else if (spreadPercent <= 6) score += 21;
-  else if (spreadPercent <= 10) score += 15;
-  else if (spreadPercent <= 15) score += 8;
-
-  if (volume >= 10_000) score += 20;
-  else if (volume >= 2_500) score += 17;
-  else if (volume >= 500) score += 12;
-  else if (volume >= 100) score += 7;
-
-  if (openInterest >= 5_000) score += 16;
-  else if (openInterest >= 1_000) score += 13;
-  else if (openInterest >= 500) score += 9;
-  else if (openInterest >= 100) score += 5;
-
-  if (absDelta >= 0.50 && absDelta <= 0.65) score += 22;
-  else if (absDelta >= 0.45 && absDelta <= 0.70) score += 17;
-  else if (absDelta >= 0.35 && absDelta <= 0.80) score += 9;
-
-  if (proximityPercent <= 0.15) score += 12;
-  else if (proximityPercent <= 0.30) score += 9;
-  else if (proximityPercent <= 0.60) score += 5;
-
-  if (dte === 0) score += 5;
-  else if (dte <= 2) score += 4;
+  const brain = scoreOptionBrain(brainInput);
 
   return {
     contractSymbol: option.symbol,
     root: optionRoot(option.symbol),
-    direction: option.option_type === "call" ? "CALL" as const : "PUT" as const,
+    direction,
     expiration: option.expiration_date,
     daysToExpiration: dte,
     strike: option.strike,
     bid,
     ask,
     midpoint: Number(midpoint.toFixed(2)),
-    spreadPercent: Number(spreadPercent.toFixed(2)),
+    spreadPercent: brain.metrics.spreadPercent,
     delta,
-    theta:
-      typeof option.greeks?.theta === "number" ? option.greeks.theta : null,
-    impliedVolatility:
-      typeof option.greeks?.mid_iv === "number"
-        ? option.greeks.mid_iv
-        : option.greeks?.smv_vol ?? null,
+    theta,
+    impliedVolatility,
     volume,
     openInterest,
-    proximityPercent: Number(proximityPercent.toFixed(3)),
-    contractScore: Math.min(100, Math.round(score)),
+    proximityPercent: brain.metrics.moneynessPercent,
+    // نفس اسم الحقل القديم (contractScore) محافظ عليه، لكن قيمته الآن
+    // تجي من option-brain الموحد بدل الحساب المحلي القديم.
+    contractScore: brain.score,
+    // حقول إضافية اختيارية (additive) من option-brain، ما تكسر شي قديم:
+    optionBrainTier: brain.tier,
+    optionBrainReasons: brain.reasons,
+    optionBrainWarnings: brain.warnings,
   };
 }
 
