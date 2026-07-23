@@ -7,6 +7,8 @@ import {
 } from '@/lib/social/social-signals';
 
 type SocialSignal = {
+  id?: string | number | null;
+  message_id?: string | null;
   symbol?: string | null;
   symbols?: string[] | null;
   content?: string | null;
@@ -22,6 +24,8 @@ type SocialSignal = {
 export type SocialDecisionContext = {
   symbol: string;
   totalSignals: number;
+  symbolSignalsCount: number;
+  marketSignalsCount: number;
   highImpactCount: number;
   pendingHighImpactCount: number;
   bullishCount: number;
@@ -88,6 +92,103 @@ function getDirectionLabel(
   return labels[decision];
 }
 
+function getSignalKey(
+  signal: SocialSignal
+): string {
+  return String(
+    signal.id ??
+      signal.message_id ??
+      [
+        signal.symbol ?? '',
+        signal.published_at ?? '',
+        signal.content ?? '',
+      ].join('|')
+  );
+}
+
+function mergeUniqueSignals(
+  groups: SocialSignal[][]
+): SocialSignal[] {
+  const unique = new Map<string, SocialSignal>();
+
+  for (const signal of groups.flat()) {
+    unique.set(getSignalKey(signal), signal);
+  }
+
+  return [...unique.values()].sort((a, b) => {
+    const aTime = a.published_at
+      ? new Date(a.published_at).getTime()
+      : 0;
+
+    const bTime = b.published_at
+      ? new Date(b.published_at).getTime()
+      : 0;
+
+    return bTime - aTime;
+  });
+}
+
+function isMarketWideSignal(
+  signal: SocialSignal
+): boolean {
+  const symbols =
+    signal.symbols?.length
+      ? signal.symbols
+      : signal.symbol
+        ? [signal.symbol]
+        : [];
+
+  return (
+    symbols.includes('SPY') ||
+    symbols.includes('QQQ') ||
+    symbols.includes('SPX')
+  );
+}
+
+async function loadDecisionSignals(params: {
+  symbol: string;
+  minutes: number;
+  limit: number;
+}): Promise<{
+  symbolSignals: SocialSignal[];
+  marketSignals: SocialSignal[];
+  allSignals: SocialSignal[];
+}> {
+  const requestedSymbols = [
+    params.symbol,
+    'SPY',
+    'QQQ',
+  ];
+
+  const results = await Promise.all(
+    requestedSymbols.map(async (symbol) => {
+      return (await getRecentSocialSignals({
+        symbol,
+        minutes: params.minutes,
+        limit: params.limit,
+      })) as SocialSignal[];
+    })
+  );
+
+  const symbolSignals = results[0] ?? [];
+
+  const marketSignals = mergeUniqueSignals([
+    results[1] ?? [],
+    results[2] ?? [],
+  ]).filter(isMarketWideSignal);
+
+  const allSignals = mergeUniqueSignals([
+    symbolSignals,
+    marketSignals,
+  ]).slice(0, params.limit);
+
+  return {
+    symbolSignals,
+    marketSignals,
+    allSignals,
+  };
+}
+
 function updateSummary(
   report: TradeEngineReport,
   context: SocialDecisionContext
@@ -107,7 +208,9 @@ function updateSummary(
   const socialLines = [
     '',
     'الذكاء الاجتماعي:',
-    `عدد الأحداث الحديثة: ${context.totalSignals}`,
+    `أحداث الرمز: ${context.symbolSignalsCount}`,
+    `أخبار السوق العامة: ${context.marketSignalsCount}`,
+    `إجمالي الأحداث المستخدمة: ${context.totalSignals}`,
     `الأحداث مرتفعة التأثير: ${context.highImpactCount}`,
     `الأحداث المعلقة مرتفعة التأثير: ${context.pendingHighImpactCount}`,
     `تعديل الثقة: ${
@@ -137,11 +240,18 @@ export async function applySocialIntelligenceToTradeReport(
     limit?: number;
   }
 ): Promise<SociallyAdjustedTradeReport> {
-  const signals = (await getRecentSocialSignals({
+  const minutes = params?.minutes ?? 1440;
+  const limit = params?.limit ?? 50;
+
+  const {
+    symbolSignals,
+    marketSignals,
+    allSignals: signals,
+  } = await loadDecisionSignals({
     symbol: report.symbol,
-    minutes: params?.minutes ?? 1440,
-    limit: params?.limit ?? 50,
-  })) as SocialSignal[];
+    minutes,
+    limit,
+  });
 
   const highImpact = signals.filter(
     (signal) =>
@@ -262,6 +372,47 @@ export async function applySocialIntelligenceToTradeReport(
     }
   }
 
+  const marketBullishCount = marketSignals.filter(
+    (signal) =>
+      signal.sentiment === 'bullish'
+  ).length;
+
+  const marketBearishCount = marketSignals.filter(
+    (signal) =>
+      signal.sentiment === 'bearish'
+  ).length;
+
+  const marketNetDirection =
+    marketBullishCount > marketBearishCount
+      ? 'bullish'
+      : marketBearishCount > marketBullishCount
+        ? 'bearish'
+        : 'neutral';
+
+  if (
+    !forcedWait &&
+    marketSignals.length > 0 &&
+    marketNetDirection !== 'neutral'
+  ) {
+    if (marketNetDirection === tradeDirection) {
+      confidenceAdjustment += 2;
+      reasons.push(
+        'الأخبار العامة للسوق تدعم اتجاه الصفقة'
+      );
+    } else {
+      confidenceAdjustment -= 3;
+      conflict = true;
+      warnings.push(
+        'اتجاه الأخبار العامة للسوق يعاكس اتجاه الصفقة'
+      );
+    }
+  }
+
+  confidenceAdjustment = Math.max(
+    -15,
+    Math.min(7, confidenceAdjustment)
+  );
+
   const adjustedConfidence = Math.max(
     0,
     Math.min(
@@ -291,6 +442,8 @@ export async function applySocialIntelligenceToTradeReport(
   const context: SocialDecisionContext = {
     symbol: report.symbol,
     totalSignals: signals.length,
+    symbolSignalsCount: symbolSignals.length,
+    marketSignalsCount: marketSignals.length,
     highImpactCount: highImpact.length,
     pendingHighImpactCount:
       pendingHighImpact.length,
