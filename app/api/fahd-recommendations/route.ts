@@ -1,4 +1,4 @@
-import {
+﻿import {
   NextRequest,
   NextResponse,
 } from 'next/server';
@@ -279,7 +279,7 @@ export async function POST(
                   price:
                     item.underlyingPrice,
                   changePercent:
-                    item.underlyingChangePercent,
+                    item.underlyingChangePercent ?? 0,
                   marketChangePercent:
                     null,
                   ema9:
@@ -365,8 +365,8 @@ export async function POST(
                 item.strike,
               underlyingPrice:
                 item.underlyingPrice,
-              underlyingChangePercent:
-                item.underlyingChangePercent,
+             changePercent:
+  item.underlyingChangePercent ?? 0,
               bid:
                 item.bid,
               ask:
@@ -410,8 +410,8 @@ export async function POST(
               riskPlan,
               trigger:
                 executable
-                  ? 'انتظر تأكيد الاختراق أو الكسر قبل التنفيذ'
-                  : 'لا تدخل؛ الصفقة لم تجتز جميع فلاتر فهد',
+                  ? 'ط§ظ†طھط¸ط± طھط£ظƒظٹط¯ ط§ظ„ط§ط®طھط±ط§ظ‚ ط£ظˆ ط§ظ„ظƒط³ط± ظ‚ط¨ظ„ ط§ظ„طھظ†ظپظٹط°'
+                  : 'ظ„ط§ طھط¯ط®ظ„ط› ط§ظ„طµظپظ‚ط© ظ„ظ… طھط¬طھط² ط¬ظ…ظٹط¹ ظپظ„ط§طھط± ظپظ‡ط¯',
             };
 
             return {
@@ -470,7 +470,7 @@ export async function POST(
             result.qualifiedContracts,
         },
         message:
-          'لا توجد صفقة أوبشن اجتازت جميع فلاتر السوق والسهم والعقد والمخاطر.',
+          'ظ„ط§ طھظˆط¬ط¯ طµظپظ‚ط© ط£ظˆط¨ط´ظ† ط§ط¬طھط§ط²طھ ط¬ظ…ظٹط¹ ظپظ„ط§طھط± ط§ظ„ط³ظˆظ‚ ظˆط§ظ„ط³ظ‡ظ… ظˆط§ظ„ط¹ظ‚ط¯ ظˆط§ظ„ظ…ط®ط§ط·ط±.',
         generatedAt:
           new Date().toISOString(),
       });
@@ -493,7 +493,7 @@ export async function POST(
           result.qualifiedContracts,
       },
       message:
-        'وجد فهد فرص أوبشن اجتازت تحليل السوق والسهم والعقد والمخاطر.',
+        'ظˆط¬ط¯ ظپظ‡ط¯ ظپط±طµ ط£ظˆط¨ط´ظ† ط§ط¬طھط§ط²طھ طھط­ظ„ظٹظ„ ط§ظ„ط³ظˆظ‚ ظˆط§ظ„ط³ظ‡ظ… ظˆط§ظ„ط¹ظ‚ط¯ ظˆط§ظ„ظ…ط®ط§ط·ط±.',
       generatedAt:
         new Date().toISOString(),
     });
