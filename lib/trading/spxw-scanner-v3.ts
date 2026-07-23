@@ -197,7 +197,8 @@ export async function scanSpxwOpportunitiesV3(
   const maxSpread = config.maxSpreadPercent ?? 12;
   const minDelta = config.minDelta ?? 0.45;
   const maxDelta = config.maxDelta ?? 0.70;
-  const minimumFinalScore = config.minimumFinalScore ?? 78;
+  const minimumFinalScore =
+  config.minimumFinalScore ?? 72;
   const marketScore =
     direction === "CALL"
       ? market.probabilities.bullish
