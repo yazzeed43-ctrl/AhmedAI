@@ -1,11 +1,10 @@
-export interface GuardianTradeInput {
+export interface GuardianInput {
   marketScore: number;
   directionalStockScore: number;
   optionScore: number;
   spreadPercent: number;
   openInterest: number;
-  volume: number;
-  highImpactNews?: boolean;
+  ivRank: number;
 }
 
 export interface GuardianResult {
@@ -13,42 +12,55 @@ export interface GuardianResult {
   reasons: string[];
 }
 
+const MIN_MARKET_SCORE = 60;
+const MIN_DIRECTIONAL_STOCK_SCORE = 55;
+const MIN_OPTION_SCORE = 80;
+const MAX_SPREAD_PERCENT = 5;
+const MIN_OPEN_INTEREST = 500;
+const MIN_IV_RANK = 20;
+
 export function approveTrade(
-  trade: GuardianTradeInput
+  input: GuardianInput
 ): GuardianResult {
   const reasons: string[] = [];
 
-  // Market Brain
-  if (trade.marketScore < 60) {
+  if (input.marketScore < MIN_MARKET_SCORE) {
     reasons.push("Market score too low");
   }
 
-  // Stock Brain (Directional)
-  if (trade.directionalStockScore < 75) {
+  if (
+    input.directionalStockScore <
+    MIN_DIRECTIONAL_STOCK_SCORE
+  ) {
     reasons.push("Directional stock score too low");
   }
 
-  // Option Brain
-  if (trade.optionScore < 85) {
+  if (
+    input.optionScore <
+    MIN_OPTION_SCORE
+  ) {
     reasons.push("Option score too low");
   }
 
-  // Liquidity
-  if (trade.spreadPercent > 5) {
+  if (
+    input.spreadPercent >
+    MAX_SPREAD_PERCENT
+  ) {
     reasons.push("Spread too wide");
   }
 
-  if (trade.openInterest < 1000) {
+  if (
+    input.openInterest <
+    MIN_OPEN_INTEREST
+  ) {
     reasons.push("Open interest too low");
   }
 
-  if (trade.volume < 500) {
-    reasons.push("Volume too low");
-  }
-
-  // News
-  if (trade.highImpactNews === true) {
-    reasons.push("High impact news");
+  if (
+    input.ivRank > 0 &&
+    input.ivRank < MIN_IV_RANK
+  ) {
+    reasons.push("IV Rank too low");
   }
 
   return {
