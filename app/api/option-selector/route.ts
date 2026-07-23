@@ -1,18 +1,20 @@
 import {
   NextRequest,
   NextResponse,
-} from 'next/server';
+} from "next/server";
 
 import {
   scanTradierOpportunities,
   type TradierOpportunity,
-} from '@/lib/trading/tradier-scanner';
+} from "@/lib/trading/tradier-scanner";
 
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-type OptionDirection = 'CALL' | 'PUT';
+type OptionDirection =
+  | "CALL"
+  | "PUT";
 
 type SelectorRequest = {
   symbol?: unknown;
@@ -23,15 +25,28 @@ type SelectorRequest = {
   maxPrice?: unknown;
 };
 
-function normalizeSymbol(value: unknown): string {
-  if (typeof value !== 'string') {
-    throw new Error('SYMBOL_REQUIRED');
+function normalizeSymbol(
+  value: unknown
+): string {
+  if (typeof value !== "string") {
+    throw new Error(
+      "SYMBOL_REQUIRED"
+    );
   }
 
-  const symbol = value.trim().toUpperCase();
+  const symbol =
+    value
+      .trim()
+      .toUpperCase();
 
-  if (!/^[A-Z][A-Z0-9.]{0,9}$/.test(symbol)) {
-    throw new Error('INVALID_SYMBOL');
+  if (
+    !/^[A-Z][A-Z0-9.]{0,9}$/.test(
+      symbol
+    )
+  ) {
+    throw new Error(
+      "INVALID_SYMBOL"
+    );
   }
 
   return symbol;
@@ -41,15 +56,19 @@ function normalizeDirection(
   value: unknown
 ): OptionDirection {
   const direction =
-    typeof value === 'string'
-      ? value.trim().toUpperCase()
-      : '';
+    typeof value === "string"
+      ? value
+          .trim()
+          .toUpperCase()
+      : "";
 
   if (
-    direction !== 'CALL' &&
-    direction !== 'PUT'
+    direction !== "CALL" &&
+    direction !== "PUT"
   ) {
-    throw new Error('DIRECTION_REQUIRED');
+    throw new Error(
+      "DIRECTION_REQUIRED"
+    );
   }
 
   return direction;
@@ -61,15 +80,21 @@ function numberBetween(
   minimum: number,
   maximum: number
 ): number {
-  const parsed = Number(value);
+  const parsed =
+    Number(value);
 
-  if (!Number.isFinite(parsed)) {
+  if (
+    !Number.isFinite(parsed)
+  ) {
     return fallback;
   }
 
   return Math.max(
     minimum,
-    Math.min(maximum, parsed)
+    Math.min(
+      maximum,
+      parsed
+    )
   );
 }
 
@@ -77,34 +102,54 @@ function buildRiskPlan(
   contract: TradierOpportunity,
   maxRiskUsd: number
 ) {
-  const entry = contract.midpoint;
+  const entry =
+    contract.midpoint;
 
-  const stop = Number(
-    Math.max(0.01, entry * 0.7).toFixed(2)
-  );
+  const stop =
+    Number(
+      Math.max(
+        0.01,
+        entry * 0.7
+      ).toFixed(2)
+    );
 
-  const target1 = Number(
-    (entry * 1.4).toFixed(2)
-  );
+  const target1 =
+    Number(
+      (
+        entry * 1.4
+      ).toFixed(2)
+    );
 
-  const target2 = Number(
-    (entry * 1.8).toFixed(2)
-  );
+  const target2 =
+    Number(
+      (
+        entry * 1.8
+      ).toFixed(2)
+    );
 
-  const riskPerContract = Number(
-    ((entry - stop) * 100).toFixed(2)
-  );
+  const riskPerContract =
+    Number(
+      (
+        (
+          entry - stop
+        ) * 100
+      ).toFixed(2)
+    );
 
-  const estimatedCostPerContract = Number(
-    (entry * 100).toFixed(2)
-  );
+  const estimatedCostPerContract =
+    Number(
+      (
+        entry * 100
+      ).toFixed(2)
+    );
 
   const contracts =
     riskPerContract > 0
       ? Math.max(
           0,
           Math.floor(
-            maxRiskUsd / riskPerContract
+            maxRiskUsd /
+            riskPerContract
           )
         )
       : 0;
@@ -117,7 +162,8 @@ function buildRiskPlan(
     riskPerContract,
     estimatedCostPerContract,
     maxRiskUsd,
-    suggestedContracts: contracts,
+    suggestedContracts:
+      contracts,
     executable:
       contracts >= 1 &&
       contract.score >= 72,
@@ -127,26 +173,36 @@ function buildRiskPlan(
 function buildDecision(
   contract: TradierOpportunity
 ) {
-  if (contract.score >= 85) {
+  if (
+    contract.score >= 85
+  ) {
     return {
-      action: 'BUY',
-      label: 'شراء العقد',
-      confidence: contract.score,
+      action: "BUY",
+      label:
+        "شراء العقد",
+      confidence:
+        contract.score,
     };
   }
 
-  if (contract.score >= 72) {
+  if (
+    contract.score >= 72
+  ) {
     return {
-      action: 'WATCH',
-      label: 'مراقبة العقد وانتظار تأكيد الدخول',
-      confidence: contract.score,
+      action: "WATCH",
+      label:
+        "مراقبة العقد وانتظار تأكيد الدخول",
+      confidence:
+        contract.score,
     };
   }
 
   return {
-    action: 'REJECT',
-    label: 'رفض العقد',
-    confidence: contract.score,
+    action: "REJECT",
+    label:
+      "رفض العقد",
+    confidence:
+      contract.score,
   };
 }
 
@@ -155,66 +211,88 @@ export async function POST(
 ) {
   try {
     const body =
-      (await request.json()) as SelectorRequest;
+      (
+        await request.json()
+      ) as SelectorRequest;
 
     const symbol =
-      normalizeSymbol(body.symbol);
+      normalizeSymbol(
+        body.symbol
+      );
 
     const direction =
-      normalizeDirection(body.direction);
+      normalizeDirection(
+        body.direction
+      );
 
-    const maxRiskUsd = numberBetween(
-      body.maxRiskUsd,
-      100,
-      25,
-      10_000
-    );
+    const maxRiskUsd =
+      numberBetween(
+        body.maxRiskUsd,
+        100,
+        25,
+        10_000
+      );
 
-    const maxDte = numberBetween(
-      body.maxDte,
-      7,
-      0,
-      30
-    );
+    const maxDte =
+      numberBetween(
+        body.maxDte,
+        7,
+        0,
+        30
+      );
 
-    const minPrice = numberBetween(
-      body.minPrice,
-      0.3,
-      0.01,
-      100
-    );
+    const minPrice =
+      numberBetween(
+        body.minPrice,
+        0.3,
+        0.01,
+        100
+      );
 
-    const maxPrice = numberBetween(
-      body.maxPrice,
-      15,
-      minPrice,
-      500
-    );
+    const maxPrice =
+      numberBetween(
+        body.maxPrice,
+        15,
+        minPrice,
+        500
+      );
 
     const scan =
       await scanTradierOpportunities({
-        symbols: [symbol],
+        symbols: [
+          symbol,
+        ],
         maxDte,
-        expirationsPerSymbol: 4,
-        results: 20,
+        expirationsPerSymbol:
+          4,
+        results:
+          20,
         minPrice,
         maxPrice,
-        minVolume: 25,
-        minOpenInterest: 100,
-        maxSpreadPercent: 20,
-        minDelta: 0.35,
-        maxDelta: 0.8,
+        minVolume:
+          25,
+        minOpenInterest:
+          100,
+        maxSpreadPercent:
+          20,
+        minDelta:
+          0.35,
+        maxDelta:
+          0.8,
       });
 
     const candidates =
       scan.opportunities.filter(
         (item) =>
-          item.underlying === symbol &&
-          item.direction === direction
+          item.underlying ===
+            symbol &&
+          item.direction ===
+            direction
       );
 
     const selected =
-      candidates[0] ?? null;
+      candidates[0] ??
+      null;
 
     if (!selected) {
       return NextResponse.json({
@@ -223,12 +301,14 @@ export async function POST(
         symbol,
         direction,
         message:
-          'لا يوجد عقد يحقق شروط السيولة والسبريد والدلتا حاليًا.',
+          "لا يوجد عقد يحقق شروط السيولة والسبريد والدلتا حاليًا.",
         scanSummary: {
           contractsScanned:
             scan.contractsScanned,
           qualifiedContracts:
             scan.qualifiedContracts,
+          ivHistoryEnriched:
+            scan.ivHistoryEnriched,
         },
       });
     }
@@ -240,7 +320,9 @@ export async function POST(
       );
 
     const decision =
-      buildDecision(selected);
+      buildDecision(
+        selected
+      );
 
     return NextResponse.json({
       success: true,
@@ -251,50 +333,76 @@ export async function POST(
       },
       alternatives:
         candidates
-          .slice(1, 4)
-          .map((item) => ({
-            contractSymbol:
-              item.contractSymbol,
-            strike: item.strike,
-            expiration:
-              item.expiration,
-            daysToExpiration:
-              item.daysToExpiration,
-            midpoint:
-              item.midpoint,
-            delta:
-              item.delta,
-            spreadPercent:
-              item.spreadPercent,
-            volume:
-              item.volume,
-            openInterest:
-              item.openInterest,
-            score:
-              item.score,
-          })),
+          .slice(
+            1,
+            4
+          )
+          .map(
+            (item) => ({
+              contractSymbol:
+                item.contractSymbol,
+              strike:
+                item.strike,
+              expiration:
+                item.expiration,
+              daysToExpiration:
+                item.daysToExpiration,
+              midpoint:
+                item.midpoint,
+              delta:
+                item.delta,
+              gamma:
+                item.gamma,
+              theta:
+                item.theta,
+              vega:
+                item.vega,
+              impliedVolatility:
+                item.impliedVolatility,
+              spreadPercent:
+                item.spreadPercent,
+              volume:
+                item.volume,
+              openInterest:
+                item.openInterest,
+              score:
+                item.score,
+              tier:
+                item.tier,
+              ivContext:
+                item.ivContext,
+            })
+          ),
       scanSummary: {
         contractsScanned:
           scan.contractsScanned,
         qualifiedContracts:
           scan.qualifiedContracts,
+        ivHistoryEnriched:
+          scan.ivHistoryEnriched,
       },
       generatedAt:
-        new Date().toISOString(),
+        new Date()
+          .toISOString(),
     });
-  } catch (error: unknown) {
+  } catch (
+    error: unknown
+  ) {
     const message =
       error instanceof Error
         ? error.message
         : String(error);
 
     const status =
-      message === 'SYMBOL_REQUIRED' ||
-      message === 'INVALID_SYMBOL' ||
-      message === 'DIRECTION_REQUIRED'
+      message ===
+        "SYMBOL_REQUIRED" ||
+      message ===
+        "INVALID_SYMBOL" ||
+      message ===
+        "DIRECTION_REQUIRED"
         ? 400
         : message.includes(
-              'TRADIER_ACCESS_TOKEN'
+              "TRADIER_ACCESS_TOKEN"
             )
           ? 503
           : 500;
@@ -302,9 +410,12 @@ export async function POST(
     return NextResponse.json(
       {
         success: false,
-        error: message,
+        error:
+          message,
       },
-      { status }
+      {
+        status,
+      }
     );
   }
 }
@@ -312,15 +423,25 @@ export async function POST(
 export async function GET() {
   return NextResponse.json({
     success: true,
-    service: 'Fahd Option Selector V1',
-    method: 'POST',
+    service:
+      "Fahd Option Selector V2",
+    method:
+      "POST",
+    engine:
+      "Option Brain V2 + IV History",
     example: {
-      symbol: 'NVDA',
-      direction: 'CALL',
-      maxRiskUsd: 100,
-      maxDte: 7,
-      minPrice: 0.3,
-      maxPrice: 15,
+      symbol:
+        "SPY",
+      direction:
+        "PUT",
+      maxRiskUsd:
+        100,
+      maxDte:
+        7,
+      minPrice:
+        0.3,
+      maxPrice:
+        15,
     },
   });
 }
