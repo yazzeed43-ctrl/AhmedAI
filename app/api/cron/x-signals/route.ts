@@ -27,6 +27,24 @@ function isAuthorized(
   );
 }
 
+function getWindowSeconds(
+  request: NextRequest
+): number {
+  const raw =
+    request.nextUrl.searchParams.get('windowSeconds');
+
+  const parsed = Number(raw);
+
+  if (!Number.isFinite(parsed)) {
+    return 130;
+  }
+
+  return Math.max(
+    60,
+    Math.min(Math.floor(parsed), 600)
+  );
+}
+
 export async function GET(
   request: NextRequest
 ) {
@@ -52,18 +70,21 @@ export async function GET(
   }
 
   try {
+    const windowSeconds =
+      getWindowSeconds(request);
+
     const result =
       await collectTrustedXSignals({
-        windowSeconds: 600,
+        windowSeconds,
       });
 
     return NextResponse.json({
-  ok: true,
-  windowSeconds: 600,
-  result,
-  executedAt:
-    new Date().toISOString(),
-});
+      ok: true,
+      windowSeconds,
+      result,
+      executedAt:
+        new Date().toISOString(),
+    });
   } catch (error: unknown) {
     const message =
       error instanceof Error
