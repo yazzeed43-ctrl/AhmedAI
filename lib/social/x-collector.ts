@@ -108,10 +108,11 @@ function recordIgnoredTweet(
 export async function collectTrustedXSignals(params?: {
   windowSeconds?: number;
 }): Promise<XCollectorResult> {
-const windowSeconds = Math.max(
-  60,
-  Math.min(params?.windowSeconds ?? 130, 3600)
-);
+  const windowSeconds = Math.max(
+    60,
+    Math.min(params?.windowSeconds ?? 130, 600)
+  );
+
   const untilUnixSeconds = Math.floor(
     Date.now() / 1000
   );
