@@ -102,6 +102,8 @@ const companyToSymbols: Record<string, string[]> = {
   ORACLE: ['ORCL'],
   ADOBE: ['ADBE'],
   SHOPIFY: ['SHOP'],
+  EQUINOR: ['EQNR'],
+  'EQUINOR ASA': ['EQNR'],
 };
 
 const ignored = new Set([
@@ -168,6 +170,7 @@ const plainTickerAllowlist = new Set([
   'COST',
   'CRM',
   'DIS',
+  'EQNR',
   'ES',
   'GOOG',
   'GOOGL',
@@ -445,6 +448,7 @@ export function detectMarketImpact(
     upper.includes('UPGRADE') ||
     upper.includes('DOWNGRADE') ||
     upper.includes('PRICE TARGET') ||
+    upper.includes('TARGET PRICE') ||
     upper.includes('رفع التوصية') ||
     upper.includes('خفض التوصية')
   ) {
@@ -466,6 +470,8 @@ export function parseTelegramSignal(text: string) {
     'BEAT',
     'RAISES GUIDANCE',
     'UPGRADE',
+    'LIFTS TARGET PRICE',
+    'RAISES TARGET PRICE',
     'اختراق',
     'شراء',
     'صعود',
@@ -483,6 +489,8 @@ export function parseTelegramSignal(text: string) {
     'MISS',
     'LOWERS GUIDANCE',
     'DOWNGRADE',
+    'CUTS TARGET PRICE',
+    'LOWERS TARGET PRICE',
     'كسر',
     'بيع',
     'هبوط',
