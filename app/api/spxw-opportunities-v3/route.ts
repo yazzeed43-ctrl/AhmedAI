@@ -11,34 +11,78 @@ export async function POST(request: Request) {
 
     const result = await scanSpxwOpportunitiesV3({
       expiration:
-        typeof body.expiration === "string" ? body.expiration : undefined,
-      maxResults: typeof body.maxResults === "number" ? body.maxResults : 2,
+        typeof body.expiration === "string"
+          ? body.expiration
+          : undefined,
+
+      maxDte:
+        typeof body.maxDte === "number"
+          ? body.maxDte
+          : 10,
+
+      maxResults:
+        typeof body.maxResults === "number"
+          ? body.maxResults
+          : 2,
+
       minimumFinalScore:
         typeof body.minimumFinalScore === "number"
           ? body.minimumFinalScore
-          : 78,
-      minPrice: typeof body.minPrice === "number" ? body.minPrice : 0.50,
-      maxPrice: typeof body.maxPrice === "number" ? body.maxPrice : 20,
-      minVolume: typeof body.minVolume === "number" ? body.minVolume : 50,
+          : 72,
+
+      minPrice:
+        typeof body.minPrice === "number"
+          ? body.minPrice
+          : 0.5,
+
+      maxPrice:
+        typeof body.maxPrice === "number"
+          ? body.maxPrice
+          : 20,
+
+      minVolume:
+        typeof body.minVolume === "number"
+          ? body.minVolume
+          : 50,
+
       minOpenInterest:
-        typeof body.minOpenInterest === "number" ? body.minOpenInterest : 100,
+        typeof body.minOpenInterest === "number"
+          ? body.minOpenInterest
+          : 100,
+
       maxSpreadPercent:
         typeof body.maxSpreadPercent === "number"
           ? body.maxSpreadPercent
           : 12,
-      minDelta: typeof body.minDelta === "number" ? body.minDelta : 0.45,
-      maxDelta: typeof body.maxDelta === "number" ? body.maxDelta : 0.70,
+
+      minDelta:
+        typeof body.minDelta === "number"
+          ? body.minDelta
+          : 0.45,
+
+      maxDelta:
+        typeof body.maxDelta === "number"
+          ? body.maxDelta
+          : 0.7,
     });
 
-    return NextResponse.json({ success: true, result });
-  } catch (error) {
+    return NextResponse.json({
+      success: true,
+      result,
+    });
+  } catch (error: unknown) {
     return NextResponse.json(
       {
         success: false,
         error: "SPXW_SCAN_V3_FAILED",
-        message: error instanceof Error ? error.message : "Unknown error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Unknown error",
       },
-      { status: 500 },
+      {
+        status: 500,
+      },
     );
   }
 }
@@ -49,14 +93,18 @@ export async function GET() {
     service: "Fahd SPXW Scanner V3",
     endpoint: "/api/spxw-opportunities-v3",
     status:
-      process.env.TRADIER_ACCESS_TOKEN || process.env.TRADIER_TOKEN
+      process.env.TRADIER_ACCESS_TOKEN ||
+      process.env.TRADIER_TOKEN
         ? "READY"
         : "TRADIER_TOKEN_REQUIRED",
     behavior: {
       lookupSymbol: "SPX",
       filteredRoot: "SPXW",
       discoversDailyExpirations: true,
+      supportsMaxDte: true,
+      defaultMaxDte: 10,
       maximumResults: 2,
+      defaultMinimumFinalScore: 72,
     },
   });
 }
