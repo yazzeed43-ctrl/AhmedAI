@@ -26,6 +26,7 @@ export type SocialDecisionContext = {
   totalSignals: number;
   symbolSignalsCount: number;
   marketSignalsCount: number;
+  expiredSignalsCount: number;
   highImpactCount: number;
   pendingHighImpactCount: number;
   bullishCount: number;
@@ -189,6 +190,78 @@ async function loadDecisionSignals(params: {
   };
 }
 
+
+function getSignalLifetimeMinutes(
+  signal: SocialSignal
+): number {
+  if (
+    includesContentType(signal, 'EARNINGS') ||
+    includesContentType(signal, 'FED')
+  ) {
+    return 1440;
+  }
+
+  if (
+    includesContentType(signal, 'BREAKING') ||
+    signal.market_impact === 'HIGH'
+  ) {
+    return 360;
+  }
+
+  if (
+    includesContentType(signal, 'WHALE') ||
+    (signal.content ?? '')
+      .toUpperCase()
+      .includes('TARGET PRICE') ||
+    (signal.content ?? '')
+      .toUpperCase()
+      .includes('PRICE TARGET') ||
+    (signal.content ?? '')
+      .toUpperCase()
+      .includes('UPGRADE') ||
+    (signal.content ?? '')
+      .toUpperCase()
+      .includes('DOWNGRADE')
+  ) {
+    return 480;
+  }
+
+  if (includesContentType(signal, 'SIGNAL')) {
+    return 120;
+  }
+
+  return 240;
+}
+
+function getSignalAgeMinutes(
+  signal: SocialSignal
+): number {
+  if (!signal.published_at) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const publishedAt =
+    new Date(signal.published_at).getTime();
+
+  if (!Number.isFinite(publishedAt)) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  return Math.max(
+    0,
+    (Date.now() - publishedAt) / 60_000
+  );
+}
+
+function isSignalActive(
+  signal: SocialSignal
+): boolean {
+  return (
+    getSignalAgeMinutes(signal) <=
+    getSignalLifetimeMinutes(signal)
+  );
+}
+
 function updateSummary(
   report: TradeEngineReport,
   context: SocialDecisionContext
@@ -211,6 +284,7 @@ function updateSummary(
     `أحداث الرمز: ${context.symbolSignalsCount}`,
     `أخبار السوق العامة: ${context.marketSignalsCount}`,
     `إجمالي الأحداث المستخدمة: ${context.totalSignals}`,
+    `الأحداث المنتهية المستبعدة: ${context.expiredSignalsCount}`,
     `الأحداث مرتفعة التأثير: ${context.highImpactCount}`,
     `الأحداث المعلقة مرتفعة التأثير: ${context.pendingHighImpactCount}`,
     `تعديل الثقة: ${
@@ -246,12 +320,24 @@ export async function applySocialIntelligenceToTradeReport(
   const {
     symbolSignals,
     marketSignals,
-    allSignals: signals,
+    allSignals,
   } = await loadDecisionSignals({
     symbol: report.symbol,
     minutes,
     limit,
   });
+
+  const signals =
+    allSignals.filter(isSignalActive);
+
+  const expiredSignalsCount =
+    allSignals.length - signals.length;
+
+  const activeSymbolSignals =
+    symbolSignals.filter(isSignalActive);
+
+  const activeMarketSignals =
+    marketSignals.filter(isSignalActive);
 
   const highImpact = signals.filter(
     (signal) =>
@@ -372,12 +458,12 @@ export async function applySocialIntelligenceToTradeReport(
     }
   }
 
-  const marketBullishCount = marketSignals.filter(
+  const marketBullishCount = activeMarketSignals.filter(
     (signal) =>
       signal.sentiment === 'bullish'
   ).length;
 
-  const marketBearishCount = marketSignals.filter(
+  const marketBearishCount = activeMarketSignals.filter(
     (signal) =>
       signal.sentiment === 'bearish'
   ).length;
@@ -391,7 +477,7 @@ export async function applySocialIntelligenceToTradeReport(
 
   if (
     !forcedWait &&
-    marketSignals.length > 0 &&
+    activeMarketSignals.length > 0 &&
     marketNetDirection !== 'neutral'
   ) {
     if (marketNetDirection === tradeDirection) {
@@ -442,8 +528,9 @@ export async function applySocialIntelligenceToTradeReport(
   const context: SocialDecisionContext = {
     symbol: report.symbol,
     totalSignals: signals.length,
-    symbolSignalsCount: symbolSignals.length,
-    marketSignalsCount: marketSignals.length,
+    symbolSignalsCount: activeSymbolSignals.length,
+    marketSignalsCount: activeMarketSignals.length,
+    expiredSignalsCount,
     highImpactCount: highImpact.length,
     pendingHighImpactCount:
       pendingHighImpact.length,
