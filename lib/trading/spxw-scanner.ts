@@ -95,13 +95,15 @@ export async function scanSpxwOpportunities(
       result.market,
     underlyingPrice:
       result.underlyingPrice,
-    expirationsScanned:
-      result.expirationsScanned.filter(
-        (expiration) =>
-          daysToExpiration(
-            expiration
-          ) <= maxDte
-      ),
+   expirationsScanned:
+  (
+    result.expirationsScanned ?? []
+  ).filter(
+    (expiration) =>
+      daysToExpiration(
+        expiration
+      ) <= maxDte
+  ),
     contractsScanned:
       result.contractsScanned,
     spxwContractsFound:
