@@ -319,7 +319,8 @@ export async function POST(
 
            const guardian = approveTrade({
     marketScore: item.marketScore,
-    directionalStockScore: item.directionalStockScore,
+    directionalStockScore:
+                  stock.directionalScore,
     optionScore: item.finalScore,
     spreadPercent: item.spreadPercent,
     openInterest: item.openInterest,
@@ -536,3 +537,4 @@ export async function GET() {
     },
   });
 }
+
