@@ -2,9 +2,14 @@ export interface GuardianInput {
   marketScore: number;
   directionalStockScore: number;
   optionScore: number;
+
   spreadPercent: number;
   openInterest: number;
+  volume: number;
+
   ivRank: number;
+
+  highImpactNews: boolean;
 }
 
 export interface GuardianResult {
@@ -17,6 +22,7 @@ const MIN_DIRECTIONAL_STOCK_SCORE = 55;
 const MIN_OPTION_SCORE = 80;
 const MAX_SPREAD_PERCENT = 5;
 const MIN_OPEN_INTEREST = 500;
+const MIN_VOLUME = 100;
 const MIN_IV_RANK = 20;
 
 export function approveTrade(
@@ -57,10 +63,21 @@ export function approveTrade(
   }
 
   if (
+    input.volume <
+    MIN_VOLUME
+  ) {
+    reasons.push("Volume too low");
+  }
+
+  if (
     input.ivRank > 0 &&
     input.ivRank < MIN_IV_RANK
   ) {
     reasons.push("IV Rank too low");
+  }
+
+  if (input.highImpactNews) {
+    reasons.push("High impact news");
   }
 
   return {
