@@ -27,47 +27,16 @@ import type {
   BaseOpportunity,
 } from "./tradier-scanner-core/types";
 
-const DAY_MS = 86_400_000;
+import {
+  daysToExpiration,
+  numberOr,
+  nullableNumber,
+  quotePrice,
+  normalizeTier,
+  clampScore,
+} from "./tradier-scanner-core/utils";
+
 const MIN_IV_SAMPLES = 10;
-
-function daysToExpiration(expiration: string): number {
-  const end = new Date(`${expiration}T20:00:00Z`).getTime();
-
-  return Math.max(0, Math.ceil((end - Date.now()) / DAY_MS));
-}
-
-function numberOr(value: number | null | undefined, fallback = 0): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function nullableNumber(value: number | null | undefined): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function quotePrice(quote: TradierQuote): number {
-  return numberOr(
-    quote.last,
-    numberOr(quote.bid) > 0 && numberOr(quote.ask) > 0
-      ? (numberOr(quote.bid) + numberOr(quote.ask)) / 2
-      : numberOr(quote.close),
-  );
-}
-
-function normalizeTier(score: number): TradierOpportunity["tier"] {
-  if (score >= 85) {
-    return "GOLD";
-  }
-
-  if (score >= 72) {
-    return "STRONG";
-  }
-
-  return "WATCH";
-}
-
-function clampScore(score: number): number {
-  return Math.max(0, Math.min(100, Math.round(score)));
-}
 
 function emptyIVContext(): IVContext {
   return {
