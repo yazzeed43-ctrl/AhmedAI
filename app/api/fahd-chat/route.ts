@@ -1,64 +1,104 @@
-import { NextRequest, NextResponse } from 'next/server';import { supabase } from '@/lib/supabase';
-import { FAHD_SYSTEM_PROMPT } from '@/lib/fahd-system-prompt';
-import { executeBacktest } from '@/lib/run-backtest';
+import { NextRequest, NextResponse } from "next/server";
+import { supabase } from "@/lib/supabase";
+import { FAHD_SYSTEM_PROMPT } from "@/lib/fahd-system-prompt";
+import { executeBacktest } from "@/lib/run-backtest";
 import {
   getOptionsExpirations,
   getOptionsChain,
   getAccountBalance,
   getPositions,
   getTradierQuote,
-} from '@/lib/tradier';
-import { getTechnicalIndicators } from '@/lib/market-indicators';
-import { getPreviousDayVolumeProfile } from '@/lib/massive';
-import { getMarketDecision } from '@/lib/market-decision-engine';
-import { scanSpxwOpportunitiesV3 } from '@/lib/trading/spxw-scanner-v3';
-import { buildSpxwTriggerPlan } from '@/lib/trading/spxw-trigger-engine';
-import { getStockDecision } from '@/lib/stock-decision-engine';
+} from "@/lib/tradier";
+import { getTechnicalIndicators } from "@/lib/market-indicators";
+import { getPreviousDayVolumeProfile } from "@/lib/massive";
+import { getMarketDecision } from "@/lib/market-decision-engine";
+import { scanSpxwOpportunitiesV3 } from "@/lib/trading/spxw-scanner-v3";
+import { buildSpxwTriggerPlan } from "@/lib/trading/spxw-trigger-engine";
+import { runFahdScannerV3 } from "@/lib/trading/fahd-scanner-v3";
+import { scanGoldenOpportunities } from "@/lib/trading/golden-scanner";
+import { getStockDecision } from "@/lib/stock-decision-engine";
 import {
   runTradeEngine,
   type TradeEngineInput,
-} from '@/lib/trading/trade-engine';
+} from "@/lib/trading/trade-engine";
 import {
   getRecentSocialSignals,
   summarizeSocialSignals,
-} from '@/lib/social/social-signals';
-import {
-  applySocialIntelligenceToTradeReport,
-} from '@/lib/social/social-decision-context';
-import {
-  buildFahdResponse,
-} from '@/lib/fahd/compact-response';
+} from "@/lib/social/social-signals";
+import { applySocialIntelligenceToTradeReport } from "@/lib/social/social-decision-context";
+import { buildFahdResponse } from "@/lib/fahd/compact-response";
 
-const FINNHUB_BASE = 'https://finnhub.io/api/v1';
+const FINNHUB_BASE = "https://finnhub.io/api/v1";
+
+// رموز افتراضية لأداة get_market_opportunities لو يزيد ما حدد رموز
+// معينة بسؤاله (نفس القائمة المستخدمة بروابط golden-opportunities-v3).
+const DEFAULT_MARKET_OPPORTUNITIES_SYMBOLS = [
+  "SPY",
+  "QQQ",
+  "IWM",
+  "AAPL",
+  "NVDA",
+  "TSLA",
+  "AMZN",
+  "META",
+  "AMD",
+  "MSFT",
+];
 
 function extractTickers(text: string): string[] {
   const matches = text.match(/\b[A-Z]{1,5}\b/g) || [];
-  const ignore = ['API', 'ETF', 'CEO', 'AI', 'USA', 'US', 'RSI', 'EMA', 'SMA', 'VWAP', 'MACD', 'VIX', 'A', 'B', 'C', 'D'];
+  const ignore = [
+    "API",
+    "ETF",
+    "CEO",
+    "AI",
+    "USA",
+    "US",
+    "RSI",
+    "EMA",
+    "SMA",
+    "VWAP",
+    "MACD",
+    "VIX",
+    "A",
+    "B",
+    "C",
+    "D",
+  ];
   return [...new Set(matches.filter((t) => !ignore.includes(t)))].slice(0, 2);
 }
 
 async function getQuote(symbol: string, apiKey: string) {
   try {
-    const res = await fetch(`${FINNHUB_BASE}/quote?symbol=${symbol}&token=${apiKey}`, { cache: 'no-store' });
+    const res = await fetch(
+      `${FINNHUB_BASE}/quote?symbol=${symbol}&token=${apiKey}`,
+      { cache: "no-store" },
+    );
     if (!res.ok) {
-      const bodyText = await res.text().catch(() => '');
-      console.error(`Finnhub quote HTTP error for ${symbol}: status=${res.status} body=${bodyText}`);
+      const bodyText = await res.text().catch(() => "");
+      console.error(
+        `Finnhub quote HTTP error for ${symbol}: status=${res.status} body=${bodyText}`,
+      );
       return null;
     }
     const d = await res.json();
     if (!d.c || d.c === 0) {
-      console.error(`Finnhub quote empty/zero for ${symbol}: ${JSON.stringify(d)}`);
+      console.error(
+        `Finnhub quote empty/zero for ${symbol}: ${JSON.stringify(d)}`,
+      );
       return null;
     }
     return `${symbol}: ط§ظ„ط³ط¹ط± $${d.c} | ط§ظ„طھط؛ظٹط± ط§ظ„ظٹظˆظ…ظٹ ${d.dp?.toFixed(2)}% | ط£ط¹ظ„ظ‰ ط§ظ„ظٹظˆظ… $${d.h} | ط£ط¯ظ†ظ‰ ط§ظ„ظٹظˆظ… $${d.l} | ط§ظ„ط§ظپطھطھط§ط­ $${d.o} | ط¥ط؛ظ„ط§ظ‚ ط£ظ…ط³ $${d.pc}`;
   } catch (e: any) {
-    console.error(`Finnhub quote fetch threw for ${symbol}: ${e?.message || e}`);
+    console.error(
+      `Finnhub quote fetch threw for ${symbol}: ${e?.message || e}`,
+    );
     return null;
   }
 }
 
 function formatDate(d: Date) {
-  return d.toISOString().split('T')[0];
+  return d.toISOString().split("T")[0];
 }
 
 // ط¢ط®ط± 3 ط£ط®ط¨ط§ط± ظ…ظ‡ظ…ط© ظ„ظ„ط³ظ‡ظ… ط®ظ„ط§ظ„ 5 ط£ظٹط§ظ…
@@ -68,19 +108,21 @@ async function getCompanyNews(symbol: string, apiKey: string) {
     const from = new Date(to.getTime() - 5 * 24 * 60 * 60 * 1000);
     const res = await fetch(
       `${FINNHUB_BASE}/company-news?symbol=${symbol}&from=${formatDate(from)}&to=${formatDate(to)}&token=${apiKey}`,
-      { cache: 'no-store' }
+      { cache: "no-store" },
     );
     if (!res.ok) return null;
     const items = await res.json();
     if (!Array.isArray(items) || items.length === 0) return null;
     const top = items.slice(0, 3);
     const lines = top.map((n: any) => {
-      const date = new Date(n.datetime * 1000).toISOString().split('T')[0];
+      const date = new Date(n.datetime * 1000).toISOString().split("T")[0];
       return `  - [${date}] ${n.headline} (ط§ظ„ظ…طµط¯ط±: ${n.source})`;
     });
-    return `ط£ط®ط¨ط§ط± ${symbol} ط§ظ„ط£ط®ظٹط±ط©:\n${lines.join('\n')}`;
+    return `ط£ط®ط¨ط§ط± ${symbol} ط§ظ„ط£ط®ظٹط±ط©:\n${lines.join("\n")}`;
   } catch (e: any) {
-    console.error(`Finnhub company-news fetch threw for ${symbol}: ${e?.message || e}`);
+    console.error(
+      `Finnhub company-news fetch threw for ${symbol}: ${e?.message || e}`,
+    );
     return null;
   }
 }
@@ -92,16 +134,18 @@ async function getUpcomingEarnings(symbol: string, apiKey: string) {
     const to = new Date(from.getTime() + 14 * 24 * 60 * 60 * 1000);
     const res = await fetch(
       `${FINNHUB_BASE}/calendar/earnings?from=${formatDate(from)}&to=${formatDate(to)}&symbol=${symbol}&token=${apiKey}`,
-      { cache: 'no-store' }
+      { cache: "no-store" },
     );
     if (!res.ok) return null;
     const data = await res.json();
     const items = data?.earningsCalendar;
     if (!Array.isArray(items) || items.length === 0) return null;
     const next = items[0];
-    return `âڑ ï¸ڈ ${symbol} ط¹ظ†ط¯ظ‡ط§ ط¥ط¹ظ„ط§ظ† ط£ط±ط¨ط§ط­ ظ…طھظˆظ‚ط¹ ط¨طھط§ط±ظٹط® ${next.date} (${next.hour === 'bmo' ? 'ظ‚ط¨ظ„ ط§ظ„ط§ظپطھطھط§ط­' : next.hour === 'amc' ? 'ط¨ط¹ط¯ ط§ظ„ط¥ط؛ظ„ط§ظ‚' : 'ظˆظ‚طھ ط؛ظٹط± ظ…ط­ط¯ط¯'}) - طھظˆظ‚ظ‘ط¹ طھظ‚ظ„ط¨ ط£ط¹ظ„ظ‰ ظ…ظ† ط§ظ„ظ…ط¹طھط§ط¯ ط­ظˆظ„ ظ‡ط°ط§ ط§ظ„طھط§ط±ظٹط®.`;
+    return `âڑ ï¸ڈ ${symbol} ط¹ظ†ط¯ظ‡ط§ ط¥ط¹ظ„ط§ظ† ط£ط±ط¨ط§ط­ ظ…طھظˆظ‚ط¹ ط¨طھط§ط±ظٹط® ${next.date} (${next.hour === "bmo" ? "ظ‚ط¨ظ„ ط§ظ„ط§ظپطھطھط§ط­" : next.hour === "amc" ? "ط¨ط¹ط¯ ط§ظ„ط¥ط؛ظ„ط§ظ‚" : "ظˆظ‚طھ ط؛ظٹط± ظ…ط­ط¯ط¯"}) - طھظˆظ‚ظ‘ط¹ طھظ‚ظ„ط¨ ط£ط¹ظ„ظ‰ ظ…ظ† ط§ظ„ظ…ط¹طھط§ط¯ ط­ظˆظ„ ظ‡ط°ط§ ط§ظ„طھط§ط±ظٹط®.`;
   } catch (e: any) {
-    console.error(`Finnhub earnings calendar fetch threw for ${symbol}: ${e?.message || e}`);
+    console.error(
+      `Finnhub earnings calendar fetch threw for ${symbol}: ${e?.message || e}`,
+    );
     return null;
   }
 }
@@ -118,16 +162,19 @@ async function getGeneralMarketNews(apiKey: string) {
     return generalNewsCache.data;
   }
   try {
-    const res = await fetch(`${FINNHUB_BASE}/news?category=general&token=${apiKey}`, { cache: 'no-store' });
+    const res = await fetch(
+      `${FINNHUB_BASE}/news?category=general&token=${apiKey}`,
+      { cache: "no-store" },
+    );
     if (!res.ok) return null;
     const items = await res.json();
     if (!Array.isArray(items) || items.length === 0) return null;
     const top = items.slice(0, 4);
     const lines = top.map((n: any) => {
-      const date = new Date(n.datetime * 1000).toISOString().split('T')[0];
+      const date = new Date(n.datetime * 1000).toISOString().split("T")[0];
       return `  - [${date}] ${n.headline} (${n.source})`;
     });
-    const result = `ط£ط®ط¨ط§ط± ط§ظ„ط³ظˆظ‚ ط§ظ„ط¹ط§ظ…ط© (ط§ظ‚طھطµط§ط¯ ظƒظ„ظٹ):\n${lines.join('\n')}`;
+    const result = `ط£ط®ط¨ط§ط± ط§ظ„ط³ظˆظ‚ ط§ظ„ط¹ط§ظ…ط© (ط§ظ‚طھطµط§ط¯ ظƒظ„ظٹ):\n${lines.join("\n")}`;
     generalNewsCache = { data: result, expiresAt: Date.now() + CACHE_TTL_MS };
     return result;
   } catch (e: any) {
@@ -146,20 +193,24 @@ async function getEconomicCalendar(apiKey: string) {
     const to = new Date(from.getTime() + 7 * 24 * 60 * 60 * 1000);
     const res = await fetch(
       `${FINNHUB_BASE}/calendar/economic?from=${formatDate(from)}&to=${formatDate(to)}&token=${apiKey}`,
-      { cache: 'no-store' }
+      { cache: "no-store" },
     );
     if (!res.ok) return null;
     const data = await res.json();
     const items = data?.economicCalendar;
     if (!Array.isArray(items) || items.length === 0) return null;
     // ظ†ط±ظƒط² ط¨ط³ ط¹ظ„ظ‰ ط§ظ„ط£ط­ط¯ط§ط« ط¹ط§ظ„ظٹط© ط§ظ„طھط£ط«ظٹط± (impact = 2 ط£ظˆ 3 ط¹ط§ط¯ط© ط¨ظ…ظ‚ظٹط§ط³ Finnhub)
-    const important = items.filter((e: any) => (e.impact ?? 0) >= 2).slice(0, 5);
+    const important = items
+      .filter((e: any) => (e.impact ?? 0) >= 2)
+      .slice(0, 5);
     if (important.length === 0) {
       econCalendarCache = { data: null, expiresAt: Date.now() + CACHE_TTL_MS };
       return null;
     }
-    const lines = important.map((e: any) => `  - [${e.date}] ${e.event} (${e.country || ''})`);
-    const result = `ط£ط­ط¯ط§ط« ط§ظ‚طھطµط§ط¯ظٹط© ظ…ظ‡ظ…ط© ظ‚ط§ط¯ظ…ط© (7 ط£ظٹط§ظ…):\n${lines.join('\n')}`;
+    const lines = important.map(
+      (e: any) => `  - [${e.date}] ${e.event} (${e.country || ""})`,
+    );
+    const result = `ط£ط­ط¯ط§ط« ط§ظ‚طھطµط§ط¯ظٹط© ظ…ظ‡ظ…ط© ظ‚ط§ط¯ظ…ط© (7 ط£ظٹط§ظ…):\n${lines.join("\n")}`;
     econCalendarCache = { data: result, expiresAt: Date.now() + CACHE_TTL_MS };
     return result;
   } catch (e: any) {
@@ -173,171 +224,211 @@ async function getEconomicCalendar(apiKey: string) {
 // ============================================
 const TOOLS = [
   {
-    name: 'get_spxw_trade_plan',
+    name: "get_spxw_trade_plan",
     description:
-      'ط§ظ„ط£ط¯ط§ط© ط§ظ„ط±ط³ظ…ظٹط© ظ„ط§ط®طھظٹط§ط± ط¹ظ‚ط¯ SPXW ظˆط¨ظ†ط§ط، ط®ط·ط© ط§ظ„ط¯ط®ظˆظ„. ط§ط³طھط®ط¯ظ…ظ‡ط§ ط¹ظ†ط¯ ط³ط¤ط§ظ„ ظٹط²ظٹط¯ ط¹ظ† ط£ظپط¶ظ„ ط¹ظ‚ط¯ SPXW ط£ظˆ ظپط±طµط© SPX ط£ظˆ Call/Put ط¹ظ„ظ‰ SPX. ظ…ظ…ظ†ظˆط¹ طھط®ظ…ظٹظ† Strike ط£ظˆ Expiration ط£ظˆ ط­ط³ط§ط¨ SPX ظ…ظ† SPY.',
+      "ط§ظ„ط£ط¯ط§ط© ط§ظ„ط±ط³ظ…ظٹط© ظ„ط§ط®طھظٹط§ط± ط¹ظ‚ط¯ SPXW ظˆط¨ظ†ط§ط، ط®ط·ط© ط§ظ„ط¯ط®ظˆظ„. ط§ط³طھط®ط¯ظ…ظ‡ط§ ط¹ظ†ط¯ ط³ط¤ط§ظ„ ظٹط²ظٹط¯ ط¹ظ† ط£ظپط¶ظ„ ط¹ظ‚ط¯ SPXW ط£ظˆ ظپط±طµط© SPX ط£ظˆ Call/Put ط¹ظ„ظ‰ SPX. ظ…ظ…ظ†ظˆط¹ طھط®ظ…ظٹظ† Strike ط£ظˆ Expiration ط£ظˆ ط­ط³ط§ط¨ SPX ظ…ظ† SPY.",
     input_schema: {
-      type: 'object',
+      type: "object",
       properties: {
         maxResults: {
-          type: 'number',
-          description: 'ط¹ط¯ط¯ ط§ظ„ظ†طھط§ط¦ط¬ ط¨ط­ط¯ ط£ظ‚طµظ‰ ط¹ظ‚ط¯ظٹظ†.',
-        },
-      },
-    },
-  },
-{
-    name: 'get_technical_indicators',
-    description:
-      'ظٹط­ط³ط¨ ظ…ط¤ط´ط±ط§طھ ظپظ†ظٹط© ظ„ط³ظ‡ظ… ظ…ط¹ظٹظ†: RSI (طھط´ط¨ط¹ ط´ط±ط§ط¦ظٹ/ط¨ظٹط¹ظٹ)طŒ MACD (ط²ط®ظ… ظˆط§طھط¬ط§ظ‡)طŒ Bollinger Bands (طھط°ط¨ط°ط¨)طŒ ظˆط¯ط¹ظ…/ظ…ظ‚ط§ظˆظ…ط©. ط§ظ„ط¯ط¹ظ…/ط§ظ„ظ…ظ‚ط§ظˆظ…ط© ظٹط¬ظٹ ظ…ظ† Volume Profile ط­ظ‚ظٹظ‚ظٹ (VAH/VAL/POC ط¹ط¨ط± Massive.com) ظ„ظˆ ظ…طھظˆظپط±طŒ ظˆط¥ظ„ط§ ظٹط±ط¬ط¹ طھظ„ظ‚ط§ط¦ظٹط§ظ‹ ظ„ظ†ط·ط§ظ‚ طھط§ط±ظٹط®ظٹ طھظ‚ط±ظٹط¨ظٹ (ط£ط¹ظ„ظ‰/ط£ط¯ظ†ظ‰ ظ‚ظ…ط© ط¨ط¢ط®ط± 50 ط´ظ…ط¹ط©) - طھط­ظ‚ظ‚ ظ…ظ† supportResistance.source ظ„ظ…ط¹ط±ظپط© ط£ظٹظ‡ظ… ط±ط¬ط¹ ظپط¹ظ„ظٹط§ظ‹. ط§ط³طھط®ط¯ظ…ظ‡ط§ ظ„ظ…ط§ ظٹط²ظٹط¯ ظٹط³ط£ظ„ ط¹ظ† طھط­ظ„ظٹظ„ ظپظ†ظٹطŒ ط£ظˆ ظٹط³ط£ظ„ ط¹ظ† ظ…ط¤ط´ط± ظ…ط­ط¯ط¯ (RSIطŒ MACDطŒ ط¯ط¹ظ…طŒ ظ…ظ‚ط§ظˆظ…ط©) ظ„ط³ظ‡ظ….',
-    input_schema: {
-      type: 'object',
-      properties: {
-        symbol: { type: 'string', description: 'ط±ظ…ط² ط§ظ„ط³ظ‡ظ… ط§ظ„ط£ظ…ط±ظٹظƒظٹطŒ ظ…ط«ظ„ AAPL ط£ظˆ TSLA' },
-        timeframe: {
-          type: 'string',
-          description: 'ط§ظ„ظپط±ظٹظ… ط§ظ„ط²ظ…ظ†ظٹ. ط§ظ„ط§ظپطھط±ط§ط¶ظٹ 1day (ظٹظˆظ…ظٹ).',
-          enum: ['15min', '1h', '4h', '1day', '1week'],
-        },
-      },
-      required: ['symbol'],
-    },
-  },
-  {
-    name: 'run_backtest',
-    description:
-      'ظٹط´ط؛ظ‘ظ„ ط§ط®طھط¨ط§ط± طھط§ط±ظٹط®ظٹ (backtest) ظ„ط§ط³طھط±ط§طھظٹط¬ظٹط© EMA 9/21 + VWAP + طھط£ظƒظٹط¯ ط§ظ„ط­ط¬ظ… ط¹ظ„ظ‰ ط³ظ‡ظ… ظ…ط¹ظٹظ†طŒ ظˆظٹط±ط¬ط¹ ط¹ط¯ط¯ ط§ظ„طµظپظ‚ط§طھطŒ ظ†ط³ط¨ط© ط§ظ„ظ†ط¬ط§ط­طŒ ط§ظ„ط¹ط§ط¦ط¯ ط§ظ„ظƒظ„ظٹطŒ ظˆط£ظ‚طµظ‰ ط§ظ†ط®ظپط§ط¶. ط§ط³طھط®ط¯ظ…ظ‡ط§ ظ„ظ…ط§ ظٹط²ظٹط¯ ظٹط³ط£ظ„ ط¹ظ† ط£ط¯ط§ط، ط§ط³طھط±ط§طھظٹط¬ظٹط© ط£ظˆ ظ†طھظٹط¬ط© ط¨ط§ظƒ-طھط³طھ ظ„ط³ظ‡ظ… ظ…ط¹ظٹظ†.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        symbol: { type: 'string', description: 'ط±ظ…ط² ط§ظ„ط³ظ‡ظ… ط§ظ„ط£ظ…ط±ظٹظƒظٹطŒ ظ…ط«ظ„ AAPL ط£ظˆ TSLA' },
-        timeframe: {
-          type: 'string',
-          description: 'ط§ظ„ظپط±ظٹظ… ط§ظ„ط²ظ…ظ†ظٹ. ط§ظ„ط§ظپطھط±ط§ط¶ظٹ 15min ظˆظ‡ظˆ ط§ظ„ط£ظ†ط³ط¨ ظ„ظ‡ط§ظ„ط§ط³طھط±ط§طھظٹط¬ظٹط©.',
-          enum: ['5min', '15min', '30min', '1h', '4h', '1day'],
-        },
-        from: { type: 'string', description: 'طھط§ط±ظٹط® ط§ظ„ط¨ط¯ط§ظٹط© ط¨طµظٹط؛ط© YYYY-MM-DD (ط§ط®طھظٹط§ط±ظٹ)' },
-        to: { type: 'string', description: 'طھط§ط±ظٹط® ط§ظ„ظ†ظ‡ط§ظٹط© ط¨طµظٹط؛ط© YYYY-MM-DD (ط§ط®طھظٹط§ط±ظٹ)' },
-      },
-      required: ['symbol'],
-    },
-  },
-  {
-    name: 'get_market_decision',
-    description:
-      'ظٹط´ط؛ظ‘ظ„ ظ…ط­ط±ظƒ ظ‚ط±ط§ط± ط§ظ„ط³ظˆظ‚ ط¹ظ„ظ‰ SPY ظˆQQQ ظˆظٹط¹ظٹط¯ Market Score ظˆط§ط­طھظ…ط§ظ„ط§طھ Bullish/Bearish/Neutral ظˆط§ظ†ط­ظٹط§ط² CALL ط£ظˆ PUT ط£ظˆ WAIT. ط§ط³طھط®ط¯ظ…ظ‡ ظ‚ط¨ظ„ طھط­ظ„ظٹظ„ ط£ظٹ ط³ظ‡ظ… ط£ظˆ ط¹ظ‚ط¯ ط¹ظ†ط¯ظ…ط§ ظٹط³ط£ظ„ ظٹط²ظٹط¯ ط¹ظ† ط§طھط¬ط§ظ‡ ط§ظ„ط³ظˆظ‚ ط£ظˆ طھظˆظ‚ط¹ ط§ظ„طµط¹ظˆط¯ ظˆط§ظ„ظ‡ط¨ظˆط·.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        timeframe: {
-          type: 'string',
-          enum: ['15min', '1h', '1day'],
-          description: 'ظپط±ظٹظ… طھظ‚ظٹظٹظ… ط§ظ„ط³ظˆظ‚. ط§ظ„ط§ظپطھط±ط§ط¶ظٹ 15min ظ„ظ„ظ…ط¶ط§ط±ط¨ط© ط§ظ„ظٹظˆظ…ظٹط©.',
+          type: "number",
+          description: "ط¹ط¯ط¯ ط§ظ„ظ†طھط§ط¦ط¬ ط¨ط­ط¯ ط£ظ‚طµظ‰ ط¹ظ‚ط¯ظٹظ†.",
         },
       },
     },
   },
   {
-    name: 'get_stock_decision',
+    name: "get_technical_indicators",
     description:
-      'ظٹط´ط؛ظ‘ظ„ ظ…ط­ط±ظƒ ط§طھط¬ط§ظ‡ ط³ظ‡ظ… ط§ط­طھط±ط§ظپظٹ ظˆظٹط±ط¬ط¹ Stock Score ظˆط§ط­طھظ…ط§ظ„ط§طھ ط§ظ„طµط¹ظˆط¯ ظˆط§ظ„ظ‡ط¨ظˆط· ظˆط§ظ„ط­ظٹط§ط¯ ظˆط¯ط±ط¬ط© ط§ظ„ط«ظ‚ط© ظˆط§ظ„ط§ظ†ط­ظٹط§ط² ظˆTrigger ظˆط¥ط¨ط·ط§ظ„ ط§ظ„ط³ظٹظ†ط§ط±ظٹظˆ ظˆط§ظ„ط£ظ‡ط¯ط§ظپ. ط§ط³طھط®ط¯ظ…ظ‡ ط¹ظ†ط¯ظ…ط§ ظٹط³ط£ظ„ ظٹط²ظٹط¯ ظ‡ظ„ ط³ظ‡ظ… ظ…ط¹ظٹظ† ط³ظٹطµط¹ط¯ ط£ظˆ ظٹظ‡ط¨ط· ط£ظˆ ظٹط·ظ„ط¨ طھط­ظ„ظٹظ„ طµظپظ‚ط© ط¹ظ„ظ‰ ط³ظ‡ظ….',
+      "ظٹط­ط³ط¨ ظ…ط¤ط´ط±ط§طھ ظپظ†ظٹط© ظ„ط³ظ‡ظ… ظ…ط¹ظٹظ†: RSI (طھط´ط¨ط¹ ط´ط±ط§ط¦ظٹ/ط¨ظٹط¹ظٹ)طŒ MACD (ط²ط®ظ… ظˆط§طھط¬ط§ظ‡)طŒ Bollinger Bands (طھط°ط¨ط°ط¨)طŒ ظˆط¯ط¹ظ…/ظ…ظ‚ط§ظˆظ…ط©. ط§ظ„ط¯ط¹ظ…/ط§ظ„ظ…ظ‚ط§ظˆظ…ط© ظٹط¬ظٹ ظ…ظ† Volume Profile ط­ظ‚ظٹظ‚ظٹ (VAH/VAL/POC ط¹ط¨ط± Massive.com) ظ„ظˆ ظ…طھظˆظپط±طŒ ظˆط¥ظ„ط§ ظٹط±ط¬ط¹ طھظ„ظ‚ط§ط¦ظٹط§ظ‹ ظ„ظ†ط·ط§ظ‚ طھط§ط±ظٹط®ظٹ طھظ‚ط±ظٹط¨ظٹ (ط£ط¹ظ„ظ‰/ط£ط¯ظ†ظ‰ ظ‚ظ…ط© ط¨ط¢ط®ط± 50 ط´ظ…ط¹ط©) - طھط­ظ‚ظ‚ ظ…ظ† supportResistance.source ظ„ظ…ط¹ط±ظپط© ط£ظٹظ‡ظ… ط±ط¬ط¹ ظپط¹ظ„ظٹط§ظ‹. ط§ط³طھط®ط¯ظ…ظ‡ط§ ظ„ظ…ط§ ظٹط²ظٹط¯ ظٹط³ط£ظ„ ط¹ظ† طھط­ظ„ظٹظ„ ظپظ†ظٹطŒ ط£ظˆ ظٹط³ط£ظ„ ط¹ظ† ظ…ط¤ط´ط± ظ…ط­ط¯ط¯ (RSIطŒ MACDطŒ ط¯ط¹ظ…طŒ ظ…ظ‚ط§ظˆظ…ط©) ظ„ط³ظ‡ظ….",
     input_schema: {
-      type: 'object',
+      type: "object",
       properties: {
         symbol: {
-          type: 'string',
-          description: 'ط±ظ…ط² ط§ظ„ط³ظ‡ظ… ط§ظ„ط£ظ…ط±ظٹظƒظٹ ظ…ط«ظ„ AMZN ط£ظˆ NVDA ط£ظˆ AAPL',
+          type: "string",
+          description:
+            "ط±ظ…ط² ط§ظ„ط³ظ‡ظ… ط§ظ„ط£ظ…ط±ظٹظƒظٹطŒ ظ…ط«ظ„ AAPL ط£ظˆ TSLA",
         },
         timeframe: {
-          type: 'string',
-          enum: ['15min', '1h', '1day'],
-          description: 'ظپط±ظٹظ… ط§ظ„طھط­ظ„ظٹظ„طŒ ط§ظ„ط§ظپطھط±ط§ط¶ظٹ 15min ظ„ظ„ظ…ط¶ط§ط±ط¨ط© ط§ظ„ظٹظˆظ…ظٹط©.',
+          type: "string",
+          description:
+            "ط§ظ„ظپط±ظٹظ… ط§ظ„ط²ظ…ظ†ظٹ. ط§ظ„ط§ظپطھط±ط§ط¶ظٹ 1day (ظٹظˆظ…ظٹ).",
+          enum: ["15min", "1h", "4h", "1day", "1week"],
         },
       },
-      required: ['symbol'],
+      required: ["symbol"],
     },
   },
   {
-    name: 'get_account',
+    name: "run_backtest",
     description:
-      'ظٹط¬ظ„ط¨ ط¨ظٹط§ظ†ط§طھ ط­ط³ط§ط¨ ظٹط²ظٹط¯ ط§ظ„ط­ظ‚ظٹظ‚ظٹ ظپظٹ Tradier: ط¥ط¬ظ…ط§ظ„ظٹ ظ‚ظٹظ…ط© ط§ظ„ط­ط³ط§ط¨طŒ ط§ظ„ظ†ظ‚ط¯طŒ ط§ظ„ظ‚ظˆط© ط§ظ„ط´ط±ط§ط¦ظٹط© ظ„ظ„ط£ط³ظ‡ظ… ظˆط§ظ„ط®ظٹط§ط±ط§طھطŒ ظˆط§ظ„ط£ط±ط¨ط§ط­ ظˆط§ظ„ط®ط³ط§ط¦ط± ط§ظ„ظ…ظپطھظˆط­ط©. ط§ط³طھط®ط¯ظ…ظ‡ط§ ط¹ظ†ط¯ظ…ط§ ظٹط³ط£ظ„ ظٹط²ظٹط¯ ط¹ظ† ط±طµظٹط¯ظ‡طŒ ط§ظ„ط³ظٹظˆظ„ط©طŒ ط§ظ„ظ‚ظˆط© ط§ظ„ط´ط±ط§ط¦ظٹط©طŒ ط£ظˆ ط­ط§ظ„ط© ط§ظ„ط­ط³ط§ط¨.',
+      "ظٹط´ط؛ظ‘ظ„ ط§ط®طھط¨ط§ط± طھط§ط±ظٹط®ظٹ (backtest) ظ„ط§ط³طھط±ط§طھظٹط¬ظٹط© EMA 9/21 + VWAP + طھط£ظƒظٹط¯ ط§ظ„ط­ط¬ظ… ط¹ظ„ظ‰ ط³ظ‡ظ… ظ…ط¹ظٹظ†طŒ ظˆظٹط±ط¬ط¹ ط¹ط¯ط¯ ط§ظ„طµظپظ‚ط§طھطŒ ظ†ط³ط¨ط© ط§ظ„ظ†ط¬ط§ط­طŒ ط§ظ„ط¹ط§ط¦ط¯ ط§ظ„ظƒظ„ظٹطŒ ظˆط£ظ‚طµظ‰ ط§ظ†ط®ظپط§ط¶. ط§ط³طھط®ط¯ظ…ظ‡ط§ ظ„ظ…ط§ ظٹط²ظٹط¯ ظٹط³ط£ظ„ ط¹ظ† ط£ط¯ط§ط، ط§ط³طھط±ط§طھظٹط¬ظٹط© ط£ظˆ ظ†طھظٹط¬ط© ط¨ط§ظƒ-طھط³طھ ظ„ط³ظ‡ظ… ظ…ط¹ظٹظ†.",
     input_schema: {
-      type: 'object',
+      type: "object",
+      properties: {
+        symbol: {
+          type: "string",
+          description:
+            "ط±ظ…ط² ط§ظ„ط³ظ‡ظ… ط§ظ„ط£ظ…ط±ظٹظƒظٹطŒ ظ…ط«ظ„ AAPL ط£ظˆ TSLA",
+        },
+        timeframe: {
+          type: "string",
+          description:
+            "ط§ظ„ظپط±ظٹظ… ط§ظ„ط²ظ…ظ†ظٹ. ط§ظ„ط§ظپطھط±ط§ط¶ظٹ 15min ظˆظ‡ظˆ ط§ظ„ط£ظ†ط³ط¨ ظ„ظ‡ط§ظ„ط§ط³طھط±ط§طھظٹط¬ظٹط©.",
+          enum: ["5min", "15min", "30min", "1h", "4h", "1day"],
+        },
+        from: {
+          type: "string",
+          description:
+            "طھط§ط±ظٹط® ط§ظ„ط¨ط¯ط§ظٹط© ط¨طµظٹط؛ط© YYYY-MM-DD (ط§ط®طھظٹط§ط±ظٹ)",
+        },
+        to: {
+          type: "string",
+          description:
+            "طھط§ط±ظٹط® ط§ظ„ظ†ظ‡ط§ظٹط© ط¨طµظٹط؛ط© YYYY-MM-DD (ط§ط®طھظٹط§ط±ظٹ)",
+        },
+      },
+      required: ["symbol"],
+    },
+  },
+  {
+    name: "get_market_decision",
+    description:
+      "ظٹط´ط؛ظ‘ظ„ ظ…ط­ط±ظƒ ظ‚ط±ط§ط± ط§ظ„ط³ظˆظ‚ ط¹ظ„ظ‰ SPY ظˆQQQ ظˆظٹط¹ظٹط¯ Market Score ظˆط§ط­طھظ…ط§ظ„ط§طھ Bullish/Bearish/Neutral ظˆط§ظ†ط­ظٹط§ط² CALL ط£ظˆ PUT ط£ظˆ WAIT. ط§ط³طھط®ط¯ظ…ظ‡ ظ‚ط¨ظ„ طھط­ظ„ظٹظ„ ط£ظٹ ط³ظ‡ظ… ط£ظˆ ط¹ظ‚ط¯ ط¹ظ†ط¯ظ…ط§ ظٹط³ط£ظ„ ظٹط²ظٹط¯ ط¹ظ† ط§طھط¬ط§ظ‡ ط§ظ„ط³ظˆظ‚ ط£ظˆ طھظˆظ‚ط¹ ط§ظ„طµط¹ظˆط¯ ظˆط§ظ„ظ‡ط¨ظˆط·.",
+    input_schema: {
+      type: "object",
+      properties: {
+        timeframe: {
+          type: "string",
+          enum: ["15min", "1h", "1day"],
+          description:
+            "ظپط±ظٹظ… طھظ‚ظٹظٹظ… ط§ظ„ط³ظˆظ‚. ط§ظ„ط§ظپطھط±ط§ط¶ظٹ 15min ظ„ظ„ظ…ط¶ط§ط±ط¨ط© ط§ظ„ظٹظˆظ…ظٹط©.",
+        },
+      },
+    },
+  },
+  {
+    name: "get_stock_decision",
+    description:
+      "ظٹط´ط؛ظ‘ظ„ ظ…ط­ط±ظƒ ط§طھط¬ط§ظ‡ ط³ظ‡ظ… ط§ط­طھط±ط§ظپظٹ ظˆظٹط±ط¬ط¹ Stock Score ظˆط§ط­طھظ…ط§ظ„ط§طھ ط§ظ„طµط¹ظˆط¯ ظˆط§ظ„ظ‡ط¨ظˆط· ظˆط§ظ„ط­ظٹط§ط¯ ظˆط¯ط±ط¬ط© ط§ظ„ط«ظ‚ط© ظˆط§ظ„ط§ظ†ط­ظٹط§ط² ظˆTrigger ظˆط¥ط¨ط·ط§ظ„ ط§ظ„ط³ظٹظ†ط§ط±ظٹظˆ ظˆط§ظ„ط£ظ‡ط¯ط§ظپ. ط§ط³طھط®ط¯ظ…ظ‡ ط¹ظ†ط¯ظ…ط§ ظٹط³ط£ظ„ ظٹط²ظٹط¯ ظ‡ظ„ ط³ظ‡ظ… ظ…ط¹ظٹظ† ط³ظٹطµط¹ط¯ ط£ظˆ ظٹظ‡ط¨ط· ط£ظˆ ظٹط·ظ„ط¨ طھط­ظ„ظٹظ„ طµظپظ‚ط© ط¹ظ„ظ‰ ط³ظ‡ظ….",
+    input_schema: {
+      type: "object",
+      properties: {
+        symbol: {
+          type: "string",
+          description:
+            "ط±ظ…ط² ط§ظ„ط³ظ‡ظ… ط§ظ„ط£ظ…ط±ظٹظƒظٹ ظ…ط«ظ„ AMZN ط£ظˆ NVDA ط£ظˆ AAPL",
+        },
+        timeframe: {
+          type: "string",
+          enum: ["15min", "1h", "1day"],
+          description:
+            "ظپط±ظٹظ… ط§ظ„طھط­ظ„ظٹظ„طŒ ط§ظ„ط§ظپطھط±ط§ط¶ظٹ 15min ظ„ظ„ظ…ط¶ط§ط±ط¨ط© ط§ظ„ظٹظˆظ…ظٹط©.",
+        },
+      },
+      required: ["symbol"],
+    },
+  },
+  {
+    name: "get_account",
+    description:
+      "ظٹط¬ظ„ط¨ ط¨ظٹط§ظ†ط§طھ ط­ط³ط§ط¨ ظٹط²ظٹط¯ ط§ظ„ط­ظ‚ظٹظ‚ظٹ ظپظٹ Tradier: ط¥ط¬ظ…ط§ظ„ظٹ ظ‚ظٹظ…ط© ط§ظ„ط­ط³ط§ط¨طŒ ط§ظ„ظ†ظ‚ط¯طŒ ط§ظ„ظ‚ظˆط© ط§ظ„ط´ط±ط§ط¦ظٹط© ظ„ظ„ط£ط³ظ‡ظ… ظˆط§ظ„ط®ظٹط§ط±ط§طھطŒ ظˆط§ظ„ط£ط±ط¨ط§ط­ ظˆط§ظ„ط®ط³ط§ط¦ط± ط§ظ„ظ…ظپطھظˆط­ط©. ط§ط³طھط®ط¯ظ…ظ‡ط§ ط¹ظ†ط¯ظ…ط§ ظٹط³ط£ظ„ ظٹط²ظٹط¯ ط¹ظ† ط±طµظٹط¯ظ‡طŒ ط§ظ„ط³ظٹظˆظ„ط©طŒ ط§ظ„ظ‚ظˆط© ط§ظ„ط´ط±ط§ط¦ظٹط©طŒ ط£ظˆ ط­ط§ظ„ط© ط§ظ„ط­ط³ط§ط¨.",
+    input_schema: {
+      type: "object",
       properties: {},
     },
   },
   {
-    name: 'get_positions',
+    name: "get_positions",
     description:
-      'ظٹط¬ظ„ط¨ ط§ظ„ظ…ط±ط§ظƒط² ط§ظ„ظ…ظپطھظˆط­ط© ط§ظ„ط­ط§ظ„ظٹط© ظپظٹ ط­ط³ط§ط¨ ظٹط²ظٹط¯ ط¹ظ„ظ‰ TradierطŒ ط¨ظ…ط§ ظپظٹظ‡ط§ ط§ظ„ط±ظ…ط² ظˆط§ظ„ظƒظ…ظٹط© ظˆط§ظ„طھظƒظ„ظپط©. ط§ط³طھط®ط¯ظ…ظ‡ط§ ط¹ظ†ط¯ظ…ط§ ظٹط³ط£ظ„ ط¹ظ† ط§ظ„طµظپظ‚ط§طھ ط£ظˆ ط§ظ„ظ…ط±ط§ظƒط² ط§ظ„ظ…ظپطھظˆط­ط© ط£ظˆ ظ…ط§ ظٹظ…ظ„ظƒظ‡ ط­ط§ظ„ظٹط§ظ‹.',
+      "ظٹط¬ظ„ط¨ ط§ظ„ظ…ط±ط§ظƒط² ط§ظ„ظ…ظپطھظˆط­ط© ط§ظ„ط­ط§ظ„ظٹط© ظپظٹ ط­ط³ط§ط¨ ظٹط²ظٹط¯ ط¹ظ„ظ‰ TradierطŒ ط¨ظ…ط§ ظپظٹظ‡ط§ ط§ظ„ط±ظ…ط² ظˆط§ظ„ظƒظ…ظٹط© ظˆط§ظ„طھظƒظ„ظپط©. ط§ط³طھط®ط¯ظ…ظ‡ط§ ط¹ظ†ط¯ظ…ط§ ظٹط³ط£ظ„ ط¹ظ† ط§ظ„طµظپظ‚ط§طھ ط£ظˆ ط§ظ„ظ…ط±ط§ظƒط² ط§ظ„ظ…ظپطھظˆط­ط© ط£ظˆ ظ…ط§ ظٹظ…ظ„ظƒظ‡ ط­ط§ظ„ظٹط§ظ‹.",
     input_schema: {
-      type: 'object',
+      type: "object",
       properties: {},
     },
   },
   {
-    name: 'get_tradier_quote',
+    name: "get_tradier_quote",
     description:
-      'ظٹط¬ظ„ط¨ ط§ظ„ط³ط¹ط± ط§ظ„ط­ط§ظ„ظٹ ظˆBid ظˆAsk ظˆط§ظ„ط­ط¬ظ… ظˆط§ظ„طھط؛ظٹط± ط§ظ„ظٹظˆظ…ظٹ ظ…ط¨ط§ط´ط±ط© ظ…ظ† Tradier ظ„ط³ظ‡ظ… ط£ظˆ ETF ط£ظ…ط±ظٹظƒظٹ. ط§ط³طھط®ط¯ظ…ظ‡ط§ ط¹ظ†ط¯ظ…ط§ ظٹط·ظ„ط¨ ظٹط²ظٹط¯ ط³ط¹ط± Tradier ط£ظˆ ظٹط±ظٹط¯ ظ…ظ‚ط§ط±ظ†ط© ط¨ظٹط§ظ†ط§طھ Finnhub ظ…ط¹ Tradier.',
+      "ظٹط¬ظ„ط¨ ط§ظ„ط³ط¹ط± ط§ظ„ط­ط§ظ„ظٹ ظˆBid ظˆAsk ظˆط§ظ„ط­ط¬ظ… ظˆط§ظ„طھط؛ظٹط± ط§ظ„ظٹظˆظ…ظٹ ظ…ط¨ط§ط´ط±ط© ظ…ظ† Tradier ظ„ط³ظ‡ظ… ط£ظˆ ETF ط£ظ…ط±ظٹظƒظٹ. ط§ط³طھط®ط¯ظ…ظ‡ط§ ط¹ظ†ط¯ظ…ط§ ظٹط·ظ„ط¨ ظٹط²ظٹط¯ ط³ط¹ط± Tradier ط£ظˆ ظٹط±ظٹط¯ ظ…ظ‚ط§ط±ظ†ط© ط¨ظٹط§ظ†ط§طھ Finnhub ظ…ط¹ Tradier.",
     input_schema: {
-      type: 'object',
+      type: "object",
       properties: {
         symbol: {
-          type: 'string',
-          description: 'ط±ظ…ط² ط§ظ„ط³ظ‡ظ… ط£ظˆ ETFطŒ ظ…ط«ظ„ AAPL ط£ظˆ SPY',
+          type: "string",
+          description: "ط±ظ…ط² ط§ظ„ط³ظ‡ظ… ط£ظˆ ETFطŒ ظ…ط«ظ„ AAPL ط£ظˆ SPY",
         },
       },
-      required: ['symbol'],
+      required: ["symbol"],
     },
   },
   {
-    name: 'get_options_expirations',
+    name: "get_options_expirations",
     description:
-      'ظٹط¬ظٹط¨ طھظˆط§ط±ظٹط® ط§ط³طھط­ظ‚ط§ظ‚ ط¹ظ‚ظˆط¯ ط§ظ„ط®ظٹط§ط±ط§طھ ط§ظ„ظ…طھط§ط­ط© ظ„ط³ظ‡ظ… ظ…ط¹ظٹظ†. ط§ط³طھط®ط¯ظ…ظ‡ط§ ط£ظˆظ„ ظ„ظ…ط§ ظٹط²ظٹط¯ ظٹط³ط£ظ„ ط¹ظ† ط®ظٹط§ط±ط§طھ ط³ظ‡ظ… ظˆظ„ط§ ظٹط­ط¯ط¯ طھط§ط±ظٹط® ط§ط³طھط­ظ‚ط§ظ‚طŒ ط¹ط´ط§ظ† طھط¹ط±ظپ ظˆط´ ط§ظ„طھظˆط§ط±ظٹط® ط§ظ„ظ…طھط§ط­ط© ظ‚ط¨ظ„ ظ…ط§ طھط¬ظٹط¨ ط§ظ„ط³ظ„ط³ظ„ط©.',
+      "ظٹط¬ظٹط¨ طھظˆط§ط±ظٹط® ط§ط³طھط­ظ‚ط§ظ‚ ط¹ظ‚ظˆط¯ ط§ظ„ط®ظٹط§ط±ط§طھ ط§ظ„ظ…طھط§ط­ط© ظ„ط³ظ‡ظ… ظ…ط¹ظٹظ†. ط§ط³طھط®ط¯ظ…ظ‡ط§ ط£ظˆظ„ ظ„ظ…ط§ ظٹط²ظٹط¯ ظٹط³ط£ظ„ ط¹ظ† ط®ظٹط§ط±ط§طھ ط³ظ‡ظ… ظˆظ„ط§ ظٹط­ط¯ط¯ طھط§ط±ظٹط® ط§ط³طھط­ظ‚ط§ظ‚طŒ ط¹ط´ط§ظ† طھط¹ط±ظپ ظˆط´ ط§ظ„طھظˆط§ط±ظٹط® ط§ظ„ظ…طھط§ط­ط© ظ‚ط¨ظ„ ظ…ط§ طھط¬ظٹط¨ ط§ظ„ط³ظ„ط³ظ„ط©.",
     input_schema: {
-      type: 'object',
+      type: "object",
       properties: {
-        symbol: { type: 'string', description: 'ط±ظ…ط² ط§ظ„ط³ظ‡ظ… ط§ظ„ط£ظ…ط±ظٹظƒظٹطŒ ظ…ط«ظ„ AAPL ط£ظˆ TSLA' },
+        symbol: {
+          type: "string",
+          description:
+            "ط±ظ…ط² ط§ظ„ط³ظ‡ظ… ط§ظ„ط£ظ…ط±ظٹظƒظٹطŒ ظ…ط«ظ„ AAPL ط£ظˆ TSLA",
+        },
       },
-      required: ['symbol'],
+      required: ["symbol"],
     },
   },
   {
-    name: 'get_options_chain',
+    name: "get_options_chain",
     description:
-      'ظٹط¬ظٹط¨ ط³ظ„ط³ظ„ط© ط®ظٹط§ط±ط§طھ ظƒط§ظ…ظ„ط© (Calls ظˆPuts) ظ„ط³ظ‡ظ… ظˆطھط§ط±ظٹط® ط§ط³طھط­ظ‚ط§ظ‚ ظ…ط¹ظٹظ†طŒ ظ…ط¹ ط§ظ„ط£ط³ط¹ط§ط± ظˆGreeks (Delta, Theta, Gamma, Vega, IV) ظˆطھظ‚ظٹظٹظ… ط¬ظˆط¯ط© ط§ظ„ط³ظٹظˆظ„ط© ظ„ظƒظ„ ط¹ظ‚ط¯ (ط³ط¨ط±ظٹط¯طŒ Open InterestطŒ ط§ظ„ط­ط¬ظ…). âڑ ï¸ڈ ط¨ظٹط§ظ†ط§طھ Sandbox ظ…طھط£ط®ط±ط© 15 ط¯ظ‚ظٹظ‚ط© - ظ„ظ„طھظ‚ظٹظٹظ… ظˆط§ظ„طھط¬ط±ط¨ط© ظپظ‚ط·طŒ ظ…ظˆ ظ„ظ‚ط±ط§ط± ط¯ط®ظˆظ„ ظ„ط­ط¸ظٹ. ظ„ط§ط²ظ… طھط³طھط®ط¯ظ… get_options_expirations ط£ظˆظ„ ظ„ظˆ ظ…ط§ ط¹ظ†ط¯ظƒ طھط§ط±ظٹط® ط§ط³طھط­ظ‚ط§ظ‚ ظ…ط­ط¯ط¯.',
+      "ظٹط¬ظٹط¨ ط³ظ„ط³ظ„ط© ط®ظٹط§ط±ط§طھ ظƒط§ظ…ظ„ط© (Calls ظˆPuts) ظ„ط³ظ‡ظ… ظˆطھط§ط±ظٹط® ط§ط³طھط­ظ‚ط§ظ‚ ظ…ط¹ظٹظ†طŒ ظ…ط¹ ط§ظ„ط£ط³ط¹ط§ط± ظˆGreeks (Delta, Theta, Gamma, Vega, IV) ظˆطھظ‚ظٹظٹظ… ط¬ظˆط¯ط© ط§ظ„ط³ظٹظˆظ„ط© ظ„ظƒظ„ ط¹ظ‚ط¯ (ط³ط¨ط±ظٹط¯طŒ Open InterestطŒ ط§ظ„ط­ط¬ظ…). âڑ ï¸ڈ ط¨ظٹط§ظ†ط§طھ Sandbox ظ…طھط£ط®ط±ط© 15 ط¯ظ‚ظٹظ‚ط© - ظ„ظ„طھظ‚ظٹظٹظ… ظˆط§ظ„طھط¬ط±ط¨ط© ظپظ‚ط·طŒ ظ…ظˆ ظ„ظ‚ط±ط§ط± ط¯ط®ظˆظ„ ظ„ط­ط¸ظٹ. ظ„ط§ط²ظ… طھط³طھط®ط¯ظ… get_options_expirations ط£ظˆظ„ ظ„ظˆ ظ…ط§ ط¹ظ†ط¯ظƒ طھط§ط±ظٹط® ط§ط³طھط­ظ‚ط§ظ‚ ظ…ط­ط¯ط¯.",
     input_schema: {
-      type: 'object',
+      type: "object",
       properties: {
-        symbol: { type: 'string', description: 'ط±ظ…ط² ط§ظ„ط³ظ‡ظ… ط§ظ„ط£ظ…ط±ظٹظƒظٹ' },
-        expiration: { type: 'string', description: 'طھط§ط±ظٹط® ط§ظ„ط§ط³طھط­ظ‚ط§ظ‚ ط¨طµظٹط؛ط© YYYY-MM-DD' },
+        symbol: {
+          type: "string",
+          description: "ط±ظ…ط² ط§ظ„ط³ظ‡ظ… ط§ظ„ط£ظ…ط±ظٹظƒظٹ",
+        },
+        expiration: {
+          type: "string",
+          description: "طھط§ط±ظٹط® ط§ظ„ط§ط³طھط­ظ‚ط§ظ‚ ط¨طµظٹط؛ط© YYYY-MM-DD",
+        },
       },
-      required: ['symbol', 'expiration'],
+      required: ["symbol", "expiration"],
     },
   },
   {
-    name: 'get_volume_profile',
+    name: "get_volume_profile",
     description:
       'ظٹط­ط³ط¨ Volume Profile ط§ظ„ظپط¹ظ„ظٹ ظ„ظ„ظٹظˆظ… ط§ظ„ط³ط§ط¨ظ‚ (VAHطŒ VALطŒ POC) ظ…ظ† ط¨ظٹط§ظ†ط§طھ طھط¯ط§ظˆظ„ ط­ظ‚ظٹظ‚ظٹط© ط¹ط¨ط± Massive.com. âڑ ï¸ڈ ظ„ظˆ ط³ط¨ظ‚ ظˆط§ط³طھط¯ط¹ظٹطھ get_technical_indicators ظ„ظ†ظپط³ ط§ظ„ط³ظ‡ظ… ظˆط±ط¬ط¹ supportResistance.source = "volume_profile"طŒ ظپظ‡ط°ظٹ ط§ظ„ط¨ظٹط§ظ†ط§طھ ظ…ظˆط¬ظˆط¯ط© ط¹ظ†ط¯ظƒ ظ…ط³ط¨ظ‚ط§ظ‹ - ظ„ط§ طھط³طھط¯ط¹ظگ ظ‡ط°ظٹ ط§ظ„ط£ط¯ط§ط© ظ…ط±ط© ط«ط§ظ†ظٹط© ط¥ظ„ط§ ظ„ظˆ ظٹط²ظٹط¯ ط³ط£ظ„ ط¹ظ† Volume Profile طµط±ط§ط­ط© ط£ظˆ ظƒط§ظ† ط§ظ„ظ…طµط¯ط± ط§ظ„ط³ط§ط¨ظ‚ "historical_range". ط§ط³طھط®ط¯ظ…ظ‡ط§ ط¥ظ„ط²ط§ظ…ظٹط§ظ‹ ظپظٹ ظ…ط±ط­ظ„ط© Zone ظ…ظ† ظ…ط­ط±ظƒ CZT ط¹ظ†ط¯ طھط­ط¯ظٹط¯ ظ…ظ†ط§ط·ظ‚ Previous Day VAH/VAL/POC ظ„ظˆ ظ…ط§ ط¹ظ†ط¯ظƒ ط¨ظٹط§ظ†ط§طھ ظ…ط³ط¨ظ‚ط©.',
     input_schema: {
-      type: 'object',
+      type: "object",
       properties: {
-        symbol: { type: 'string', description: 'ط±ظ…ط² ط§ظ„ط³ظ‡ظ… ط§ظ„ط£ظ…ط±ظٹظƒظٹطŒ ظ…ط«ظ„ AAPL ط£ظˆ TSLA' },
+        symbol: {
+          type: "string",
+          description:
+            "ط±ظ…ط² ط§ظ„ط³ظ‡ظ… ط§ظ„ط£ظ…ط±ظٹظƒظٹطŒ ظ…ط«ظ„ AAPL ط£ظˆ TSLA",
+        },
       },
-      required: ['symbol'],
+      required: ["symbol"],
     },
   },
   {
-    name: 'get_recent_tv_signals',
+    name: "get_recent_tv_signals",
     description:
       'ظٹط¬ظٹط¨ ط¢ط®ط± ط¥ط´ط§ط±ط§طھ ظˆط±ط¯طھ ظ…ظ† ظ…ط¤ط´ط± PRO Multi-Tool ط¹ظ„ظ‰ TradingView (ط¥ط´ط§ط±ط© BOOM ظ‡ط§ط¨ط·/طµط§ط¹ط¯طŒ ط£ظˆ ظ†ظ…ط· طھظˆط§ظپظ‚ظٹ Harmonic) ظ„ط³ظ‡ظ… ظ…ط¹ظٹظ† ط£ظˆ ظ„ظƒظ„ ط§ظ„ط£ط³ظ‡ظ…. ط§ط³طھط®ط¯ظ…ظ‡ط§ ظ„ظ…ط§ ظٹط²ظٹط¯ ظٹط³ط£ظ„ "ظ‡ظ„ طµط§ط± BOOM ط¹ظ„ظ‰ ط³ظ‡ظ… ظ…ط¹ظٹظ†طں" ط£ظˆ ظٹط³ط£ظ„ ط¹ظ† ط¢ط®ط± ط¥ط´ط§ط±ط§طھ ط§ظ„ظ…ط¤ط´ط±طŒ ط£ظˆ ظƒط¬ط²ط، ظ…ظ† طھط£ظƒظٹط¯ Trigger ط¨ظ…ط­ط±ظƒ CZT ط¥ط°ط§ ظƒط§ظ† ظٹط²ظٹط¯ ظٹط±ط§ظ‚ط¨ ظ‡ط°ط§ ط§ظ„ط³ظ‡ظ… ط¨ط§ظ„ظ…ط¤ط´ط±.',
     input_schema: {
-      type: 'object',
+      type: "object",
       properties: {
-        symbol: { type: 'string', description: 'ط±ظ…ط² ط§ظ„ط³ظ‡ظ… (ط§ط®طھظٹط§ط±ظٹ) - ظ„ظˆ ظ…ط§ طھط­ط¯ط¯طŒ طھط±ط¬ط¹ ط¢ط®ط± ط§ظ„ط¥ط´ط§ط±ط§طھ ظ…ظ† ظƒظ„ ط§ظ„ط£ط³ظ‡ظ…' },
+        symbol: {
+          type: "string",
+          description:
+            "ط±ظ…ط² ط§ظ„ط³ظ‡ظ… (ط§ط®طھظٹط§ط±ظٹ) - ظ„ظˆ ظ…ط§ طھط­ط¯ط¯طŒ طھط±ط¬ط¹ ط¢ط®ط± ط§ظ„ط¥ط´ط§ط±ط§طھ ظ…ظ† ظƒظ„ ط§ظ„ط£ط³ظ‡ظ…",
+        },
         limit: {
-          type: 'number',
-          description: 'ط¹ط¯ط¯ ط§ظ„ط¥ط´ط§ط±ط§طھ ط§ظ„ظ…ط·ظ„ظˆط¨ط©طŒ ظ…ظ† 1 ط¥ظ„ظ‰ 50طŒ ط§ظپطھط±ط§ط¶ظٹط§ظ‹ 10',
+          type: "number",
+          description:
+            "ط¹ط¯ط¯ ط§ظ„ط¥ط´ط§ط±ط§طھ ط§ظ„ظ…ط·ظ„ظˆط¨ط©طŒ ظ…ظ† 1 ط¥ظ„ظ‰ 50طŒ ط§ظپطھط±ط§ط¶ظٹط§ظ‹ 10",
           minimum: 1,
           maximum: 50,
           default: 10,
@@ -346,230 +437,263 @@ const TOOLS = [
     },
   },
 
-
   {
-    name: 'get_recent_social_signals',
+    name: "get_recent_social_signals",
     description:
-      'يجلب آخر الإشارات الاجتماعية الموثوقة المحفوظة من Telegram أو منصة X. استخدمه عند تحليل SPX أو سهم أو عقد خيارات، وعند سؤال يزيد عن إشارات تيليجرام أو المزاج الاجتماعي. هذه الإشارات عامل تأكيد إضافي فقط، ولا تُستخدم وحدها كأمر دخول.',
+      "يجلب آخر الإشارات الاجتماعية الموثوقة المحفوظة من Telegram أو منصة X. استخدمه عند تحليل SPX أو سهم أو عقد خيارات، وعند سؤال يزيد عن إشارات تيليجرام أو المزاج الاجتماعي. هذه الإشارات عامل تأكيد إضافي فقط، ولا تُستخدم وحدها كأمر دخول.",
     input_schema: {
-      type: 'object',
+      type: "object",
       properties: {
         symbol: {
-          type: 'string',
-          description: 'رمز الأصل مثل SPX أو NVDA. اختياري؛ إذا لم يُحدد يرجع آخر الإشارات لكل الرموز.',
+          type: "string",
+          description:
+            "رمز الأصل مثل SPX أو NVDA. اختياري؛ إذا لم يُحدد يرجع آخر الإشارات لكل الرموز.",
         },
         platform: {
-          type: 'string',
-          enum: ['telegram', 'x'],
-          description: 'المنصة المطلوبة. اختياري.',
+          type: "string",
+          enum: ["telegram", "x"],
+          description: "المنصة المطلوبة. اختياري.",
         },
         minutes: {
-          type: 'number',
+          type: "number",
           minimum: 1,
           maximum: 1440,
           default: 180,
-          description: 'عدد الدقائق الماضية المطلوب البحث خلالها. الافتراضي 180 دقيقة.',
+          description:
+            "عدد الدقائق الماضية المطلوب البحث خلالها. الافتراضي 180 دقيقة.",
         },
         limit: {
-          type: 'number',
+          type: "number",
           minimum: 1,
           maximum: 100,
           default: 20,
-          description: 'أقصى عدد من الإشارات.',
+          description: "أقصى عدد من الإشارات.",
         },
       },
     },
   },
 
   {
-    name: 'analyze_trade',
+    name: "analyze_trade",
     description:
-      'ظٹط´ط؛ظ‘ظ„ ظ…ط­ط±ظƒ طھظ‚ظٹظٹظ… ط§ظ„طµظپظ‚ط© ط§ظ„ظƒط§ظ…ظ„ ظˆظپظ‚ Condition ط«ظ… Zone ط«ظ… Trigger ط«ظ… طھظ‚ظٹظٹظ… ط§ظ„ط¹ظ‚ط¯. ط§ط³طھط®ط¯ظ…ظ‡ ط¹ظ†ط¯ظ…ط§ ظٹط±ط³ظ„ ظٹط²ظٹط¯ ط¨ظٹط§ظ†ط§طھ طµظپظ‚ط© ط®ظٹط§ط±ط§طھ ظƒط§ظ…ظ„ط© ط£ظˆ ظٹط·ظ„ط¨ طھظ‚ظٹظٹظ…ط§ظ‹ ظ†ظ‡ط§ط¦ظٹط§ظ‹ ظ„ط¹ظ‚ط¯ CALL ط£ظˆ PUT. ظ„ط§ طھط®طھط±ط¹ ط£ط±ظ‚ط§ظ…ط§ظ‹ ظ†ط§ظ‚طµط©. ط¥ط°ط§ ظƒط§ظ†طھ ط§ظ„ط¨ظٹط§ظ†ط§طھ ط§ظ„ط£ط³ط§ط³ظٹط© ط؛ظٹط± ظ…طھظˆظپط±ط©طŒ ظˆط¶ظ‘ط­ ظ…ط§ ظٹظ†ظ‚طµ ط£ظˆ ط§ط³طھط®ط¯ظ… ط§ظ„ط£ط¯ظˆط§طھ ط§ظ„ظ…طھط§ط­ط© ظ„ط¬ظ…ط¹ظ‡ ط£ظˆظ„ط§ظ‹.',
+      "ظٹط´ط؛ظ‘ظ„ ظ…ط­ط±ظƒ طھظ‚ظٹظٹظ… ط§ظ„طµظپظ‚ط© ط§ظ„ظƒط§ظ…ظ„ ظˆظپظ‚ Condition ط«ظ… Zone ط«ظ… Trigger ط«ظ… طھظ‚ظٹظٹظ… ط§ظ„ط¹ظ‚ط¯. ط§ط³طھط®ط¯ظ…ظ‡ ط¹ظ†ط¯ظ…ط§ ظٹط±ط³ظ„ ظٹط²ظٹط¯ ط¨ظٹط§ظ†ط§طھ طµظپظ‚ط© ط®ظٹط§ط±ط§طھ ظƒط§ظ…ظ„ط© ط£ظˆ ظٹط·ظ„ط¨ طھظ‚ظٹظٹظ…ط§ظ‹ ظ†ظ‡ط§ط¦ظٹط§ظ‹ ظ„ط¹ظ‚ط¯ CALL ط£ظˆ PUT. ظ„ط§ طھط®طھط±ط¹ ط£ط±ظ‚ط§ظ…ط§ظ‹ ظ†ط§ظ‚طµط©. ط¥ط°ط§ ظƒط§ظ†طھ ط§ظ„ط¨ظٹط§ظ†ط§طھ ط§ظ„ط£ط³ط§ط³ظٹط© ط؛ظٹط± ظ…طھظˆظپط±ط©طŒ ظˆط¶ظ‘ط­ ظ…ط§ ظٹظ†ظ‚طµ ط£ظˆ ط§ط³طھط®ط¯ظ… ط§ظ„ط£ط¯ظˆط§طھ ط§ظ„ظ…طھط§ط­ط© ظ„ط¬ظ…ط¹ظ‡ ط£ظˆظ„ط§ظ‹.",
     input_schema: {
-      type: 'object',
+      type: "object",
       properties: {
         market: {
-          type: 'object',
-          description: 'ط¨ظٹط§ظ†ط§طھ ط­ط§ظ„ط© ط§ظ„ط³ظˆظ‚ ط§ظ„ط¹ط§ظ…ط©',
+          type: "object",
+          description: "ط¨ظٹط§ظ†ط§طھ ط­ط§ظ„ط© ط§ظ„ط³ظˆظ‚ ط§ظ„ط¹ط§ظ…ط©",
           properties: {
             spy: {
-              type: 'object',
+              type: "object",
               properties: {
-                price: { type: 'number' },
-                vwap: { type: 'number' },
-                ema20: { type: 'number' },
-                ema50: { type: 'number' },
-                rsi: { type: 'number' },
-                changePercent: { type: 'number' },
+                price: { type: "number" },
+                vwap: { type: "number" },
+                ema20: { type: "number" },
+                ema50: { type: "number" },
+                rsi: { type: "number" },
+                changePercent: { type: "number" },
               },
-              required: ['price'],
+              required: ["price"],
             },
             qqq: {
-              type: 'object',
+              type: "object",
               properties: {
-                price: { type: 'number' },
-                vwap: { type: 'number' },
-                ema20: { type: 'number' },
-                ema50: { type: 'number' },
-                rsi: { type: 'number' },
-                changePercent: { type: 'number' },
+                price: { type: "number" },
+                vwap: { type: "number" },
+                ema20: { type: "number" },
+                ema50: { type: "number" },
+                rsi: { type: "number" },
+                changePercent: { type: "number" },
               },
-              required: ['price'],
+              required: ["price"],
             },
             vix: {
-              type: 'object',
+              type: "object",
               properties: {
-                price: { type: 'number' },
-                changePercent: { type: 'number' },
+                price: { type: "number" },
+                changePercent: { type: "number" },
               },
             },
             breadth: {
-              type: 'object',
+              type: "object",
               properties: {
-                advanceDeclineRatio: { type: 'number' },
-                percentAboveVwap: { type: 'number' },
+                advanceDeclineRatio: { type: "number" },
+                percentAboveVwap: { type: "number" },
               },
             },
             sector: {
-              type: 'object',
+              type: "object",
               properties: {
-                changePercent: { type: 'number' },
-                relativeStrength: { type: 'number' },
+                changePercent: { type: "number" },
+                relativeStrength: { type: "number" },
               },
             },
           },
-          required: ['spy', 'qqq'],
+          required: ["spy", "qqq"],
         },
         stock: {
-          type: 'object',
-          description: 'ط¨ظٹط§ظ†ط§طھ ط§ظ„ط³ظ‡ظ… ط£ظˆ ط§ظ„ط£طµظ„ ط§ظ„ط£ط³ط§ط³ظٹ',
+          type: "object",
+          description: "ط¨ظٹط§ظ†ط§طھ ط§ظ„ط³ظ‡ظ… ط£ظˆ ط§ظ„ط£طµظ„ ط§ظ„ط£ط³ط§ط³ظٹ",
           properties: {
-            symbol: { type: 'string' },
-            price: { type: 'number' },
-            vwap: { type: 'number' },
-            ema20: { type: 'number' },
-            ema50: { type: 'number' },
-            ema200: { type: 'number' },
-            rsi: { type: 'number' },
-            macdHistogram: { type: 'number' },
-            adx: { type: 'number' },
-            relativeVolume: { type: 'number' },
-            volume: { type: 'number' },
-            averageVolume: { type: 'number' },
-            poc: { type: 'number' },
-            vah: { type: 'number' },
-            val: { type: 'number' },
-            support: { type: 'number' },
-            resistance: { type: 'number' },
-            relativeStrength: { type: 'number' },
+            symbol: { type: "string" },
+            price: { type: "number" },
+            vwap: { type: "number" },
+            ema20: { type: "number" },
+            ema50: { type: "number" },
+            ema200: { type: "number" },
+            rsi: { type: "number" },
+            macdHistogram: { type: "number" },
+            adx: { type: "number" },
+            relativeVolume: { type: "number" },
+            volume: { type: "number" },
+            averageVolume: { type: "number" },
+            poc: { type: "number" },
+            vah: { type: "number" },
+            val: { type: "number" },
+            support: { type: "number" },
+            resistance: { type: "number" },
+            relativeStrength: { type: "number" },
             catalyst: {
-              type: 'object',
+              type: "object",
               properties: {
-                hasNews: { type: 'boolean' },
-                earningsSoon: { type: 'boolean' },
+                hasNews: { type: "boolean" },
+                earningsSoon: { type: "boolean" },
                 sentiment: {
-                  type: 'string',
-                  enum: ['POSITIVE', 'NEGATIVE', 'NEUTRAL'],
+                  type: "string",
+                  enum: ["POSITIVE", "NEGATIVE", "NEUTRAL"],
                 },
               },
             },
           },
-          required: ['symbol', 'price'],
+          required: ["symbol", "price"],
         },
         option: {
-          type: 'object',
-          description: 'ط¨ظٹط§ظ†ط§طھ ط¹ظ‚ط¯ ط§ظ„ط®ظٹط§ط±ط§طھ',
+          type: "object",
+          description: "ط¨ظٹط§ظ†ط§طھ ط¹ظ‚ط¯ ط§ظ„ط®ظٹط§ط±ط§طھ",
           properties: {
-            symbol: { type: 'string' },
-            strike: { type: 'number' },
+            symbol: { type: "string" },
+            strike: { type: "number" },
             optionType: {
-              type: 'string',
-              enum: ['CALL', 'PUT'],
+              type: "string",
+              enum: ["CALL", "PUT"],
             },
-            expiration: { type: 'string' },
-            bid: { type: 'number' },
-            ask: { type: 'number' },
-            last: { type: 'number' },
-            delta: { type: 'number' },
-            gamma: { type: 'number' },
-            theta: { type: 'number' },
-            impliedVolatility: { type: 'number' },
-            volume: { type: 'number' },
-            openInterest: { type: 'number' },
-            underlyingPrice: { type: 'number' },
-            daysToExpiration: { type: 'number' },
+            expiration: { type: "string" },
+            bid: { type: "number" },
+            ask: { type: "number" },
+            last: { type: "number" },
+            delta: { type: "number" },
+            gamma: { type: "number" },
+            theta: { type: "number" },
+            impliedVolatility: { type: "number" },
+            volume: { type: "number" },
+            openInterest: { type: "number" },
+            underlyingPrice: { type: "number" },
+            daysToExpiration: { type: "number" },
           },
           required: [
-            'symbol',
-            'strike',
-            'optionType',
-            'expiration',
-            'underlyingPrice',
-            'daysToExpiration',
+            "symbol",
+            "strike",
+            "optionType",
+            "expiration",
+            "underlyingPrice",
+            "daysToExpiration",
           ],
         },
         trigger: {
-          type: 'object',
-          description: 'ط¨ظٹط§ظ†ط§طھ طھط£ظƒظٹط¯ ط§ظ„ط¯ط®ظˆظ„',
+          type: "object",
+          description: "ط¨ظٹط§ظ†ط§طھ طھط£ظƒظٹط¯ ط§ظ„ط¯ط®ظˆظ„",
           properties: {
             direction: {
-              type: 'string',
-              enum: ['CALL', 'PUT', 'NEUTRAL'],
+              type: "string",
+              enum: ["CALL", "PUT", "NEUTRAL"],
             },
-            candleClose: { type: 'number' },
-            previousCandleClose: { type: 'number' },
-            breakoutLevel: { type: 'number' },
-            breakdownLevel: { type: 'number' },
-            priceAboveVwap: { type: 'boolean' },
-            priceBelowVwap: { type: 'boolean' },
-            relativeVolume: { type: 'number' },
+            candleClose: { type: "number" },
+            previousCandleClose: { type: "number" },
+            breakoutLevel: { type: "number" },
+            breakdownLevel: { type: "number" },
+            priceAboveVwap: { type: "boolean" },
+            priceBelowVwap: { type: "boolean" },
+            relativeVolume: { type: "number" },
           },
-          required: ['direction', 'candleClose'],
+          required: ["direction", "candleClose"],
         },
       },
-      required: ['market', 'stock', 'option', 'trigger'],
+      required: ["market", "stock", "option", "trigger"],
+    },
+  },
+  {
+    name: "get_market_opportunities",
+    description:
+      'يفحص عقود خيارات مؤهلة على عدة أسهم عبر محرك فهد الموحد (Tradier + Option Brain)، ويرجع أفضل الفرص مرتبة حسب جودة العقد واتجاه السوق معًا. استخدمها عندما يزيد يسأل عن "فرص تداول" أو "فرص خيارات" أو "شو أفضل عقد الحين" على أسهم عامة (مثل AAPL, TSLA, NVDA, SPY, QQQ) — وليس على SPX/SPXW (لها أداة get_spxw_trade_plan منفصلة). فيه استراتيجيتان: FAHD (فلترة صارمة عالية الجودة، نتيجتين بالأكثر) وGOLDEN (فلترة أوسع، حتى 5 نتائج). إذا يزيد ما حدد استراتيجية، استخدم FAHD كافتراضي.',
+    input_schema: {
+      type: "object",
+      properties: {
+        strategy: {
+          type: "string",
+          enum: ["FAHD", "GOLDEN"],
+          description:
+            "FAHD: فلترة صارمة عالية الجودة (بحد أقصى نتيجتين). GOLDEN: فلترة أوسع (بحد أقصى 5 نتائج، افتراضي 3). الافتراضي FAHD.",
+        },
+        symbols: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            'رموز الأسهم المطلوب فحصها، مثل ["AAPL","TSLA","NVDA"]. اختياري — لو ما حدد يزيد رموز معينة، تُستخدم قائمة افتراضية متنوعة (مؤشرات + أسهم نشطة).',
+        },
+        maxDte: {
+          type: "number",
+          minimum: 0,
+          maximum: 60,
+          description: "أقصى عدد أيام للاستحقاق. اختياري.",
+        },
+        maxResults: {
+          type: "number",
+          minimum: 1,
+          maximum: 5,
+          description:
+            "أقصى عدد نتائج مطلوب. اختياري — محكوم بسقف كل استراتيجية بغض النظر عن هذا الرقم (FAHD يتقص عند 2، GOLDEN عند 5).",
+        },
+      },
     },
   },
 ];
-
 
 function enrichTradierQuoteFreshness(quote: any) {
   const rawTradeDate = Number(quote?.trade_date);
 
   // Tradier ظ‚ط¯ ظٹط±ط¬ط¹ trade_date ط¨ط§ظ„ظ…ظ„ظ„ظٹ ط«ط§ظ†ظٹط© ط£ظˆ ط¨ط§ظ„ط«ظˆط§ظ†ظٹ ط­ط³ط¨ ظ†ظˆط¹ ط§ظ„ط¨ظٹط§ظ†ط§طھ.
-  const tradeTimestampMs = Number.isFinite(rawTradeDate) && rawTradeDate > 0
-    ? rawTradeDate > 10_000_000_000
-      ? rawTradeDate
-      : rawTradeDate * 1000
-    : null;
+  const tradeTimestampMs =
+    Number.isFinite(rawTradeDate) && rawTradeDate > 0
+      ? rawTradeDate > 10_000_000_000
+        ? rawTradeDate
+        : rawTradeDate * 1000
+      : null;
 
   const ageSeconds = tradeTimestampMs
     ? Math.max(0, Math.round((Date.now() - tradeTimestampMs) / 1000))
     : null;
 
-  let freshness: 'live' | 'delayed' | 'stale' | 'unknown' = 'unknown';
+  let freshness: "live" | "delayed" | "stale" | "unknown" = "unknown";
 
   if (ageSeconds !== null) {
-    if (ageSeconds <= 60) freshness = 'live';
-    else if (ageSeconds <= 20 * 60) freshness = 'delayed';
-    else freshness = 'stale';
+    if (ageSeconds <= 60) freshness = "live";
+    else if (ageSeconds <= 20 * 60) freshness = "delayed";
+    else freshness = "stale";
   }
 
   // ظ†ط­ط°ظپ average_volume ظ…ظ† ط§ظ„ظ†طھظٹط¬ط© ط§ظ„ظ…ط±ط³ظ„ط© ظ„ظ„ظ†ظ…ظˆط°ط¬ ط­طھظ‰ ظ„ط§ ظٹظ‚ط§ط±ظ†
   // ط­ط¬ظ…ظ‹ط§ ط¬ط²ط¦ظٹظ‹ط§ ط£ط«ظ†ط§ط، ط§ظ„ط¬ظ„ط³ط© ط¨ظ…طھظˆط³ط· ظٹظˆظ… ظƒط§ظ…ظ„ ظˆظٹط®ط±ط¬ ط¨ظ†ط³ط¨ط© ظ…ط¶ظ„ظ„ط©.
-  const {
-    average_volume: _removedAverageVolume,
-    ...safeQuote
-  } = quote || {};
+  const { average_volume: _removedAverageVolume, ...safeQuote } = quote || {};
 
   const displayTitle =
-    freshness === 'live'
-      ? `ط³ط¹ط± ${safeQuote.symbol || ''} â€” Tradier (ط­ط¯ظٹط« ط¬ط¯ط§ظ‹)`
-      : freshness === 'delayed'
-        ? `ط³ط¹ط± ${safeQuote.symbol || ''} â€” Tradier (ظ‚ط¯ ظٹظƒظˆظ† ظ…طھط£ط®ط±ط§ظ‹)`
-        : freshness === 'stale'
-          ? `ط³ط¹ط± ${safeQuote.symbol || ''} â€” Tradier (ظ‚ط¯ظٹظ…)`
-          : `ط³ط¹ط± ${safeQuote.symbol || ''} â€” Tradier (ط­ط¯ط§ط«ط© ط؛ظٹط± ظ…ط¤ظƒط¯ط©)`;
+    freshness === "live"
+      ? `ط³ط¹ط± ${safeQuote.symbol || ""} â€” Tradier (ط­ط¯ظٹط« ط¬ط¯ط§ظ‹)`
+      : freshness === "delayed"
+        ? `ط³ط¹ط± ${safeQuote.symbol || ""} â€” Tradier (ظ‚ط¯ ظٹظƒظˆظ† ظ…طھط£ط®ط±ط§ظ‹)`
+        : freshness === "stale"
+          ? `ط³ط¹ط± ${safeQuote.symbol || ""} â€” Tradier (ظ‚ط¯ظٹظ…)`
+          : `ط³ط¹ط± ${safeQuote.symbol || ""} â€” Tradier (ط­ط¯ط§ط«ط© ط؛ظٹط± ظ…ط¤ظƒط¯ط©)`;
 
   return {
     ...safeQuote,
@@ -580,19 +704,19 @@ function enrichTradierQuoteFreshness(quote: any) {
     age_seconds: ageSeconds,
     freshness,
     freshness_label:
-      freshness === 'live'
-        ? 'ط­ط¯ظٹط«ط© ط¬ط¯ط§ظ‹'
-        : freshness === 'delayed'
-          ? 'ظ‚ط¯ طھظƒظˆظ† ظ…طھط£ط®ط±ط©'
-          : freshness === 'stale'
-            ? 'ظ‚ط¯ظٹظ…ط©'
-            : 'ط؛ظٹط± ظ…ط¤ظƒط¯ط©',
+      freshness === "live"
+        ? "ط­ط¯ظٹط«ط© ط¬ط¯ط§ظ‹"
+        : freshness === "delayed"
+          ? "ظ‚ط¯ طھظƒظˆظ† ظ…طھط£ط®ط±ط©"
+          : freshness === "stale"
+            ? "ظ‚ط¯ظٹظ…ط©"
+            : "ط؛ظٹط± ظ…ط¤ظƒط¯ط©",
     volume_assessment: {
       allowed: false,
       reason:
-        'ظ„ط§ طھظˆط¬ط¯ ظ…ظ‚ط§ط±ظ†ط© Time-of-Day RVOLطŒ ظ„ط°ظ„ظƒ ظ„ط§ ظٹط¬ظˆط² ظˆطµظپ ط§ظ„ط­ط¬ظ… ط¨ط£ظ†ظ‡ ظ…ظ†ط®ظپط¶ ط£ظˆ ظ…ط±طھظپط¹.',
+        "ظ„ط§ طھظˆط¬ط¯ ظ…ظ‚ط§ط±ظ†ط© Time-of-Day RVOLطŒ ظ„ط°ظ„ظƒ ظ„ط§ ظٹط¬ظˆط² ظˆطµظپ ط§ظ„ط­ط¬ظ… ط¨ط£ظ†ظ‡ ظ…ظ†ط®ظپط¶ ط£ظˆ ظ…ط±طھظپط¹.",
       instruction:
-        'ط§ط¹ط±ط¶ ط­ط¬ظ… ط§ظ„ظٹظˆظ… ط­طھظ‰ ط§ظ„ط¢ظ† ظپظ‚ط· ط¨ط¯ظˆظ† ظ†ط³ط¨ط© ظˆط¨ط¯ظˆظ† ط­ظƒظ… ط¹ظ„ظ‰ ط§ظ„ظ‚ظˆط©.',
+        "ط§ط¹ط±ط¶ ط­ط¬ظ… ط§ظ„ظٹظˆظ… ط­طھظ‰ ط§ظ„ط¢ظ† ظپظ‚ط· ط¨ط¯ظˆظ† ظ†ط³ط¨ط© ظˆط¨ط¯ظˆظ† ط­ظƒظ… ط¹ظ„ظ‰ ط§ظ„ظ‚ظˆط©.",
     },
   };
 }
@@ -602,7 +726,11 @@ function enrichTradierQuoteFreshness(quote: any) {
 // ظٹط´طھط؛ظ„ ظ‚ط¨ظ„ ط£ظٹ ط§ط³طھط¯ط¹ط§ط، ظ„ظ€ ClaudeطŒ ط¹ط´ط§ظ† ظ†ظˆظپط± ط§ظ„ظˆظ‚طھ ظˆط§ظ„طھظƒظ„ظپط© ظ„ظ…ط¹ط¸ظ… ط§ظ„ط±ط³ط§ط¦ظ„ ط§ظ„ط¹ط§ط¯ظٹط©
 function mightContainSaveworthyInfo(userMessage: string): boolean {
   // ظ„ط§ ظ†ط­ظپط¸ ط¨ظٹط§ظ†ط§طھ ط§ظ„ط­ط³ط§ط¨ ط§ظ„ط­ط³ط§ط³ط© ط£ظˆ ط§ظ„ظ…ط¤ظ‚طھط© ظپظٹ ط§ظ„ط°ط§ظƒط±ط© ط·ظˆظٹظ„ط© ط§ظ„ظ…ط¯ظ‰
-  if (/ط±طµظٹط¯|ظ‚ظˆط©\s*ط´ط±ط§ط¦ظٹط©|ظ…ط±ط§ظƒط²ظٹ|ظ…ط±ط§ظƒط²\s*ظ…ظپطھظˆط­ط©|ط­ط³ط§ط¨\s*Tradier|طھط±ط§ط¯ظٹط±/i.test(userMessage)) {
+  if (
+    /ط±طµظٹط¯|ظ‚ظˆط©\s*ط´ط±ط§ط¦ظٹط©|ظ…ط±ط§ظƒط²ظٹ|ظ…ط±ط§ظƒط²\s*ظ…ظپطھظˆط­ط©|ط­ط³ط§ط¨\s*Tradier|طھط±ط§ط¯ظٹط±/i.test(
+      userMessage,
+    )
+  ) {
     return false;
   }
 
@@ -615,15 +743,15 @@ function mightContainSaveworthyInfo(userMessage: string): boolean {
 
 async function autoSaveMemory(userMessage: string, assistantReply: string) {
   try {
-    const checkRes = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
+    const checkRes = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY!,
-        'anthropic-version': '2023-06-01',
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY!,
+        "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
+        model: "claude-sonnet-4-6",
         max_tokens: 300,
         system: `ط£ظ†طھ ظ†ط¸ط§ظ… ظپط±ط² ظ„ظ„ط°ط§ظƒط±ط© ط·ظˆظٹظ„ط© ط§ظ„ظ…ط¯ظ‰ ظ„ظ…ط³ط§ط¹ط¯ طھط¯ط§ظˆظ„. ظ…ظ‡ظ…طھظƒ: طھط­ط¯ظٹط¯ ط¥ط°ط§ ظƒط§ظ†طھ ط±ط³ط§ظ„ط© ط§ظ„ظ…ط³طھط®ط¯ظ… طھط­طھظˆظٹ ظ…ط¹ظ„ظˆظ…ط© طھط³طھط­ظ‚ ط§ظ„ط­ظپط¸ ط§ظ„ط¯ط§ط¦ظ….
 
@@ -644,20 +772,20 @@ async function autoSaveMemory(userMessage: string, assistantReply: string) {
 
 ط±ط¯ ط¨ظ€ JSON ظپظ‚ط· ط¨ط¯ظˆظ† ط£ظٹ ظ†طµ ط¥ط¶ط§ظپظٹ.`,
         messages: [
-          { role: 'user', content: `ط±ط³ط§ظ„ط© ظٹط²ظٹط¯: "${userMessage}"` },
+          { role: "user", content: `ط±ط³ط§ظ„ط© ظٹط²ظٹط¯: "${userMessage}"` },
         ],
       }),
     });
     if (!checkRes.ok) return;
     const checkData = await checkRes.json();
     const rawText = checkData.content
-      .filter((b: { type: string }) => b.type === 'text')
+      .filter((b: { type: string }) => b.type === "text")
       .map((b: { text: string }) => b.text)
-      .join('');
-    const cleaned = rawText.replace(/```json|```/g, '').trim();
+      .join("");
+    const cleaned = rawText.replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(cleaned);
     if (parsed.save && parsed.key && parsed.value) {
-      await supabase.from('fahd_memory').insert({
+      await supabase.from("fahd_memory").insert({
         key: parsed.key,
         value: parsed.value,
       });
@@ -668,15 +796,15 @@ async function autoSaveMemory(userMessage: string, assistantReply: string) {
 }
 
 async function callClaude(messages: any[], systemPrompt: string) {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': process.env.ANTHROPIC_API_KEY!,
-      'anthropic-version': '2023-06-01',
+      "Content-Type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_API_KEY!,
+      "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
+      model: "claude-sonnet-4-6",
       max_tokens: 1500,
       system: systemPrompt,
       tools: TOOLS,
@@ -685,8 +813,8 @@ async function callClaude(messages: any[], systemPrompt: string) {
   });
   if (!response.ok) {
     const errText = await response.text();
-    console.error('Anthropic API error:', errText);
-    throw new Error('ظپط´ظ„ ط§ظ„ط§طھطµط§ظ„ ط¨ط§ظ„ظ†ظ…ظˆط°ط¬');
+    console.error("Anthropic API error:", errText);
+    throw new Error("ظپط´ظ„ ط§ظ„ط§طھطµط§ظ„ ط¨ط§ظ„ظ†ظ…ظˆط°ط¬");
   }
   return response.json();
 }
@@ -694,59 +822,72 @@ async function callClaude(messages: any[], systemPrompt: string) {
 export async function POST(req: NextRequest) {
   try {
     const { message } = await req.json();
-    if (!message || typeof message !== 'string') {
-      return NextResponse.json({ error: 'ط§ظ„ط±ط³ط§ظ„ط© ظ…ط·ظ„ظˆط¨ط©' }, { status: 400 });
+    if (!message || typeof message !== "string") {
+      return NextResponse.json(
+        { error: "ط§ظ„ط±ط³ط§ظ„ط© ظ…ط·ظ„ظˆط¨ط©" },
+        { status: 400 },
+      );
     }
 
     const { data: memoryRows } = await supabase
-      .from('fahd_memory')
-      .select('key, value')
-      .order('updated_at', { ascending: false })
+      .from("fahd_memory")
+      .select("key, value")
+      .order("updated_at", { ascending: false })
       .limit(50);
     const memoryContext = (memoryRows || [])
       .map((row) => `- ${row.key}: ${row.value}`)
-      .join('\n');
+      .join("\n");
 
     const { data: recentMessages } = await supabase
-      .from('fahd_conversations')
-      .select('role, content')
-      .order('created_at', { ascending: false })
+      .from("fahd_conversations")
+      .select("role, content")
+      .order("created_at", { ascending: false })
       .limit(10);
     const conversationHistory = (recentMessages || []).reverse();
 
-    let marketData = '';
+    let marketData = "";
     const finnhubKey = process.env.FINNHUB_API_KEY;
     if (finnhubKey) {
       // ظ†ط´ظ…ظ„ ط¢ط®ط± ط±ط³ط§ط¦ظ„ ظٹط²ظٹط¯ ط¨ط§ظ„ط¨ط­ط« ط¹ظ† ط§ظ„ط±ظ…ط²طŒ ظ…ظˆ ط¨ط³ ط§ظ„ط±ط³ط§ظ„ط© ط§ظ„ط­ط§ظ„ظٹط©طŒ
       // ط¹ط´ط§ظ† ظ„ظˆ ط³ط£ظ„ ط¨ط§ظ„ط³ظٹط§ظ‚ ("ظˆط´ ط³ط¹ط±ظ‡طں") ط¨ط¹ط¯ ظ…ط§ ط°ظƒط± ط§ظ„ط±ظ…ط² ط¨ط±ط³ط§ظ„ط© ط³ط§ط¨ظ‚ط©
       const recentUserText = conversationHistory
-        .filter((m: { role: string; content: string }) => m.role === 'user')
+        .filter((m: { role: string; content: string }) => m.role === "user")
         .slice(-4)
         .map((m: { content: string }) => m.content)
-        .join(' ');
+        .join(" ");
       const currentTickers = extractTickers(message);
-      const historyTickers = extractTickers(recentUserText).filter((t) => !currentTickers.includes(t));
+      const historyTickers = extractTickers(recentUserText).filter(
+        (t) => !currentTickers.includes(t),
+      );
       const tickers = [...currentTickers, ...historyTickers].slice(0, 3);
-      const quoteSymbols = [...new Set(['SPY', 'QQQ', ...tickers])];
-      const quoteResults = await Promise.all(quoteSymbols.map((s) => getQuote(s, finnhubKey)));
+      const quoteSymbols = [...new Set(["SPY", "QQQ", ...tickers])];
+      const quoteResults = await Promise.all(
+        quoteSymbols.map((s) => getQuote(s, finnhubKey)),
+      );
       const quoteLines = quoteResults.filter(Boolean);
       if (quoteLines.length > 0) {
-        marketData = `\n\n# ط¨ظٹط§ظ†ط§طھ ط§ظ„ط³ظˆظ‚ ط§ظ„ط­ظٹط© (ظ…ظ† Finnhub - ظ…ط­ط¯ط«ط© ط§ظ„ط¢ظ†):\n(ظ…ظ„ط§ط­ط¸ط©: SPY ظٹظ…ط«ظ„ S&P 500 ظˆ QQQ ظٹظ…ط«ظ„ NASDAQ 100)\n${quoteLines.join('\n')}`;
+        marketData = `\n\n# ط¨ظٹط§ظ†ط§طھ ط§ظ„ط³ظˆظ‚ ط§ظ„ط­ظٹط© (ظ…ظ† Finnhub - ظ…ط­ط¯ط«ط© ط§ظ„ط¢ظ†):\n(ظ…ظ„ط§ط­ط¸ط©: SPY ظٹظ…ط«ظ„ S&P 500 ظˆ QQQ ظٹظ…ط«ظ„ NASDAQ 100)\n${quoteLines.join("\n")}`;
       } else {
-        console.error(`No quotes returned at all for symbols: ${quoteSymbols.join(',')}`);
+        console.error(
+          `No quotes returned at all for symbols: ${quoteSymbols.join(",")}`,
+        );
       }
 
       // ط£ط®ط¨ط§ط± ظˆطھظ‚ظˆظٹظ… ط£ط±ط¨ط§ط­ - ط¨ط³ ظ„ظ„ط£ط³ظ‡ظ… ط§ظ„ظ…ط­ط¯ط¯ط© (ظ…ظˆ SPY/QQQ) ط¹ط´ط§ظ† ظ†طھط¬ظ†ط¨ ط·ظ„ط¨ط§طھ ط²ط§ظٹط¯ط©
       if (tickers.length > 0) {
-        const newsResults = await Promise.all(tickers.map((s) => getCompanyNews(s, finnhubKey)));
-        const earningsResults = await Promise.all(tickers.map((s) => getUpcomingEarnings(s, finnhubKey)));
+        const newsResults = await Promise.all(
+          tickers.map((s) => getCompanyNews(s, finnhubKey)),
+        );
+        const earningsResults = await Promise.all(
+          tickers.map((s) => getUpcomingEarnings(s, finnhubKey)),
+        );
         const newsLines = newsResults.filter(Boolean);
         const earningsLines = earningsResults.filter(Boolean);
         if (newsLines.length > 0) {
-          marketData += `\n\n# ط£ط®ط¨ط§ط± ط­ط¯ظٹط«ط© (ظ…ظ† Finnhub):\n${newsLines.join('\n')}`;
+          marketData += `\n\n# ط£ط®ط¨ط§ط± ط­ط¯ظٹط«ط© (ظ…ظ† Finnhub):\n${newsLines.join("\n")}`;
         }
         if (earningsLines.length > 0) {
-          marketData += `\n\n# طھظ†ط¨ظٹظ‡ط§طھ ط£ط±ط¨ط§ط­ ظ‚ط±ظٹط¨ط©:\n${earningsLines.join('\n')}`;
+          marketData += `\n\n# طھظ†ط¨ظٹظ‡ط§طھ ط£ط±ط¨ط§ط­ ظ‚ط±ظٹط¨ط©:\n${earningsLines.join("\n")}`;
         }
       }
 
@@ -758,7 +899,7 @@ export async function POST(req: NextRequest) {
       if (generalNews) marketData += `\n\n# ${generalNews}`;
       if (econCalendar) marketData += `\n\n# ${econCalendar}`;
     } else {
-      console.error('FINNHUB_API_KEY is missing from environment variables');
+      console.error("FINNHUB_API_KEY is missing from environment variables");
     }
 
     let fullSystemPrompt = FAHD_SYSTEM_PROMPT;
@@ -853,28 +994,43 @@ export async function POST(req: NextRequest) {
 5. إذا لم توجد إشارات حديثة، قل ذلك باختصار ولا تخترع بيانات.
 6. لا تعتبر رسالة يزيد في Telegram توصية مستقلة أو حقيقة سوقية؛ تعامل معها كمعلومة من مصدر موثوق تحتاج تأكيدًا فنيًا.`;
 
+    fullSystemPrompt += `
+
+# قدرة إضافية: فحص فرص السوق العامة (خارج SPX/SPXW)
+عندك أداة get_market_opportunities تفحص عقود خيارات مؤهلة على عدة أسهم (مثل AAPL, TSLA, NVDA, SPY, QQQ) عبر محرك فهد الموحد (Tradier + Option Brain)، وترجع أفضل الفرص مرتبة حسب جودة العقد واتجاه السوق معًا.
+قواعد الاستخدام:
+1. استخدمها لما يزيد يسأل عن "فرص تداول" أو "فرص خيارات" أو "شو أفضل عقد الحين" على أسهم عامة — وليس على SPX أو SPXW (لها get_spxw_trade_plan منفصلة، لا تخلط بينهم).
+2. فيه استراتيجيتان: FAHD (فلترة صارمة عالية الجودة، بحد أقصى نتيجتين) وGOLDEN (فلترة أوسع، بحد أقصى 5 نتائج). لو يزيد ما حدد، استخدم FAHD كافتراضي، واشرح له إنه فيه GOLDEN لو يبي فرص أكثر.
+3. لو النتيجة status = "WAIT"، معناها اتجاه السوق العام (SPY/QQQ) غير واضح حاليًا، فما فيه فحص فرص أصلاً — وضّح هذا ليزيد ولا تقترح عقود.
+4. لو status = "NO_MATCH"، معناها فحص عقود فعليًا بس ولا وحد اجتاز شروط الجودة والاتجاه معًا الآن — اذكر عدد العقود المفحوصة (contractsScanned) واقترح المحاولة بعد فترة.
+5. لكل فرصة راجعة، اذكر: tier (GOLD/STRONG/WATCH)، finalScore، الاتجاه (CALL/PUT)، الرمز والسترايك والاستحقاق، وأهم reasons أو warnings إن وجدت. لا تخترع تفاصيل غير موجودة بالنتيجة.
+6. هذي أداة تقييم وفحص فقط، مثل باقي أدوات الخيارات — لا توصي بالدخول المباشر، اعرض الجودة والمخاطر واترك القرار النهائي ليزيد.`;
+
     const workingMessages: any[] = [
       ...conversationHistory.map((m: { role: string; content: string }) => ({
         role: m.role,
         content: m.content,
       })),
-      { role: 'user', content: message },
+      { role: "user", content: message },
     ];
 
     // ============================================
     // ط­ظ„ظ‚ط© طھظ†ظپظٹط° ط§ظ„ط£ط¯ظˆط§طھ: ظ„ط؛ط§ظٹط© 3 ط¬ظˆظ„ط§طھ (ظ†ظپط³ ظ†ظ…ط· ط£ط­ظ…ط¯)
     // ============================================
-    let assistantText = '';
-    const collectedToolResults: { name: string; input: any; output: any }[] = [];
+    let assistantText = "";
+    const collectedToolResults: { name: string; input: any; output: any }[] =
+      [];
     const maxRounds = 8;
 
     for (let round = 0; round < maxRounds; round++) {
       const data = await callClaude(workingMessages, fullSystemPrompt);
-      const toolUseBlocks = data.content.filter((b: any) => b.type === 'tool_use');
+      const toolUseBlocks = data.content.filter(
+        (b: any) => b.type === "tool_use",
+      );
       const textBlocks = data.content
-        .filter((b: any) => b.type === 'text')
+        .filter((b: any) => b.type === "text")
         .map((b: any) => b.text)
-        .join('\n');
+        .join("\n");
 
       if (toolUseBlocks.length === 0) {
         assistantText = textBlocks;
@@ -882,20 +1038,23 @@ export async function POST(req: NextRequest) {
       }
 
       // ط£ط¶ظپ ط±ط¯ ط§ظ„ظ…ط³ط§ط¹ط¯ (ظٹط­طھظˆظٹ ط¹ظ„ظ‰ ط·ظ„ط¨ ط§ط³طھط®ط¯ط§ظ… ط§ظ„ط£ط¯ط§ط©) ظ„ظ„ظ…ط­ط§ط¯ط«ط©
-      workingMessages.push({ role: 'assistant', content: data.content });
+      workingMessages.push({ role: "assistant", content: data.content });
 
       // ظ†ظپظ‘ط° ظƒظ„ ط£ط¯ط§ط© ظ…ط·ظ„ظˆط¨ط©
       const toolResults = [];
       for (const block of toolUseBlocks) {
-        if (block.name === 'get_spxw_trade_plan') {
+        if (block.name === "get_spxw_trade_plan") {
           try {
-            const maxResults = Math.max(1, Math.min(2, Number(block.input?.maxResults) || 2));
+            const maxResults = Math.max(
+              1,
+              Math.min(2, Number(block.input?.maxResults) || 2),
+            );
             const [scan, trigger] = await Promise.all([
               scanSpxwOpportunitiesV3({ maxResults }),
               buildSpxwTriggerPlan({ maxResults }),
             ]);
             const output = {
-              source: 'Fahd SPXW engines',
+              source: "Fahd SPXW engines",
               scan,
               trigger,
               strictRules: {
@@ -905,235 +1064,399 @@ export async function POST(req: NextRequest) {
                 forbidInventedStrikeOrExpiration: true,
               },
             };
-            collectedToolResults.push({ name: 'get_spxw_trade_plan', input: block.input, output });
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: block.id,
-              content: JSON.stringify(output),
-            });
-          } catch (e: any) {
-            const output = { error: e?.message || 'ظپط´ظ„ طھط´ط؛ظٹظ„ ظ…ط­ط±ظƒط§طھ SPXW' };
-            collectedToolResults.push({ name: 'get_spxw_trade_plan', input: block.input, output });
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: block.id,
-              content: JSON.stringify(output),
-              is_error: true,
-            });
-          }
-        } else if (block.name === 'get_technical_indicators') {
-          const output = await getTechnicalIndicators(block.input.symbol, block.input.timeframe);
-          collectedToolResults.push({ name: 'get_technical_indicators', input: block.input, output });
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: block.id,
-            content: JSON.stringify(output),
-          });
-        } else if (block.name === 'run_backtest') {
-          const result = await executeBacktest(block.input);
-          collectedToolResults.push({ name: 'run_backtest', input: block.input, output: result });
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: block.id,
-            content: JSON.stringify(result),
-          });
-        } else if (block.name === 'get_market_decision') {
-          try {
-            const output = await getMarketDecision(block.input?.timeframe || '15min');
-            collectedToolResults.push({ name: 'get_market_decision', input: block.input, output });
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: block.id,
-              content: JSON.stringify(output),
-            });
-          } catch (e: any) {
-            const output = { error: e.message || 'ظپط´ظ„ طھط´ط؛ظٹظ„ ظ…ط­ط±ظƒ ظ‚ط±ط§ط± ط§ظ„ط³ظˆظ‚' };
-            collectedToolResults.push({ name: 'get_market_decision', input: block.input, output });
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: block.id,
-              content: JSON.stringify(output),
-              is_error: true,
-            });
-          }
-        } else if (block.name === 'get_stock_decision') {
-          try {
-            const output = await getStockDecision(
-              block.input.symbol,
-              block.input.timeframe || '15min'
-            );
-
             collectedToolResults.push({
-              name: 'get_stock_decision',
+              name: "get_spxw_trade_plan",
               input: block.input,
               output,
             });
-
             toolResults.push({
-              type: 'tool_result',
+              type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify(output),
             });
           } catch (e: any) {
             const output = {
-              error: e.message || 'ظپط´ظ„ طھط´ط؛ظٹظ„ ظ…ط­ط±ظƒ ط§طھط¬ط§ظ‡ ط§ظ„ط³ظ‡ظ…',
+              error: e?.message || "ظپط´ظ„ طھط´ط؛ظٹظ„ ظ…ط­ط±ظƒط§طھ SPXW",
+            };
+            collectedToolResults.push({
+              name: "get_spxw_trade_plan",
+              input: block.input,
+              output,
+            });
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+              is_error: true,
+            });
+          }
+        } else if (block.name === "get_market_opportunities") {
+          try {
+            const strategy: "FAHD" | "GOLDEN" =
+              block.input?.strategy === "GOLDEN" ? "GOLDEN" : "FAHD";
+
+            const requestedSymbols = Array.isArray(block.input?.symbols)
+              ? block.input.symbols
+                  .filter(
+                    (symbol: unknown): symbol is string =>
+                      typeof symbol === "string",
+                  )
+                  .map((symbol: string) => symbol.trim().toUpperCase())
+                  .filter(Boolean)
+                  .slice(0, 20)
+              : [];
+
+            const symbols: string[] =
+              requestedSymbols.length > 0
+                ? requestedSymbols
+                : DEFAULT_MARKET_OPPORTUNITIES_SYMBOLS;
+
+            const maxDte =
+              typeof block.input?.maxDte === "number"
+                ? Math.max(0, Math.min(60, Math.floor(block.input.maxDte)))
+                : undefined;
+
+            const maxResults =
+              typeof block.input?.maxResults === "number"
+                ? Math.max(1, Math.min(5, Math.floor(block.input.maxResults)))
+                : undefined;
+
+            const scanConfig = {
+              symbols,
+              maxDte,
+              maxResults,
+              results: maxResults,
             };
 
+            const result =
+              strategy === "GOLDEN"
+                ? await scanGoldenOpportunities(scanConfig)
+                : await runFahdScannerV3(scanConfig);
+
+            const output = {
+              source: `Fahd Market Opportunities (${strategy})`,
+              strategy,
+              ...result,
+            };
             collectedToolResults.push({
-              name: 'get_stock_decision',
+              name: "get_market_opportunities",
+              input: block.input,
+              output,
+            });
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+            });
+          } catch (e: any) {
+            const output = { error: e?.message || "فشل تشغيل محرك فحص الفرص" };
+            collectedToolResults.push({
+              name: "get_market_opportunities",
+              input: block.input,
+              output,
+            });
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+              is_error: true,
+            });
+          }
+        } else if (block.name === "get_technical_indicators") {
+          const output = await getTechnicalIndicators(
+            block.input.symbol,
+            block.input.timeframe,
+          );
+          collectedToolResults.push({
+            name: "get_technical_indicators",
+            input: block.input,
+            output,
+          });
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: JSON.stringify(output),
+          });
+        } else if (block.name === "run_backtest") {
+          const result = await executeBacktest(block.input);
+          collectedToolResults.push({
+            name: "run_backtest",
+            input: block.input,
+            output: result,
+          });
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: JSON.stringify(result),
+          });
+        } else if (block.name === "get_market_decision") {
+          try {
+            const output = await getMarketDecision(
+              block.input?.timeframe || "15min",
+            );
+            collectedToolResults.push({
+              name: "get_market_decision",
+              input: block.input,
+              output,
+            });
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+            });
+          } catch (e: any) {
+            const output = {
+              error:
+                e.message || "ظپط´ظ„ طھط´ط؛ظٹظ„ ظ…ط­ط±ظƒ ظ‚ط±ط§ط± ط§ظ„ط³ظˆظ‚",
+            };
+            collectedToolResults.push({
+              name: "get_market_decision",
+              input: block.input,
+              output,
+            });
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+              is_error: true,
+            });
+          }
+        } else if (block.name === "get_stock_decision") {
+          try {
+            const output = await getStockDecision(
+              block.input.symbol,
+              block.input.timeframe || "15min",
+            );
+
+            collectedToolResults.push({
+              name: "get_stock_decision",
               input: block.input,
               output,
             });
 
             toolResults.push({
-              type: 'tool_result',
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+            });
+          } catch (e: any) {
+            const output = {
+              error:
+                e.message || "ظپط´ظ„ طھط´ط؛ظٹظ„ ظ…ط­ط±ظƒ ط§طھط¬ط§ظ‡ ط§ظ„ط³ظ‡ظ…",
+            };
+
+            collectedToolResults.push({
+              name: "get_stock_decision",
+              input: block.input,
+              output,
+            });
+
+            toolResults.push({
+              type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify(output),
               is_error: true,
             });
           }
-        } else if (block.name === 'get_account') {
+        } else if (block.name === "get_account") {
           try {
             const output = await getAccountBalance();
-            collectedToolResults.push({ name: 'get_account', input: block.input, output });
+            collectedToolResults.push({
+              name: "get_account",
+              input: block.input,
+              output,
+            });
             toolResults.push({
-              type: 'tool_result',
+              type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify(output),
             });
           } catch (e: any) {
-            const output = { error: e.message || 'ظپط´ظ„ ط¬ظ„ط¨ ط¨ظٹط§ظ†ط§طھ ط­ط³ط§ط¨ Tradier' };
-            collectedToolResults.push({ name: 'get_account', input: block.input, output });
+            const output = {
+              error: e.message || "ظپط´ظ„ ط¬ظ„ط¨ ط¨ظٹط§ظ†ط§طھ ط­ط³ط§ط¨ Tradier",
+            };
+            collectedToolResults.push({
+              name: "get_account",
+              input: block.input,
+              output,
+            });
             toolResults.push({
-              type: 'tool_result',
+              type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify(output),
               is_error: true,
             });
           }
-        } else if (block.name === 'get_positions') {
+        } else if (block.name === "get_positions") {
           try {
             const output = await getPositions();
-            collectedToolResults.push({ name: 'get_positions', input: block.input, output });
+            collectedToolResults.push({
+              name: "get_positions",
+              input: block.input,
+              output,
+            });
             toolResults.push({
-              type: 'tool_result',
+              type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify(output),
             });
           } catch (e: any) {
-            const output = { error: e.message || 'ظپط´ظ„ ط¬ظ„ط¨ ظ…ط±ط§ظƒط² Tradier' };
-            collectedToolResults.push({ name: 'get_positions', input: block.input, output });
+            const output = {
+              error: e.message || "ظپط´ظ„ ط¬ظ„ط¨ ظ…ط±ط§ظƒط² Tradier",
+            };
+            collectedToolResults.push({
+              name: "get_positions",
+              input: block.input,
+              output,
+            });
             toolResults.push({
-              type: 'tool_result',
+              type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify(output),
               is_error: true,
             });
           }
-        } else if (block.name === 'get_tradier_quote') {
+        } else if (block.name === "get_tradier_quote") {
           try {
             const rawQuote = await getTradierQuote(block.input.symbol);
             const output = enrichTradierQuoteFreshness(rawQuote);
-            collectedToolResults.push({ name: 'get_tradier_quote', input: block.input, output });
+            collectedToolResults.push({
+              name: "get_tradier_quote",
+              input: block.input,
+              output,
+            });
             toolResults.push({
-              type: 'tool_result',
+              type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify(output),
             });
           } catch (e: any) {
-            const output = { error: e.message || 'ظپط´ظ„ ط¬ظ„ط¨ ط§ظ„ط³ط¹ط± ظ…ظ† Tradier' };
-            collectedToolResults.push({ name: 'get_tradier_quote', input: block.input, output });
+            const output = {
+              error: e.message || "ظپط´ظ„ ط¬ظ„ط¨ ط§ظ„ط³ط¹ط± ظ…ظ† Tradier",
+            };
+            collectedToolResults.push({
+              name: "get_tradier_quote",
+              input: block.input,
+              output,
+            });
             toolResults.push({
-              type: 'tool_result',
+              type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify(output),
               is_error: true,
             });
           }
-        } else if (block.name === 'get_options_expirations') {
+        } else if (block.name === "get_options_expirations") {
           try {
             const dates = await getOptionsExpirations(block.input.symbol);
             const output = { symbol: block.input.symbol, expirations: dates };
-            collectedToolResults.push({ name: 'get_options_expirations', input: block.input, output });
+            collectedToolResults.push({
+              name: "get_options_expirations",
+              input: block.input,
+              output,
+            });
             toolResults.push({
-              type: 'tool_result',
+              type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify(output),
             });
           } catch (e: any) {
-            const output = { error: e.message || 'ظپط´ظ„ ط¬ظ„ط¨ طھظˆط§ط±ظٹط® ط§ظ„ط§ط³طھط­ظ‚ط§ظ‚' };
-            collectedToolResults.push({ name: 'get_options_expirations', input: block.input, output });
+            const output = {
+              error:
+                e.message || "ظپط´ظ„ ط¬ظ„ط¨ طھظˆط§ط±ظٹط® ط§ظ„ط§ط³طھط­ظ‚ط§ظ‚",
+            };
+            collectedToolResults.push({
+              name: "get_options_expirations",
+              input: block.input,
+              output,
+            });
             toolResults.push({
-              type: 'tool_result',
+              type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify(output),
               is_error: true,
             });
           }
-        } else if (block.name === 'get_volume_profile') {
+        } else if (block.name === "get_volume_profile") {
           const output = await getPreviousDayVolumeProfile(block.input.symbol);
-          collectedToolResults.push({ name: 'get_volume_profile', input: block.input, output });
+          collectedToolResults.push({
+            name: "get_volume_profile",
+            input: block.input,
+            output,
+          });
           toolResults.push({
-            type: 'tool_result',
+            type: "tool_result",
             tool_use_id: block.id,
             content: JSON.stringify(output),
             is_error: !!output.error,
           });
-        } else if (block.name === 'get_recent_tv_signals') {
+        } else if (block.name === "get_recent_tv_signals") {
           try {
             const requestedLimit = Number(block.input?.limit);
             const limit = Number.isFinite(requestedLimit)
               ? Math.min(50, Math.max(1, Math.trunc(requestedLimit)))
               : 10;
             const symbol =
-              typeof block.input?.symbol === 'string'
+              typeof block.input?.symbol === "string"
                 ? block.input.symbol.trim().toUpperCase()
-                : '';
+                : "";
 
             if (symbol && !/^[A-Z0-9][A-Z0-9.:-]{0,31}$/.test(symbol)) {
-              throw new Error('طµظٹط؛ط© ط±ظ…ط² ط§ظ„ط³ظ‡ظ… ط؛ظٹط± طµط­ظٹط­ط©');
+              throw new Error("طµظٹط؛ط© ط±ظ…ط² ط§ظ„ط³ظ‡ظ… ط؛ظٹط± طµط­ظٹط­ط©");
             }
 
             let query = supabase
-              .from('tradingview_signals')
-              .select('symbol, signal_type, price, timeframe, created_at')
-              .order('created_at', { ascending: false })
+              .from("tradingview_signals")
+              .select("symbol, signal_type, price, timeframe, created_at")
+              .order("created_at", { ascending: false })
               .limit(limit);
             if (symbol) {
-              query = query.eq('symbol', symbol);
+              query = query.eq("symbol", symbol);
             }
             const { data, error } = await query;
             const output = error ? { error: error.message } : { signals: data };
-            collectedToolResults.push({ name: 'get_recent_tv_signals', input: block.input, output });
+            collectedToolResults.push({
+              name: "get_recent_tv_signals",
+              input: block.input,
+              output,
+            });
             toolResults.push({
-              type: 'tool_result',
+              type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify(output),
               is_error: !!error,
             });
           } catch (e: any) {
-            const output = { error: e.message || 'ظپط´ظ„ ط¬ظ„ط¨ ط¥ط´ط§ط±ط§طھ TradingView' };
-            collectedToolResults.push({ name: 'get_recent_tv_signals', input: block.input, output });
+            const output = {
+              error: e.message || "ظپط´ظ„ ط¬ظ„ط¨ ط¥ط´ط§ط±ط§طھ TradingView",
+            };
+            collectedToolResults.push({
+              name: "get_recent_tv_signals",
+              input: block.input,
+              output,
+            });
             toolResults.push({
-              type: 'tool_result',
+              type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify(output),
               is_error: true,
             });
           }
-        } else if (block.name === 'get_recent_social_signals') {
+        } else if (block.name === "get_recent_social_signals") {
           try {
             const symbol =
-              typeof block.input?.symbol === 'string' && block.input.symbol.trim()
+              typeof block.input?.symbol === "string" &&
+              block.input.symbol.trim()
                 ? block.input.symbol.trim().toUpperCase()
                 : undefined;
 
             if (symbol && !/^[A-Z0-9][A-Z0-9.:-]{0,31}$/.test(symbol)) {
-              throw new Error('صيغة رمز الأصل غير صحيحة');
+              throw new Error("صيغة رمز الأصل غير صحيحة");
             }
 
             const platform =
-              block.input?.platform === 'telegram' || block.input?.platform === 'x'
+              block.input?.platform === "telegram" ||
+              block.input?.platform === "x"
                 ? block.input.platform
                 : undefined;
 
@@ -1157,54 +1480,67 @@ export async function POST(req: NextRequest) {
             const output = summarizeSocialSignals(signals);
 
             collectedToolResults.push({
-              name: 'get_recent_social_signals',
+              name: "get_recent_social_signals",
               input: block.input,
               output,
             });
 
             toolResults.push({
-              type: 'tool_result',
+              type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify(output),
             });
           } catch (e: any) {
             const output = {
-              error: e?.message || 'فشل جلب الإشارات الاجتماعية',
+              error: e?.message || "فشل جلب الإشارات الاجتماعية",
             };
 
             collectedToolResults.push({
-              name: 'get_recent_social_signals',
+              name: "get_recent_social_signals",
               input: block.input,
               output,
             });
 
             toolResults.push({
-              type: 'tool_result',
+              type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify(output),
               is_error: true,
             });
           }
-        } else if (block.name === 'get_options_chain') {
+        } else if (block.name === "get_options_chain") {
           try {
-            const chain = await getOptionsChain(block.input.symbol, block.input.expiration);
-            collectedToolResults.push({ name: 'get_options_chain', input: block.input, output: chain });
+            const chain = await getOptionsChain(
+              block.input.symbol,
+              block.input.expiration,
+            );
+            collectedToolResults.push({
+              name: "get_options_chain",
+              input: block.input,
+              output: chain,
+            });
             toolResults.push({
-              type: 'tool_result',
+              type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify(chain),
             });
           } catch (e: any) {
-            const output = { error: e.message || 'ظپط´ظ„ ط¬ظ„ط¨ ط³ظ„ط³ظ„ط© ط§ظ„ط®ظٹط§ط±ط§طھ' };
-            collectedToolResults.push({ name: 'get_options_chain', input: block.input, output });
+            const output = {
+              error: e.message || "ظپط´ظ„ ط¬ظ„ط¨ ط³ظ„ط³ظ„ط© ط§ظ„ط®ظٹط§ط±ط§طھ",
+            };
+            collectedToolResults.push({
+              name: "get_options_chain",
+              input: block.input,
+              output,
+            });
             toolResults.push({
-              type: 'tool_result',
+              type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify(output),
               is_error: true,
             });
           }
-        } else if (block.name === 'analyze_trade') {
+        } else if (block.name === "analyze_trade") {
           try {
             const input = block.input as TradeEngineInput;
 
@@ -1218,63 +1554,71 @@ export async function POST(req: NextRequest) {
               !input.trigger
             ) {
               throw new Error(
-                'ط¨ظٹط§ظ†ط§طھ ط§ظ„ط³ظˆظ‚ ط£ظˆ ط§ظ„ط£طµظ„ ط£ظˆ ط§ظ„ط¹ظ‚ط¯ ط£ظˆ ط§ظ„طھظپط¹ظٹظ„ ط؛ظٹط± ظ…ظƒطھظ…ظ„ط©'
+                "ط¨ظٹط§ظ†ط§طھ ط§ظ„ط³ظˆظ‚ ط£ظˆ ط§ظ„ط£طµظ„ ط£ظˆ ط§ظ„ط¹ظ‚ط¯ ط£ظˆ ط§ظ„طھظپط¹ظٹظ„ ط؛ظٹط± ظ…ظƒطھظ…ظ„ط©",
               );
             }
 
             if (
-              typeof input.market.spy.price !== 'number' ||
+              typeof input.market.spy.price !== "number" ||
               !Number.isFinite(input.market.spy.price) ||
-              typeof input.market.qqq.price !== 'number' ||
+              typeof input.market.qqq.price !== "number" ||
               !Number.isFinite(input.market.qqq.price)
             ) {
-              throw new Error('ط³ط¹ط± SPY ظˆط³ط¹ط± QQQ ظ…ط·ظ„ظˆط¨ط§ظ† ظˆظٹط¬ط¨ ط£ظ† ظٹظƒظˆظ†ط§ ط±ظ‚ظ…ظٹظ† طµط­ظٹط­ظٹظ†');
-            }
-
-            if (
-              typeof input.stock.symbol !== 'string' ||
-              input.stock.symbol.trim().length === 0 ||
-              typeof input.stock.price !== 'number' ||
-              !Number.isFinite(input.stock.price)
-            ) {
-              throw new Error('ط±ظ…ط² ط§ظ„ط£طµظ„ ظˆط³ط¹ط±ظ‡ ط§ظ„ط­ط§ظ„ظٹ ظ…ط·ظ„ظˆط¨ط§ظ†');
-            }
-
-            if (
-              typeof input.option.symbol !== 'string' ||
-              input.option.symbol.trim().length === 0 ||
-              typeof input.option.strike !== 'number' ||
-              !Number.isFinite(input.option.strike) ||
-              typeof input.option.underlyingPrice !== 'number' ||
-              !Number.isFinite(input.option.underlyingPrice) ||
-              typeof input.option.daysToExpiration !== 'number' ||
-              !Number.isFinite(input.option.daysToExpiration)
-            ) {
-              throw new Error('ط¨ظٹط§ظ†ط§طھ ط§ظ„ط¹ظ‚ط¯ ط§ظ„ط£ط³ط§ط³ظٹط© ط؛ظٹط± ظ…ظƒطھظ…ظ„ط©');
-            }
-
-            if (
-              input.option.optionType !== 'CALL' &&
-              input.option.optionType !== 'PUT'
-            ) {
-              throw new Error('ظ†ظˆط¹ ط§ظ„ط¹ظ‚ط¯ ظٹط¬ط¨ ط£ظ† ظٹظƒظˆظ† CALL ط£ظˆ PUT');
-            }
-
-            if (
-              input.trigger.direction !== 'CALL' &&
-              input.trigger.direction !== 'PUT' &&
-              input.trigger.direction !== 'NEUTRAL'
-            ) {
               throw new Error(
-                'ط§طھط¬ط§ظ‡ ط§ظ„طھظپط¹ظٹظ„ ظٹط¬ط¨ ط£ظ† ظٹظƒظˆظ† CALL ط£ظˆ PUT ط£ظˆ NEUTRAL'
+                "ط³ط¹ط± SPY ظˆط³ط¹ط± QQQ ظ…ط·ظ„ظˆط¨ط§ظ† ظˆظٹط¬ط¨ ط£ظ† ظٹظƒظˆظ†ط§ ط±ظ‚ظ…ظٹظ† طµط­ظٹط­ظٹظ†",
               );
             }
 
             if (
-              typeof input.trigger.candleClose !== 'number' ||
+              typeof input.stock.symbol !== "string" ||
+              input.stock.symbol.trim().length === 0 ||
+              typeof input.stock.price !== "number" ||
+              !Number.isFinite(input.stock.price)
+            ) {
+              throw new Error(
+                "ط±ظ…ط² ط§ظ„ط£طµظ„ ظˆط³ط¹ط±ظ‡ ط§ظ„ط­ط§ظ„ظٹ ظ…ط·ظ„ظˆط¨ط§ظ†",
+              );
+            }
+
+            if (
+              typeof input.option.symbol !== "string" ||
+              input.option.symbol.trim().length === 0 ||
+              typeof input.option.strike !== "number" ||
+              !Number.isFinite(input.option.strike) ||
+              typeof input.option.underlyingPrice !== "number" ||
+              !Number.isFinite(input.option.underlyingPrice) ||
+              typeof input.option.daysToExpiration !== "number" ||
+              !Number.isFinite(input.option.daysToExpiration)
+            ) {
+              throw new Error(
+                "ط¨ظٹط§ظ†ط§طھ ط§ظ„ط¹ظ‚ط¯ ط§ظ„ط£ط³ط§ط³ظٹط© ط؛ظٹط± ظ…ظƒطھظ…ظ„ط©",
+              );
+            }
+
+            if (
+              input.option.optionType !== "CALL" &&
+              input.option.optionType !== "PUT"
+            ) {
+              throw new Error(
+                "ظ†ظˆط¹ ط§ظ„ط¹ظ‚ط¯ ظٹط¬ط¨ ط£ظ† ظٹظƒظˆظ† CALL ط£ظˆ PUT",
+              );
+            }
+
+            if (
+              input.trigger.direction !== "CALL" &&
+              input.trigger.direction !== "PUT" &&
+              input.trigger.direction !== "NEUTRAL"
+            ) {
+              throw new Error(
+                "ط§طھط¬ط§ظ‡ ط§ظ„طھظپط¹ظٹظ„ ظٹط¬ط¨ ط£ظ† ظٹظƒظˆظ† CALL ط£ظˆ PUT ط£ظˆ NEUTRAL",
+              );
+            }
+
+            if (
+              typeof input.trigger.candleClose !== "number" ||
               !Number.isFinite(input.trigger.candleClose)
             ) {
-              throw new Error('ط¥ط؛ظ„ط§ظ‚ ط´ظ…ط¹ط© ط§ظ„طھظپط¹ظٹظ„ ظ…ط·ظ„ظˆط¨');
+              throw new Error("ط¥ط؛ظ„ط§ظ‚ ط´ظ…ط¹ط© ط§ظ„طھظپط¹ظٹظ„ ظ…ط·ظ„ظˆط¨");
             }
 
             const normalizedInput: TradeEngineInput = {
@@ -1290,39 +1634,40 @@ export async function POST(req: NextRequest) {
             };
 
             const baseOutput = runTradeEngine(normalizedInput);
-            const output =
-              await applySocialIntelligenceToTradeReport(
-                baseOutput,
-                {
-                  minutes: 1440,
-                  limit: 50,
-                }
-              );
+            const output = await applySocialIntelligenceToTradeReport(
+              baseOutput,
+              {
+                minutes: 1440,
+                limit: 50,
+              },
+            );
 
             collectedToolResults.push({
-              name: 'analyze_trade',
+              name: "analyze_trade",
               input: normalizedInput,
               output,
             });
 
             toolResults.push({
-              type: 'tool_result',
+              type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify(output),
             });
           } catch (e: any) {
             const output = {
-              error: e?.message || 'ظپط´ظ„ طھط´ط؛ظٹظ„ ظ…ط­ط±ظƒ طھظ‚ظٹظٹظ… ط§ظ„طµظپظ‚ط©',
+              error:
+                e?.message ||
+                "ظپط´ظ„ طھط´ط؛ظٹظ„ ظ…ط­ط±ظƒ طھظ‚ظٹظٹظ… ط§ظ„طµظپظ‚ط©",
             };
 
             collectedToolResults.push({
-              name: 'analyze_trade',
+              name: "analyze_trade",
               input: block.input,
               output,
             });
 
             toolResults.push({
-              type: 'tool_result',
+              type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify(output),
               is_error: true,
@@ -1330,18 +1675,20 @@ export async function POST(req: NextRequest) {
           }
         } else {
           toolResults.push({
-            type: 'tool_result',
+            type: "tool_result",
             tool_use_id: block.id,
-            content: JSON.stringify({ error: 'ط£ط¯ط§ط© ط؛ظٹط± ظ…ط¹ط±ظˆظپط©' }),
+            content: JSON.stringify({ error: "ط£ط¯ط§ط© ط؛ظٹط± ظ…ط¹ط±ظˆظپط©" }),
             is_error: true,
           });
         }
       }
-      workingMessages.push({ role: 'user', content: toolResults });
+      workingMessages.push({ role: "user", content: toolResults });
 
       // ظ„ظˆ ظˆطµظ„ظ†ط§ ط¢ط®ط± ط¬ظˆظ„ط© ظˆظ…ط§ ط²ط§ظ„ ظپظٹظ‡ tool_useطŒ ط®ط° ط£ظٹ ظ†طµ ظ…طھظˆظپط± ظƒط­ظ„ ط§ط­طھظٹط§ط·ظٹ
       if (round === maxRounds - 1) {
-        assistantText = textBlocks || 'ظ†ظپظ‘ط°طھ ط§ظ„ط·ظ„ط¨طŒ ط¨ط³ ظˆط§ط¬ظ‡طھ طµط¹ظˆط¨ط© ط£ظ„ط®طµظ‡ ط¨ظˆط¶ظˆط­. ط¬ط±ط¨ طھط³ط£ظ„ ظ…ط±ط© ط«ط§ظ†ظٹط©.';
+        assistantText =
+          textBlocks ||
+          "ظ†ظپظ‘ط°طھ ط§ظ„ط·ظ„ط¨طŒ ط¨ط³ ظˆط§ط¬ظ‡طھ طµط¹ظˆط¨ط© ط£ظ„ط®طµظ‡ ط¨ظˆط¶ظˆط­. ط¬ط±ط¨ طھط³ط£ظ„ ظ…ط±ط© ط«ط§ظ†ظٹط©.";
       }
     }
 
@@ -1351,9 +1698,9 @@ export async function POST(req: NextRequest) {
       collectedToolResults,
     });
 
-    await supabase.from('fahd_conversations').insert([
-      { role: 'user', content: message },
-      { role: 'assistant', content: finalReply },
+    await supabase.from("fahd_conversations").insert([
+      { role: "user", content: message },
+      { role: "assistant", content: finalReply },
     ]);
 
     // ط§ظ„ط­ظپط¸ ط§ظ„طھظ„ظ‚ط§ط¦ظٹ ظ„ظ„ط°ط§ظƒط±ط© ط·ظˆظٹظ„ط© ط§ظ„ظ…ط¯ظ‰ - ط¨ط³ ظ„ظˆ ط§ظ„ظپظ„طھط± ط§ظ„ط³ط±ظٹط¹ ط§ط´طھط¨ظ‡ ظپظٹظ‡ط§طŒ
@@ -1362,9 +1709,15 @@ export async function POST(req: NextRequest) {
       await autoSaveMemory(message, finalReply);
     }
 
-    return NextResponse.json({ reply: finalReply, toolResults: collectedToolResults });
+    return NextResponse.json({
+      reply: finalReply,
+      toolResults: collectedToolResults,
+    });
   } catch (error) {
-    console.error('Fahd chat route error:', error);
-    return NextResponse.json({ error: 'ط­ط¯ط« ط®ط·ط£ ط؛ظٹط± ظ…طھظˆظ‚ط¹' }, { status: 500 });
+    console.error("Fahd chat route error:", error);
+    return NextResponse.json(
+      { error: "ط­ط¯ط« ط®ط·ط£ ط؛ظٹط± ظ…طھظˆظ‚ط¹" },
+      { status: 500 },
+    );
   }
 }
