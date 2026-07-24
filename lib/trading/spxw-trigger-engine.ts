@@ -3,12 +3,18 @@ import { scanSpxwOpportunitiesV3 } from "./spxw-scanner-v3";
 type TriggerState =
   "ENTER_NOW" | "WAIT_TRIGGER" | "CANCELLED" | "NO_OPPORTUNITY";
 
+type SpxwScanResult = Awaited<ReturnType<typeof scanSpxwOpportunitiesV3>>;
+
 export interface SpxwTriggerConfig {
   maxResults?: number;
   confirmationBufferPoints?: number;
   stopBufferPoints?: number;
   target1Points?: number;
   target2Points?: number;
+  // لو المتصل عنده نتيجة scan جاهزة (مثلاً استدعى scanSpxwOpportunitiesV3
+  // بنفسه قبل شوي)، يمررها هنا فتتجنب الدالة سكان داخلي إضافي مكرر.
+  // لو ما انمرر، السلوك القديم يبقى كما هو (سكان داخلي تلقائي).
+  precomputedScan?: SpxwScanResult;
 }
 
 function round(value: number, decimals = 2): number {
@@ -17,9 +23,11 @@ function round(value: number, decimals = 2): number {
 }
 
 export async function buildSpxwTriggerPlan(config: SpxwTriggerConfig = {}) {
-  const scan = await scanSpxwOpportunitiesV3({
-    maxResults: config.maxResults ?? 2,
-  });
+  const scan =
+    config.precomputedScan ??
+    (await scanSpxwOpportunitiesV3({
+      maxResults: config.maxResults ?? 2,
+    }));
 
   if (!scan.opportunities.length) {
     return {
