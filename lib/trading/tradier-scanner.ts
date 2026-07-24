@@ -20,7 +20,6 @@ export type {
 
 import type {
   TradierScannerConfig,
-  TradierOpportunity,
   BaseOpportunity,
 } from "./tradier-scanner-core/types";
 
@@ -34,6 +33,10 @@ import {
 
 import { enrichWithIVHistory } from "./tradier-scanner-core/iv-context";
 import { passesContractFilters } from "./tradier-scanner-core/filters";
+import {
+  createShortlist,
+  rankOpportunities,
+} from "./tradier-scanner-core/ranking";
 
 function scoreContract(
   option: TradierOption,
@@ -212,38 +215,11 @@ export async function scanTradierOpportunities(config: TradierScannerConfig) {
     }
   }
 
-  const shortlistLimit = Math.min(
-    opportunities.length,
-    Math.max(resultLimit * 3, 10),
-  );
-
-  const shortlist = opportunities
-    .sort(
-      (first, second) =>
-        second.score - first.score ||
-        second.optionBrain.metrics.activityScore -
-          first.optionBrain.metrics.activityScore ||
-        second.volume - first.volume ||
-        second.openInterest - first.openInterest,
-    )
-    .slice(0, shortlistLimit);
+  const shortlist = createShortlist(opportunities, resultLimit);
 
   const enriched = await Promise.all(shortlist.map(enrichWithIVHistory));
 
-  const ranked: TradierOpportunity[] = enriched
-    .sort(
-      (first, second) =>
-        second.score - first.score ||
-        second.optionBrain.metrics.activityScore -
-          first.optionBrain.metrics.activityScore ||
-        second.volume - first.volume ||
-        second.openInterest - first.openInterest,
-    )
-    .slice(0, resultLimit)
-    .map((item, index) => ({
-      rank: index + 1,
-      ...item,
-    }));
+  const ranked = rankOpportunities(enriched, resultLimit);
 
   return {
     source: "Tradier Brokerage API",
