@@ -1,10 +1,7 @@
 import { scanSpxwOpportunitiesV3 } from "./spxw-scanner-v3";
 
 type TriggerState =
-  | "ENTER_NOW"
-  | "WAIT_TRIGGER"
-  | "CANCELLED"
-  | "NO_OPPORTUNITY";
+  "ENTER_NOW" | "WAIT_TRIGGER" | "CANCELLED" | "NO_OPPORTUNITY";
 
 export interface SpxwTriggerConfig {
   maxResults?: number;
@@ -19,9 +16,7 @@ function round(value: number, decimals = 2): number {
   return Math.round(value * factor) / factor;
 }
 
-export async function buildSpxwTriggerPlan(
-  config: SpxwTriggerConfig = {},
-) {
+export async function buildSpxwTriggerPlan(config: SpxwTriggerConfig = {}) {
   const scan = await scanSpxwOpportunitiesV3({
     maxResults: config.maxResults ?? 2,
   });
@@ -124,9 +119,7 @@ export async function buildSpxwTriggerPlan(
     };
   });
 
-  const hasActiveTrigger = plans.some(
-    (plan) => plan.state === "ENTER_NOW",
-  );
+  const hasActiveTrigger = plans.some((plan) => plan.state === "ENTER_NOW");
 
   return {
     generatedAt: new Date().toISOString(),

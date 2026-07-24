@@ -1069,9 +1069,14 @@ export async function POST(req: NextRequest) {
             // لا نبني خطة التريغر إلا لو فيه فرص فعلية — بحالة WAIT (اتجاه
             // السوق غير محدد) أو NO_MATCH ما فيه داعي نسوي سكان ثاني كامل،
             // وهذا يمنع كمان رسالة trigger مربكة تتعارض مع scan.status.
+            // نمرر scan الجاهز عبر precomputedScan حتى buildSpxwTriggerPlan
+            // ما يعيد سكان كامل ثاني لنفس البيانات (كان يسوي سكان مزدوج).
             const trigger =
               scan.status === "OPPORTUNITIES_FOUND"
-                ? await buildSpxwTriggerPlan({ maxResults })
+                ? await buildSpxwTriggerPlan({
+                    maxResults,
+                    precomputedScan: scan,
+                  })
                 : null;
             const output = {
               source: "Fahd SPXW engines",
