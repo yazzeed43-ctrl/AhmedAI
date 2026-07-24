@@ -8,8 +8,6 @@ import {
 
 import { scoreOption } from "@/lib/fahd/option-brain";
 
-import { getIVMetrics, saveIVHistory } from "@/lib/fahd/iv-history";
-
 // الأنواع انتقلت لـ tradier-scanner-core/types.ts (خطوة 1 من خطة
 // التقسيم). يُعاد تصديرها هنا حرفيًا بنفس الأسماء حتى ما ينكسر أي
 // `import type { X } from "./tradier-scanner"` موجود بالمشروع.
@@ -22,7 +20,6 @@ export type {
 
 import type {
   TradierScannerConfig,
-  IVContext,
   TradierOpportunity,
   BaseOpportunity,
 } from "./tradier-scanner-core/types";
@@ -33,64 +30,10 @@ import {
   nullableNumber,
   quotePrice,
   normalizeTier,
-  clampScore,
 } from "./tradier-scanner-core/utils";
 
-const MIN_IV_SAMPLES = 10;
-
-function emptyIVContext(): IVContext {
-  return {
-    ivRank: null,
-    ivPercentile: null,
-    samples: 0,
-    signal: "INSUFFICIENT_DATA",
-    scoreAdjustment: 0,
-  };
-}
-
-function buildIVContext(
-  ivRank: number,
-  ivPercentile: number,
-  samples: number,
-): IVContext {
-  if (samples < MIN_IV_SAMPLES) {
-    return {
-      ivRank,
-      ivPercentile,
-      samples,
-      signal: "INSUFFICIENT_DATA",
-      scoreAdjustment: 0,
-    };
-  }
-
-  if (ivRank >= 80 || ivPercentile >= 80) {
-    return {
-      ivRank,
-      ivPercentile,
-      samples,
-      signal: "HIGH",
-      scoreAdjustment: -5,
-    };
-  }
-
-  if (ivRank <= 20 && ivPercentile <= 25) {
-    return {
-      ivRank,
-      ivPercentile,
-      samples,
-      signal: "LOW",
-      scoreAdjustment: 4,
-    };
-  }
-
-  return {
-    ivRank,
-    ivPercentile,
-    samples,
-    signal: "NORMAL",
-    scoreAdjustment: 2,
-  };
-}
+import { enrichWithIVHistory } from "./tradier-scanner-core/iv-context";
+import { passesContractFilters } from "./tradier-scanner-core/filters";
 
 function scoreContract(
   option: TradierOption,
@@ -192,73 +135,6 @@ function scoreContract(
   };
 }
 
-async function enrichWithIVHistory(
-  item: BaseOpportunity,
-): Promise<Omit<TradierOpportunity, "rank">> {
-  if (
-    item.impliedVolatility === null ||
-    !Number.isFinite(item.impliedVolatility)
-  ) {
-    return {
-      ...item,
-      ivContext: emptyIVContext(),
-    };
-  }
-
-  try {
-    const metrics = await getIVMetrics(
-      item.contractSymbol,
-      item.impliedVolatility,
-    );
-
-    const ivContext = buildIVContext(
-      metrics.ivRank,
-      metrics.ivPercentile,
-      metrics.samples,
-    );
-
-    const score = clampScore(item.score + ivContext.scoreAdjustment);
-
-    const reasons = [...item.reasons];
-
-    const warnings = [...item.warnings];
-
-    if (ivContext.signal === "LOW") {
-      reasons.push("IV is low versus contract history");
-    } else if (ivContext.signal === "NORMAL") {
-      reasons.push("IV is within a normal historical range");
-    } else if (ivContext.signal === "HIGH") {
-      warnings.push("IV is elevated versus contract history");
-    } else {
-      warnings.push("Insufficient IV history for reliable rank");
-    }
-
-    await saveIVHistory({
-      contractSymbol: item.contractSymbol,
-      underlying: item.underlying,
-      expiration: item.expiration,
-      strike: item.strike,
-      optionType: item.direction,
-      impliedVolatility: item.impliedVolatility,
-    });
-
-    return {
-      ...item,
-      score,
-      tier: normalizeTier(score),
-      reasons,
-      warnings,
-      ivContext,
-    };
-  } catch {
-    return {
-      ...item,
-      ivContext: emptyIVContext(),
-      warnings: [...item.warnings, "IV history service unavailable"],
-    };
-  }
-}
-
 export async function scanTradierOpportunities(config: TradierScannerConfig) {
   const symbols = [
     ...new Set(config.symbols.map((symbol) => symbol.trim().toUpperCase())),
@@ -317,17 +193,16 @@ export async function scanTradierOpportunities(config: TradierScannerConfig) {
           continue;
         }
 
-        const absDelta = item.delta === null ? 0 : Math.abs(item.delta);
-
         if (
-          item.midpoint < minPrice ||
-          item.midpoint > maxPrice ||
-          item.volume < minVolume ||
-          item.openInterest < minOpenInterest ||
-          item.spreadPercent > maxSpread ||
-          absDelta < minDelta ||
-          absDelta > maxDelta ||
-          item.optionBrain.tier === "REJECT"
+          !passesContractFilters(item, {
+            minPrice,
+            maxPrice,
+            minVolume,
+            minOpenInterest,
+            maxSpreadPercent: maxSpread,
+            minDelta,
+            maxDelta,
+          })
         ) {
           continue;
         }
