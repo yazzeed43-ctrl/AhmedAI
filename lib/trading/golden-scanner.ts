@@ -1,15 +1,17 @@
-import { getMarketDecision } from "@/lib/market-decision-engine";
-import {
-  scanTradierOpportunities,
-  type TradierOpportunity,
-  type TradierScannerConfig,
+import { runScannerWithStrategy } from "./run-scanner-with-strategy";
+
+import { GOLDEN_STRATEGY, type ScannerStrategy } from "./scanner-strategies";
+
+import type {
+  TradierOpportunity,
+  TradierScannerConfig,
 } from "./tradier-scanner";
 
-type Direction = "CALL" | "PUT";
 type MarketBias = "CALL_BIAS" | "PUT_BIAS" | "WAIT";
 
 export interface GoldenScannerConfig extends TradierScannerConfig {
   timeframe?: "15min" | "1h" | "1day";
+
   minimumFinalScore?: number;
 }
 
@@ -20,66 +22,103 @@ export interface GoldenOpportunity extends TradierOpportunity {
   status: "WAIT_TRIGGER";
 }
 
+/**
+ * يبني استراتيجية Golden الفعلية بعد دمج
+ * أي Overrides قادمة من المستدعي.
+ *
+ * القيم غير المرسلة ترجع إلى سلوك
+ * Golden التاريخي وافتراضيات Tradier.
+ */
+function resolveGoldenStrategy(config: GoldenScannerConfig): ScannerStrategy {
+  return {
+    ...GOLDEN_STRATEGY,
+
+    timeframe: config.timeframe ?? GOLDEN_STRATEGY.timeframe,
+
+    minimumFinalScore:
+      config.minimumFinalScore ?? GOLDEN_STRATEGY.minimumFinalScore,
+
+    // يبقى سقف Golden خمس نتائج.
+    // العدد المطلوب الفعلي يُمرر لاحقًا
+    // إلى requestedResults.
+    maxResults: GOLDEN_STRATEGY.maxResults,
+
+    contractDefaults: {
+      minPrice: config.minPrice ?? GOLDEN_STRATEGY.contractDefaults.minPrice,
+
+      maxPrice: config.maxPrice ?? GOLDEN_STRATEGY.contractDefaults.maxPrice,
+
+      minDelta: config.minDelta ?? GOLDEN_STRATEGY.contractDefaults.minDelta,
+
+      maxDelta: config.maxDelta ?? GOLDEN_STRATEGY.contractDefaults.maxDelta,
+
+      minVolume: config.minVolume ?? GOLDEN_STRATEGY.contractDefaults.minVolume,
+
+      minOpenInterest:
+        config.minOpenInterest ??
+        GOLDEN_STRATEGY.contractDefaults.minOpenInterest,
+
+      maxSpreadPercent:
+        config.maxSpreadPercent ??
+        GOLDEN_STRATEGY.contractDefaults.maxSpreadPercent,
+    },
+  };
+}
+
+/**
+ * Wrapper متوافق خلفيًا مع Golden Scanner القديم.
+ *
+ * المنطق الأساسي أصبح في runScannerWithStrategy،
+ * بينما هذا الملف مسؤول عن:
+ *
+ * 1. دمج Overrides القديمة.
+ * 2. الحفاظ على عدد النتائج الافتراضي 3.
+ * 3. الحفاظ على سقف النتائج 5.
+ * 4. تحويل executionStatus إلى status.
+ * 5. الحفاظ على شكل الإخراج التاريخي.
+ */
 export async function scanGoldenOpportunities(config: GoldenScannerConfig) {
-  const timeframe = config.timeframe ?? "15min";
-  const minimumFinalScore = config.minimumFinalScore ?? 80;
+  const strategy = resolveGoldenStrategy(config);
 
-  const [market, contracts] = await Promise.all([
-    getMarketDecision(timeframe),
-    scanTradierOpportunities({
-      ...config,
-      results: Math.max(config.results ?? 5, 20),
-    }),
-  ]);
+  const requestedResults = Math.min(5, Math.max(1, config.results ?? 3));
 
-  const bias = market.bias as MarketBias;
-  const allowedDirection: Direction | null =
-    bias === "CALL_BIAS" ? "CALL" :
-    bias === "PUT_BIAS" ? "PUT" :
-    null;
+  const result = await runScannerWithStrategy(strategy, {
+    symbols: config.symbols,
 
-  if (!allowedDirection) {
-    return {
-      generatedAt: new Date().toISOString(),
-      status: "WAIT",
-      market,
-      contractsScanned: contracts.contractsScanned,
-      qualifiedContracts: contracts.qualifiedContracts,
-      opportunities: [],
-      message: "السوق بلا انحياز مؤكد؛ فهد يرفض إعطاء عقد ذهبي حتى يتأكد الاتجاه.",
-    };
-  }
+    maxDte: config.maxDte,
 
-  const ranked: GoldenOpportunity[] = contracts.opportunities
-    .filter((item) => item.direction === allowedDirection)
-    .map((item) => {
-      const marketScore =
-        allowedDirection === "CALL"
-          ? market.probabilities.bullish
-          : market.probabilities.bearish;
+    expirationsPerSymbol: config.expirationsPerSymbol,
+
+    requestedResults,
+  });
+
+  const opportunities: GoldenOpportunity[] = result.opportunities.map(
+    (item) => {
+      const { executionStatus, ...rest } = item;
 
       return {
-        ...item,
-        marketBias: bias,
-        marketScore,
-        finalScore: Math.round(item.score * 0.65 + marketScore * 0.35),
-        status: "WAIT_TRIGGER" as const,
+        ...rest,
+        status: executionStatus,
       };
-    })
-    .filter((item) => item.finalScore >= minimumFinalScore)
-    .sort((a, b) => b.finalScore - a.finalScore || b.volume - a.volume)
-    .slice(0, Math.min(5, Math.max(1, config.results ?? 3)))
-    .map((item, index) => ({ ...item, rank: index + 1 }));
+    },
+  );
 
   return {
-    generatedAt: new Date().toISOString(),
-    status: ranked.length ? "OPPORTUNITIES_FOUND" : "NO_MATCH",
-    market,
-    contractsScanned: contracts.contractsScanned,
-    qualifiedContracts: contracts.qualifiedContracts,
-    opportunities: ranked,
-    message: ranked.length
-      ? `وجد فهد ${ranked.length} عقود متوافقة مع اتجاه السوق. الدخول مشروط بتأكيد الشمعة.`
-      : "لا يوجد عقد يجمع جودة العقد مع اتجاه السوق حاليًا.",
+    generatedAt: result.generatedAt,
+
+    status: result.status,
+
+    market: result.market,
+
+    // تبقى الحقول موجودة دائمًا.
+    // في حالة WAIT تصبح صفرًا لأن المحرك
+    // لم يعد يجلب عقود Tradier قبل وضوح السوق.
+    contractsScanned: result.contractsScanned,
+
+    qualifiedContracts: result.qualifiedContracts,
+
+    opportunities,
+
+    message: result.message,
   };
 }
