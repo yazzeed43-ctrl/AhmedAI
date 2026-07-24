@@ -826,10 +826,16 @@ async function callClaude(messages: any[], systemPrompt: string) {
 
 export async function POST(req: NextRequest) {
   try {
-    const { message } = await req.json();
-    if (!message || typeof message !== "string") {
+    const { message: rawMessage } = await req.json();
+    const message = typeof rawMessage === "string" ? rawMessage.trim() : "";
+
+    if (!message) {
+      return NextResponse.json({ error: "الرسالة مطلوبة" }, { status: 400 });
+    }
+
+    if (message.length > 4000) {
       return NextResponse.json(
-        { error: "ط§ظ„ط±ط³ط§ظ„ط© ظ…ط·ظ„ظˆط¨ط©" },
+        { error: "الرسالة طويلة جدًا، بحد أقصى 4000 حرف." },
         { status: 400 },
       );
     }
@@ -1029,7 +1035,7 @@ export async function POST(req: NextRequest) {
     let assistantText = "";
     const collectedToolResults: { name: string; input: any; output: any }[] =
       [];
-    const maxRounds = 8;
+    const maxRounds = 3;
 
     for (let round = 0; round < maxRounds; round++) {
       const data = await callClaude(workingMessages, fullSystemPrompt);
@@ -1058,10 +1064,15 @@ export async function POST(req: NextRequest) {
               1,
               Math.min(2, Number(block.input?.maxResults) || 2),
             );
-            const [scan, trigger] = await Promise.all([
-              scanSpxwOpportunitiesV3({ maxResults }),
-              buildSpxwTriggerPlan({ maxResults }),
-            ]);
+            const scan = await scanSpxwOpportunitiesV3({ maxResults });
+
+            // لا نبني خطة التريغر إلا لو فيه فرص فعلية — بحالة WAIT (اتجاه
+            // السوق غير محدد) أو NO_MATCH ما فيه داعي نسوي سكان ثاني كامل،
+            // وهذا يمنع كمان رسالة trigger مربكة تتعارض مع scan.status.
+            const trigger =
+              scan.status === "OPPORTUNITIES_FOUND"
+                ? await buildSpxwTriggerPlan({ maxResults })
+                : null;
             const output = {
               source: "Fahd SPXW engines",
               scan,
@@ -1701,11 +1712,35 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const finalReply = buildFahdResponse({
-      userMessage: message,
-      assistantText,
-      collectedToolResults,
-    });
+    // إنفاذ برمجي: لو آخر استدعاء لأداة SPXW رجع scan.status = WAIT، نفرض
+    // رسالة ثابتة بدل الاعتماد على النموذج أو السماح لـ buildFahdResponse
+    // بإعادة صياغتها. يغطي هذا مسار الخروج الطبيعي ومسار استنفاد الجولات معًا.
+    const lastSpxwResult = [...collectedToolResults]
+      .reverse()
+      .find((result) => result.name === "get_spxw_trade_plan");
+
+    // نفرض رسالة WAIT الثابتة فقط لو SPXW كانت الأداة الوحيدة المستخدمة —
+    // لو فيه أدوات ثانية (مثلاً طلب مختلط: "SPXW + حلل NVDA")، نسيب
+    // buildFahdResponse يعرض نتائج الأدوات الثانية، وتعليمات الـ prompt
+    // تمنع الادعاء بفحص SPXW ضمن ردها.
+    const onlySpxwToolWasUsed =
+      collectedToolResults.length > 0 &&
+      collectedToolResults.every(
+        (result) => result.name === "get_spxw_trade_plan",
+      );
+
+    const enforcedSpxwWaitReply =
+      onlySpxwToolWasUsed && lastSpxwResult?.output?.scan?.status === "WAIT"
+        ? "اتجاه السوق غير مؤكد حاليًا، لذلك لم يتم جلب أو فحص عقود SPXW."
+        : null;
+
+    const finalReply =
+      enforcedSpxwWaitReply ??
+      buildFahdResponse({
+        userMessage: message,
+        assistantText,
+        collectedToolResults,
+      });
 
     await supabase.from("fahd_conversations").insert([
       { role: "user", content: message },
