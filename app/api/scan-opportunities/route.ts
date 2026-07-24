@@ -9,6 +9,13 @@ import type { TradeEngineInput } from "@/lib/trading/trade-engine";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// ⚠️ Deprecated: هذا المسار معزول عن باقي محركات فهد (Tradier +
+// tradier-scanner + option-brain). يعتمد على مسار بيانات منفصل
+// كليًا (trade-engine.ts + scoring-engine.ts) وما فيه أي مستهلك
+// داخلي أو Cron يستدعيه حاليًا. أُبقي عليه بدون أي تغيير سلوك.
+const DEPRECATED = true;
+const REPLACEMENT_ENDPOINT = "/api/fahd-recommendations";
+
 interface ScanRequest {
   candidates: TradeEngineInput[];
   config?: OpportunityScannerConfig;
@@ -34,8 +41,11 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           success: false,
+          deprecated: DEPRECATED,
+          replacementEndpoint: REPLACEMENT_ENDPOINT,
           error: "INVALID_INPUT",
-          message: "أرسل قائمة candidates تحتوي على عقد واحد على الأقل وبحد أقصى 500 عقد.",
+          message:
+            "أرسل قائمة candidates تحتوي على عقد واحد على الأقل وبحد أقصى 500 عقد.",
         },
         { status: 400 },
       );
@@ -45,6 +55,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       success: true,
+      deprecated: DEPRECATED,
+      replacementEndpoint: REPLACEMENT_ENDPOINT,
       generatedAt: new Date().toISOString(),
       result,
     });
@@ -54,6 +66,8 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         success: false,
+        deprecated: DEPRECATED,
+        replacementEndpoint: REPLACEMENT_ENDPOINT,
         error: "INTERNAL_SERVER_ERROR",
         message: "حدث خطأ أثناء فحص فرص عقود الأوبشن.",
       },
@@ -65,6 +79,8 @@ export async function POST(request: Request) {
 export async function GET() {
   return NextResponse.json({
     success: true,
+    deprecated: DEPRECATED,
+    replacementEndpoint: REPLACEMENT_ENDPOINT,
     service: "Fahd Golden Options Scanner",
     endpoint: "/api/scan-opportunities",
     method: "POST",
