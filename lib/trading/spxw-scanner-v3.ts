@@ -29,6 +29,26 @@ function n(value: number | null | undefined, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+// السعر الحقيقي لـ SPX من Tradier مباشرة، بدون استخدام SPY كبديل.
+// تستخدمها أداة الفحص ومحرك التريغر حتى يكون مصدر السعر موحدًا.
+export async function getRealSpxPrice(): Promise<number> {
+  const quotes = await getTradierQuotes(["SPX"]);
+
+  const quote = quotes.find((item) => item.symbol?.toUpperCase() === "SPX");
+
+  const price =
+    n(quote?.last) ||
+    (n(quote?.bid) > 0 && n(quote?.ask) > 0
+      ? (n(quote?.bid) + n(quote?.ask)) / 2
+      : n(quote?.close));
+
+  if (price <= 0) {
+    throw new Error("تعذر جلب سعر SPX من Tradier.");
+  }
+
+  return price;
+}
+
 function optionRoot(symbol: string): string {
   const match = symbol.toUpperCase().match(/^([A-Z]+)\d{6}[CP]\d{8}$/);
 
@@ -64,7 +84,6 @@ function daysToExpiration(expiration: string): number {
 
 function scoreOption(option: TradierOption, underlyingPrice: number) {
   const bid = n(option.bid);
-
   const ask = n(option.ask);
 
   if (bid <= 0 || ask <= 0 || ask < bid || underlyingPrice <= 0) {
@@ -91,9 +110,7 @@ function scoreOption(option: TradierOption, underlyingPrice: number) {
       : (option.greeks?.smv_vol ?? null);
 
   const volume = n(option.volume);
-
   const openInterest = n(option.open_interest);
-
   const dte = daysToExpiration(option.expiration_date);
 
   const direction: Direction = option.option_type === "call" ? "CALL" : "PUT";
@@ -195,17 +212,7 @@ export async function scanSpxwOpportunitiesV3(
     };
   }
 
-  const quote = (await getTradierQuotes(["SPX"]))[0];
-
-  const underlyingPrice =
-    n(quote?.last) ||
-    (n(quote?.bid) > 0 && n(quote?.ask) > 0
-      ? (n(quote?.bid) + n(quote?.ask)) / 2
-      : n(quote?.close));
-
-  if (underlyingPrice <= 0) {
-    throw new Error("تعذر جلب سعر SPX من Tradier.");
-  }
+  const underlyingPrice = await getRealSpxPrice();
 
   const maxDte = Math.max(0, Math.floor(config.maxDte ?? 10));
 
@@ -225,19 +232,12 @@ export async function scanSpxwOpportunitiesV3(
   const spxw = all.filter((option) => optionRoot(option.symbol) === "SPXW");
 
   const minPrice = config.minPrice ?? 0.5;
-
   const maxPrice = config.maxPrice ?? 20;
-
   const minVolume = config.minVolume ?? 50;
-
   const minOpenInterest = config.minOpenInterest ?? 100;
-
   const maxSpread = config.maxSpreadPercent ?? 12;
-
   const minDelta = config.minDelta ?? 0.45;
-
   const maxDelta = config.maxDelta ?? 0.7;
-
   const minimumFinalScore = config.minimumFinalScore ?? 72;
 
   const marketScore =

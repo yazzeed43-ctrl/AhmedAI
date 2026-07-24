@@ -1,7 +1,7 @@
-import { scanSpxwOpportunitiesV3 } from "./spxw-scanner-v3";
+import { scanSpxwOpportunitiesV3, getRealSpxPrice } from "./spxw-scanner-v3";
 
 type TriggerState =
-  "ENTER_NOW" | "WAIT_TRIGGER" | "CANCELLED" | "NO_OPPORTUNITY";
+  "PRICE_TRIGGERED" | "WAIT_TRIGGER" | "CANCELLED" | "NO_OPPORTUNITY";
 
 type SpxwScanResult = Awaited<ReturnType<typeof scanSpxwOpportunitiesV3>>;
 
@@ -22,6 +22,39 @@ function round(value: number, decimals = 2): number {
   return Math.round(value * factor) / factor;
 }
 
+// دالة نقية مستقلة عن أي جلب بيانات — تاخذ خطة محفوظة مسبقًا (triggerPrice
+// وinvalidationPrice ثابتين من لحظة البناء) وسعر SPX حي جديد، وترجع الحالة.
+// هذا يفصل "بناء الخطة" عن "فحصها لاحقًا" فعليًا: مفيدة لاستدعاء مستقل
+// بعد دقائق/ساعات من البناء، بدون ما تعيد حساب triggerPrice من سعر جديد
+// (لو أعدنا حسابه، الهدف يتحرك مع كل فحص بدل ما يثبت).
+export function checkSpxwTriggerPlan(
+  plan: {
+    direction: "CALL" | "PUT";
+    triggerPrice: number;
+    invalidationPrice: number;
+  },
+  currentSpxPrice: number,
+): TriggerState {
+  const triggered =
+    plan.direction === "CALL"
+      ? currentSpxPrice >= plan.triggerPrice
+      : currentSpxPrice <= plan.triggerPrice;
+
+  const cancelled =
+    plan.direction === "CALL"
+      ? currentSpxPrice <= plan.invalidationPrice
+      : currentSpxPrice >= plan.invalidationPrice;
+
+  // ملاحظة مهمة: "PRICE_TRIGGERED" يعني السعر اللحظي لمس/كسر المستوى فقط —
+  // مو تأكيد إغلاق شمعة 5 دقائق. تأكيد الشمعة شرط منفصل لازم يتحقق منه
+  // بمكان ثاني (يدويًا أو بمنطق شموع مستقبلي) قبل الدخول الفعلي.
+  return cancelled
+    ? "CANCELLED"
+    : triggered
+      ? "PRICE_TRIGGERED"
+      : "WAIT_TRIGGER";
+}
+
 export async function buildSpxwTriggerPlan(config: SpxwTriggerConfig = {}) {
   const scan =
     config.precomputedScan ??
@@ -39,11 +72,19 @@ export async function buildSpxwTriggerPlan(config: SpxwTriggerConfig = {}) {
     };
   }
 
-  const spxPrice = scan.underlyingPrice;
+  const referenceSpxPrice = scan.underlyingPrice;
 
-  if (typeof spxPrice !== "number" || !Number.isFinite(spxPrice)) {
+  if (
+    typeof referenceSpxPrice !== "number" ||
+    !Number.isFinite(referenceSpxPrice)
+  ) {
     throw new Error("تعذر تحديد سعر SPX لبناء خطة الدخول.");
   }
+
+  // سعر حي منفصل عن لحظة الفحص (scan)، عشان currentTriggered/cancelled
+  // تقارن ضد سعر جديد فعليًا، مو ضد نفس السعر اللي حُسب منه triggerPrice.
+  // نفس دالة السعر الحقيقي المعتمدة بمسار SPXW (بدون بروكسي SPY).
+  const currentSpxPrice = await getRealSpxPrice();
 
   const confirmationBuffer = config.confirmationBufferPoints ?? 1.5;
   const stopBuffer = config.stopBufferPoints ?? 6;
@@ -56,8 +97,8 @@ export async function buildSpxwTriggerPlan(config: SpxwTriggerConfig = {}) {
     const isCall = opportunity.direction === "CALL";
 
     const triggerPrice = isCall
-      ? spxPrice + confirmationBuffer
-      : spxPrice - confirmationBuffer;
+      ? referenceSpxPrice + confirmationBuffer
+      : referenceSpxPrice - confirmationBuffer;
 
     const invalidationPrice = isCall
       ? triggerPrice - stopBuffer
@@ -71,19 +112,14 @@ export async function buildSpxwTriggerPlan(config: SpxwTriggerConfig = {}) {
       ? triggerPrice + target2
       : triggerPrice - target2;
 
-    const currentTriggered = isCall
-      ? spxPrice >= triggerPrice
-      : spxPrice <= triggerPrice;
-
-    const cancelled = isCall
-      ? spxPrice <= invalidationPrice
-      : spxPrice >= invalidationPrice;
-
-    const state: TriggerState = cancelled
-      ? "CANCELLED"
-      : currentTriggered
-        ? "ENTER_NOW"
-        : "WAIT_TRIGGER";
+    const state = checkSpxwTriggerPlan(
+      {
+        direction: opportunity.direction,
+        triggerPrice,
+        invalidationPrice,
+      },
+      currentSpxPrice,
+    );
 
     const riskPoints = Math.abs(triggerPrice - invalidationPrice);
     const reward1Points = Math.abs(target1Price - triggerPrice);
@@ -100,7 +136,11 @@ export async function buildSpxwTriggerPlan(config: SpxwTriggerConfig = {}) {
       marketBias: opportunity.marketBias,
       marketScore: opportunity.marketScore,
       state,
-      underlyingPrice: round(spxPrice),
+      // مو نفس الرقم بالضرورة: reference هو سعر لحظة اكتشاف الفرصة
+      // (اللي حُسبت منه مستويات trigger/invalidation/target)، وcurrent
+      // هو سعر حي جديد وقت فحص التفعيل نفسه.
+      referenceUnderlyingPrice: round(referenceSpxPrice),
+      currentUnderlyingPrice: round(currentSpxPrice),
       triggerPrice: round(triggerPrice),
       invalidationPrice: round(invalidationPrice),
       target1Price: round(target1Price),
@@ -127,15 +167,29 @@ export async function buildSpxwTriggerPlan(config: SpxwTriggerConfig = {}) {
     };
   });
 
-  const hasActiveTrigger = plans.some((plan) => plan.state === "ENTER_NOW");
+  const hasActiveTrigger = plans.some(
+    (plan) => plan.state === "PRICE_TRIGGERED",
+  );
+
+  const allCancelled =
+    plans.length > 0 && plans.every((plan) => plan.state === "CANCELLED");
+
+  const overallState: TriggerState = allCancelled
+    ? "CANCELLED"
+    : hasActiveTrigger
+      ? "PRICE_TRIGGERED"
+      : "WAIT_TRIGGER";
 
   return {
     generatedAt: new Date().toISOString(),
-    state: hasActiveTrigger ? "ENTER_NOW" : "WAIT_TRIGGER",
+    state: overallState,
     market,
     plans,
-    message: hasActiveTrigger
-      ? "تم تفعيل فرصة SPXW."
-      : "الفرص جاهزة لكنها تنتظر إغلاق شمعة التأكيد.",
+    message:
+      overallState === "CANCELLED"
+        ? "تم إلغاء فرص SPXW بعد كسر مستوى الإبطال."
+        : overallState === "PRICE_TRIGGERED"
+          ? "وصل SPX إلى مستوى التفعيل، وما زال تأكيد إغلاق شمعة 5 دقائق مطلوبًا."
+          : "الفرص جاهزة لكنها تنتظر الوصول إلى مستوى التفعيل.",
   };
 }
