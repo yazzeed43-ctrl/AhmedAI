@@ -36,6 +36,18 @@ function resolveFahdStrategy(config: FahdScannerV3Config): ScannerStrategy {
   };
 }
 
+// fahd-scanner-v3.ts القديم كان ينتج triggerStatus بقيمة
+// "WAIT_TRIGGER" فقط دايمًا. لو ExecutionStatus أنتج READY أو
+// REJECTED مستقبلاً، هذا يفشل بوضوح بدل ما يمرر قيمة غلط بصمت
+// (نفس الحماية المطبّقة بـ golden-scanner.ts).
+function assertWaitTrigger(status: string): asserts status is "WAIT_TRIGGER" {
+  if (status !== "WAIT_TRIGGER") {
+    throw new Error(
+      `Fahd scanner received unsupported execution status: ${status}`,
+    );
+  }
+}
+
 export async function runFahdScannerV3(config: FahdScannerV3Config) {
   const strategy = resolveFahdStrategy(config);
 
@@ -54,6 +66,7 @@ export async function runFahdScannerV3(config: FahdScannerV3Config) {
   // (fahd-recommendations, golden-opportunities-v3).
   const opportunities = result.opportunities.map((item) => {
     const { executionStatus, ...rest } = item;
+    assertWaitTrigger(executionStatus);
     return { ...rest, triggerStatus: executionStatus };
   });
 
