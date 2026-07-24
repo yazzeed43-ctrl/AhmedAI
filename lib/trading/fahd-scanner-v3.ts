@@ -1,94 +1,79 @@
-import { getMarketDecision } from "@/lib/market-decision-engine";
-import {
-  scanTradierOpportunities,
-  type TradierOpportunity,
-  type TradierScannerConfig,
-} from "./tradier-scanner";
+import { runScannerWithStrategy } from "./run-scanner-with-strategy";
+import { FAHD_STRATEGY, type ScannerStrategy } from "./scanner-strategies";
+import type { TradierScannerConfig } from "./tradier-scanner";
 
-type MarketBias = "CALL_BIAS" | "PUT_BIAS" | "WAIT";
-type Direction = "CALL" | "PUT";
-
+// نفس شكل الطلب التاريخي بالضبط — كل حقل هنا اختياري وقابل
+// للـ override من المتصل، تمامًا زي fahd-scanner-v3.ts القديم.
 export interface FahdScannerV3Config extends TradierScannerConfig {
   timeframe?: "15min" | "1h" | "1day";
   minimumFinalScore?: number;
   maxResults?: number;
 }
 
-export interface FahdScannerV3Opportunity extends TradierOpportunity {
-  marketBias: MarketBias;
-  marketScore: number;
-  finalScore: number;
-  triggerStatus: "WAIT_TRIGGER";
-}
-
-function directionFromBias(bias: MarketBias): Direction | null {
-  if (bias === "CALL_BIAS") return "CALL";
-  if (bias === "PUT_BIAS") return "PUT";
-  return null;
+// يبني نسخة من FAHD_STRATEGY مع override أي قيمة مررها المتصل
+// صراحة. لو ما مرر شي، تُستخدم افتراضيات FAHD_STRATEGY كما هي —
+// نفس سلوك `config.X ?? defaultValue` القديم بالضبط.
+function resolveFahdStrategy(config: FahdScannerV3Config): ScannerStrategy {
+  return {
+    ...FAHD_STRATEGY,
+    timeframe: config.timeframe ?? FAHD_STRATEGY.timeframe,
+    minimumFinalScore:
+      config.minimumFinalScore ?? FAHD_STRATEGY.minimumFinalScore,
+    maxResults: FAHD_STRATEGY.maxResults, // سقف 2 دايمًا، زي القديم (Math.min(2, ...))
+    contractDefaults: {
+      minPrice: config.minPrice ?? FAHD_STRATEGY.contractDefaults.minPrice,
+      maxPrice: config.maxPrice ?? FAHD_STRATEGY.contractDefaults.maxPrice,
+      minDelta: config.minDelta ?? FAHD_STRATEGY.contractDefaults.minDelta,
+      maxDelta: config.maxDelta ?? FAHD_STRATEGY.contractDefaults.maxDelta,
+      minVolume: config.minVolume ?? FAHD_STRATEGY.contractDefaults.minVolume,
+      minOpenInterest:
+        config.minOpenInterest ??
+        FAHD_STRATEGY.contractDefaults.minOpenInterest,
+      maxSpreadPercent:
+        config.maxSpreadPercent ??
+        FAHD_STRATEGY.contractDefaults.maxSpreadPercent,
+    },
+  };
 }
 
 export async function runFahdScannerV3(config: FahdScannerV3Config) {
-  const timeframe = config.timeframe ?? "15min";
-  const maxResults = Math.max(1, Math.min(2, config.maxResults ?? 2));
-  const minimumFinalScore = config.minimumFinalScore ?? 78;
+  const strategy = resolveFahdStrategy(config);
 
-  const market = await getMarketDecision(timeframe);
-  const bias = market.bias as MarketBias;
-  const allowedDirection = directionFromBias(bias);
+  const result = await runScannerWithStrategy(strategy, {
+    symbols: config.symbols,
+    maxDte: config.maxDte,
+    expirationsPerSymbol: config.expirationsPerSymbol,
+    // القديم كان يقص لحد أقصى 2 بغض النظر عن config.maxResults
+    // (Math.max(1, Math.min(2, config.maxResults ?? 2))) — نفس
+    // النتيجة محفوظة تلقائيًا لأن strategy.maxResults مقفول على 2.
+    requestedResults: config.maxResults,
+  });
 
-  if (!allowedDirection) {
+  // تحويل الحقل الموحد (executionStatus) لاسمه التاريخي (triggerStatus)
+  // حفاظًا على شكل الإخراج بالضبط لكل مستهلك حالي
+  // (fahd-recommendations, golden-opportunities-v3).
+  const opportunities = result.opportunities.map((item) => {
+    const { executionStatus, ...rest } = item;
+    return { ...rest, triggerStatus: executionStatus };
+  });
+
+  if (result.status === "WAIT") {
     return {
-      generatedAt: new Date().toISOString(),
-      status: "WAIT",
-      market,
-      opportunities: [],
-      message: "السوق غير واضح؛ لا توجد صفقة ذهبية الآن.",
+      generatedAt: result.generatedAt,
+      status: result.status,
+      market: result.market,
+      opportunities: [] as typeof opportunities,
+      message: result.message,
     };
   }
 
-  const contracts = await scanTradierOpportunities({
-    ...config,
-    results: 20,
-    minDelta: config.minDelta ?? 0.45,
-    maxDelta: config.maxDelta ?? 0.70,
-    minVolume: config.minVolume ?? 100,
-    minOpenInterest: config.minOpenInterest ?? 500,
-    maxSpreadPercent: config.maxSpreadPercent ?? 12,
-  });
-
-  const directionalMarketScore =
-    allowedDirection === "CALL"
-      ? market.probabilities.bullish
-      : market.probabilities.bearish;
-
-  const opportunities: FahdScannerV3Opportunity[] = contracts.opportunities
-    .filter((item) => item.direction === allowedDirection)
-    .map((item) => ({
-      ...item,
-      marketBias: bias,
-      marketScore: directionalMarketScore,
-      finalScore: Math.round(item.score * 0.6 + directionalMarketScore * 0.4),
-      triggerStatus: "WAIT_TRIGGER" as const,
-    }))
-    .filter((item) => item.finalScore >= minimumFinalScore)
-    .sort((a, b) =>
-      b.finalScore - a.finalScore ||
-      b.score - a.score ||
-      b.volume - a.volume ||
-      b.openInterest - a.openInterest
-    )
-    .slice(0, maxResults)
-    .map((item, index) => ({ ...item, rank: index + 1 }));
-
   return {
-    generatedAt: new Date().toISOString(),
-    status: opportunities.length ? "OPPORTUNITIES_FOUND" : "NO_MATCH",
-    market,
-    contractsScanned: contracts.contractsScanned,
-    qualifiedContracts: contracts.qualifiedContracts,
+    generatedAt: result.generatedAt,
+    status: result.status,
+    market: result.market,
+    contractsScanned: result.contractsScanned,
+    qualifiedContracts: result.qualifiedContracts,
     opportunities,
-    message: opportunities.length
-      ? `وجد فهد ${opportunities.length} فرصة متوافقة مع اتجاه السوق.`
-      : "لا يوجد عقد يحقق شروط السوق والعقد معًا.",
+    message: result.message,
   };
 }
