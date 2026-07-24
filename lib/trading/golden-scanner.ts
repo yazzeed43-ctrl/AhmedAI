@@ -92,16 +92,16 @@ export async function scanGoldenOpportunities(config: GoldenScannerConfig) {
     requestedResults,
   });
 
-  const opportunities: GoldenOpportunity[] = result.opportunities.map(
-    (item) => {
-      const { executionStatus, ...rest } = item;
+const opportunities: GoldenOpportunity[] = result.opportunities.map(
+  (item) => {
+    const { executionStatus: _executionStatus, ...rest } = item;
 
-      return {
-        ...rest,
-        status: executionStatus,
-      };
-    },
-  );
+    return {
+      ...rest,
+      status: "WAIT_TRIGGER" as const,
+    };
+  },
+);
 
   return {
     generatedAt: result.generatedAt,
