@@ -1,6 +1,6 @@
-'use client';
+"use client";
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from "react";
 
 // ============================================
 // أنواع البيانات
@@ -35,16 +35,22 @@ type BacktestOutput =
 type OptionContract = {
   symbol: string;
   strike: number;
-  option_type: 'call' | 'put';
+  option_type: "call" | "put";
   expiration_date: string;
   bid: number;
   ask: number;
   last: number | null;
   volume: number;
   open_interest: number;
-  greeks?: { delta?: number; theta?: number; gamma?: number; vega?: number; mid_iv?: number };
+  greeks?: {
+    delta?: number;
+    theta?: number;
+    gamma?: number;
+    vega?: number;
+    mid_iv?: number;
+  };
   spread_pct: number | null;
-  liquidity_quality: 'جيد' | 'متوسط' | 'ضعيف - احذر';
+  liquidity_quality: "جيد" | "متوسط" | "ضعيف - احذر";
   liquidity_reason: string;
 };
 
@@ -65,34 +71,95 @@ type TechnicalIndicatorsOutput =
       timeframe: string;
       lastPrice: number;
       rsi: { value: number; signal: string };
-      macd: { macdLine: number; signalLine: number; histogram: number; signal: string };
-      bollingerBands: { upper: number; mid: number; lower: number; signal: string };
+      macd: {
+        macdLine: number;
+        signalLine: number;
+        histogram: number;
+        signal: string;
+      };
+      bollingerBands: {
+        upper: number;
+        mid: number;
+        lower: number;
+        signal: string;
+      };
       supportResistance: { support: number; resistance: number; note: string };
     }
   | { error: string };
 
 type ToolResult = { name: string; input: any; output: any };
-type Message = { role: 'user' | 'assistant'; content: string; toolResults?: ToolResult[] };
+type Message = {
+  role: "user" | "assistant";
+  content: string;
+  toolResults?: ToolResult[];
+};
 type TickerQuote = { symbol: string; price: number; changePct: number };
+
+// ============================================
+// أنواع بطاقة فحص الفرص (get_market_opportunities)
+// ============================================
+type IVContextData = {
+  ivRank: number | null;
+  ivPercentile: number | null;
+  samples: number;
+  signal: "LOW" | "NORMAL" | "HIGH" | "INSUFFICIENT_DATA";
+  scoreAdjustment: number;
+};
+
+type MarketOpportunity = {
+  rank: number;
+  tier: "GOLD" | "STRONG" | "WATCH";
+  direction: "CALL" | "PUT";
+  contractSymbol: string;
+  underlying: string;
+  strike: number;
+  expiration: string;
+  daysToExpiration: number;
+  midpoint: number;
+  score: number;
+  finalScore: number;
+  marketScore: number;
+  volume: number;
+  openInterest: number;
+  spreadPercent: number;
+  reasons: string[];
+  warnings: string[];
+  ivContext: IVContextData;
+  // فهد يرجع triggerStatus، Golden يرجع status — نفس المعنى بحقلين مختلفين
+  triggerStatus?: string;
+  status?: string;
+};
+
+type MarketOpportunitiesOutput =
+  | {
+      strategy: "FAHD" | "GOLDEN";
+      status: "WAIT" | "OPPORTUNITIES_FOUND" | "NO_MATCH";
+      market?: { bias?: string };
+      contractsScanned?: number;
+      qualifiedContracts?: number;
+      opportunities: MarketOpportunity[];
+      message: string;
+    }
+  | { error: string };
 
 // ============================================
 // ألوان الهوية (نفس نموذج التصميم المعتمد)
 // ============================================
 const C = {
-  bg: '#0D0E11',
-  panel: '#16181D',
-  panel2: '#1C1F26',
-  border: '#26282E',
-  gold: '#C9A227',
-  goldDim: '#8A7420',
-  text: '#EDEAE3',
-  textMuted: '#8B8D93',
-  gain: '#2FBF71',
-  gainBg: 'rgba(47,191,113,0.12)',
-  loss: '#E5484D',
-  lossBg: 'rgba(229,72,77,0.12)',
-  warn: '#E0A83E',
-  warnBg: 'rgba(224,168,62,0.12)',
+  bg: "#0D0E11",
+  panel: "#16181D",
+  panel2: "#1C1F26",
+  border: "#26282E",
+  gold: "#C9A227",
+  goldDim: "#8A7420",
+  text: "#EDEAE3",
+  textMuted: "#8B8D93",
+  gain: "#2FBF71",
+  gainBg: "rgba(47,191,113,0.12)",
+  loss: "#E5484D",
+  lossBg: "rgba(229,72,77,0.12)",
+  warn: "#E0A83E",
+  warnBg: "rgba(224,168,62,0.12)",
 };
 
 const FONT_AR = "'IBM Plex Sans Arabic', Tahoma, Arial, sans-serif";
@@ -100,8 +167,8 @@ const FONT_HEAD = "'Cairo', Tahoma, Arial, sans-serif";
 const FONT_MONO = "'IBM Plex Mono', monospace";
 
 function liquidityStyle(q: string) {
-  if (q === 'جيد') return { bg: C.gainBg, color: C.gain };
-  if (q === 'متوسط') return { bg: C.warnBg, color: C.warn };
+  if (q === "جيد") return { bg: C.gainBg, color: C.gain };
+  if (q === "متوسط") return { bg: C.warnBg, color: C.warn };
   return { bg: C.lossBg, color: C.loss };
 }
 
@@ -109,11 +176,24 @@ function liquidityStyle(q: string) {
 // بطاقة نتيجة الباك-تست
 // ============================================
 function BacktestCard({ output }: { output: BacktestOutput }) {
-  if ('error' in output) {
+  if ("error" in output) {
     return (
-      <div style={{ background: C.panel2, border: `1px solid ${C.loss}`, borderRadius: 14, padding: 14, fontSize: 12.5, color: C.loss }}>
+      <div
+        style={{
+          background: C.panel2,
+          border: `1px solid ${C.loss}`,
+          borderRadius: 14,
+          padding: 14,
+          fontSize: 12.5,
+          color: C.loss,
+        }}
+      >
         ⚠️ {output.error}
-        {output.details ? <div style={{ color: C.textMuted, marginTop: 4, fontSize: 11 }}>{output.details}</div> : null}
+        {output.details ? (
+          <div style={{ color: C.textMuted, marginTop: 4, fontSize: 11 }}>
+            {output.details}
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -142,78 +222,201 @@ function BacktestCard({ output }: { output: BacktestOutput }) {
       const y = 34 - ((v - min) / range) * 30;
       return `${x},${y}`;
     })
-    .join(' ');
+    .join(" ");
 
   return (
-    <div style={{ background: C.panel2, border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden' }}>
-      <div style={{ padding: '12px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `1px solid ${C.border}` }}>
-        <span style={{ fontFamily: FONT_HEAD, fontWeight: 700, fontSize: 14 }}>{symbol} — باك-تست</span>
-        <span style={{ fontFamily: FONT_MONO, fontSize: 10, background: 'rgba(201,162,39,0.12)', color: C.gold, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(201,162,39,0.3)' }}>
+    <div
+      style={{
+        background: C.panel2,
+        border: `1px solid ${C.border}`,
+        borderRadius: 14,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          padding: "12px 14px",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          borderBottom: `1px solid ${C.border}`,
+        }}
+      >
+        <span style={{ fontFamily: FONT_HEAD, fontWeight: 700, fontSize: 14 }}>
+          {symbol} — باك-تست
+        </span>
+        <span
+          style={{
+            fontFamily: FONT_MONO,
+            fontSize: 10,
+            background: "rgba(201,162,39,0.12)",
+            color: C.gold,
+            padding: "3px 8px",
+            borderRadius: 6,
+            border: "1px solid rgba(201,162,39,0.3)",
+          }}
+        >
           {timeframe}
         </span>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 1, background: C.border }}>
-        <div style={{ background: C.panel2, padding: '12px 8px', textAlign: 'center' }}>
-          <div style={{ fontFamily: FONT_MONO, fontSize: 18, fontWeight: 600, color: result.winRate >= 50 ? C.gain : C.loss }}>{result.winRate.toFixed(0)}%</div>
-          <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>نسبة النجاح</div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(3,1fr)",
+          gap: 1,
+          background: C.border,
+        }}
+      >
+        <div
+          style={{
+            background: C.panel2,
+            padding: "12px 8px",
+            textAlign: "center",
+          }}
+        >
+          <div
+            style={{
+              fontFamily: FONT_MONO,
+              fontSize: 18,
+              fontWeight: 600,
+              color: result.winRate >= 50 ? C.gain : C.loss,
+            }}
+          >
+            {result.winRate.toFixed(0)}%
+          </div>
+          <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>
+            نسبة النجاح
+          </div>
         </div>
-        <div style={{ background: C.panel2, padding: '12px 8px', textAlign: 'center' }}>
-          <div style={{ fontFamily: FONT_MONO, fontSize: 18, fontWeight: 600, color: result.totalReturnPct >= 0 ? C.gain : C.loss }}>
-            {result.totalReturnPct >= 0 ? '+' : ''}
+        <div
+          style={{
+            background: C.panel2,
+            padding: "12px 8px",
+            textAlign: "center",
+          }}
+        >
+          <div
+            style={{
+              fontFamily: FONT_MONO,
+              fontSize: 18,
+              fontWeight: 600,
+              color: result.totalReturnPct >= 0 ? C.gain : C.loss,
+            }}
+          >
+            {result.totalReturnPct >= 0 ? "+" : ""}
             {result.totalReturnPct.toFixed(1)}%
           </div>
-          <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>العائد الكلي</div>
+          <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>
+            العائد الكلي
+          </div>
         </div>
-        <div style={{ background: C.panel2, padding: '12px 8px', textAlign: 'center' }}>
-          <div style={{ fontFamily: FONT_MONO, fontSize: 18, fontWeight: 600 }}>{result.totalTrades}</div>
-          <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>صفقات</div>
+        <div
+          style={{
+            background: C.panel2,
+            padding: "12px 8px",
+            textAlign: "center",
+          }}
+        >
+          <div style={{ fontFamily: FONT_MONO, fontSize: 18, fontWeight: 600 }}>
+            {result.totalTrades}
+          </div>
+          <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>
+            صفقات
+          </div>
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 1, background: C.border, borderTop: `1px solid ${C.border}` }}>
-        <div style={{ background: C.panel2, padding: '10px 8px', textAlign: 'center' }}>
-          <div style={{ fontFamily: FONT_MONO, fontSize: 14, fontWeight: 600 }}>{result.maxDrawdownPct.toFixed(1)}%</div>
-          <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>أكبر تراجع</div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 2fr",
+          gap: 1,
+          background: C.border,
+          borderTop: `1px solid ${C.border}`,
+        }}
+      >
+        <div
+          style={{
+            background: C.panel2,
+            padding: "10px 8px",
+            textAlign: "center",
+          }}
+        >
+          <div style={{ fontFamily: FONT_MONO, fontSize: 14, fontWeight: 600 }}>
+            {result.maxDrawdownPct.toFixed(1)}%
+          </div>
+          <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>
+            أكبر تراجع
+          </div>
         </div>
-        <div style={{ background: C.panel2, padding: '10px 8px', textAlign: 'center' }}>
-          <div style={{ fontFamily: FONT_MONO, fontSize: 13, fontWeight: 600 }}>{riskRatio}</div>
-          <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>العائد ÷ المخاطرة</div>
+        <div
+          style={{
+            background: C.panel2,
+            padding: "10px 8px",
+            textAlign: "center",
+          }}
+        >
+          <div style={{ fontFamily: FONT_MONO, fontSize: 13, fontWeight: 600 }}>
+            {riskRatio}
+          </div>
+          <div style={{ fontSize: 10, color: C.textMuted, marginTop: 2 }}>
+            العائد ÷ المخاطرة
+          </div>
         </div>
       </div>
 
       {result.trades.length > 0 && (
         <div style={{ padding: 14, borderTop: `1px solid ${C.border}` }}>
-          <svg width="100%" height="36" viewBox={`0 0 ${width} 36`} preserveAspectRatio="none">
-            <polyline points={svgPoints} fill="none" stroke={result.totalReturnPct >= 0 ? C.gain : C.loss} strokeWidth={2} />
+          <svg
+            width="100%"
+            height="36"
+            viewBox={`0 0 ${width} 36`}
+            preserveAspectRatio="none"
+          >
+            <polyline
+              points={svgPoints}
+              fill="none"
+              stroke={result.totalReturnPct >= 0 ? C.gain : C.loss}
+              strokeWidth={2}
+            />
           </svg>
         </div>
       )}
 
       {result.trades.length > 0 && (
-        <div style={{ padding: '4px 14px 14px' }}>
+        <div style={{ padding: "4px 14px 14px" }}>
           {result.trades.map((t, i) => (
             <div
               key={i}
               style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                padding: '8px 0',
+                display: "flex",
+                justifyContent: "space-between",
+                padding: "8px 0",
                 fontFamily: FONT_MONO,
                 fontSize: 11.5,
                 borderTop: `1px solid ${C.border}`,
               }}
             >
               <span style={{ color: C.textMuted }}>
-                {new Date(t.entryDate).toLocaleDateString('ar')} ← {new Date(t.exitDate).toLocaleDateString('ar')}
+                {new Date(t.entryDate).toLocaleDateString("ar")} ←{" "}
+                {new Date(t.exitDate).toLocaleDateString("ar")}
                 {t.autoClosedAtEnd && (
-                  <span style={{ color: C.warn, marginRight: 6 }} title="أُغلقت افتراضياً - نهاية بيانات الفترة">
+                  <span
+                    style={{ color: C.warn, marginRight: 6 }}
+                    title="أُغلقت افتراضياً - نهاية بيانات الفترة"
+                  >
                     ⚠️ إغلاق افتراضي
                   </span>
                 )}
               </span>
-              <span style={{ color: t.returnPct >= 0 ? C.gain : C.loss, fontWeight: 600 }}>
-                {t.returnPct >= 0 ? '+' : ''}
+              <span
+                style={{
+                  color: t.returnPct >= 0 ? C.gain : C.loss,
+                  fontWeight: 600,
+                }}
+              >
+                {t.returnPct >= 0 ? "+" : ""}
                 {t.returnPct.toFixed(2)}%
               </span>
             </div>
@@ -222,8 +425,20 @@ function BacktestCard({ output }: { output: BacktestOutput }) {
       )}
 
       {smallSample && (
-        <div style={{ margin: '0 14px 14px', background: C.warnBg, border: '1px solid rgba(224,168,62,0.35)', color: C.warn, fontSize: 11.5, padding: '9px 11px', borderRadius: 8, lineHeight: 1.6 }}>
-          ⚠️ {result.totalTrades} صفقة فقط — عينة صغيرة، النتيجة غير موثوقة إحصائياً. تحتاج 30+ صفقة للحكم الفعلي.
+        <div
+          style={{
+            margin: "0 14px 14px",
+            background: C.warnBg,
+            border: "1px solid rgba(224,168,62,0.35)",
+            color: C.warn,
+            fontSize: 11.5,
+            padding: "9px 11px",
+            borderRadius: 8,
+            lineHeight: 1.6,
+          }}
+        >
+          ⚠️ {result.totalTrades} صفقة فقط — عينة صغيرة، النتيجة غير موثوقة
+          إحصائياً. تحتاج 30+ صفقة للحكم الفعلي.
         </div>
       )}
     </div>
@@ -234,49 +449,136 @@ function BacktestCard({ output }: { output: BacktestOutput }) {
 // بطاقة سلسلة الخيارات
 // ============================================
 function OptionsChainCard({ output }: { output: OptionsChainOutput }) {
-  if ('error' in output) {
+  if ("error" in output) {
     return (
-      <div style={{ background: C.panel2, border: `1px solid ${C.loss}`, borderRadius: 14, padding: 14, fontSize: 12.5, color: C.loss }}>
+      <div
+        style={{
+          background: C.panel2,
+          border: `1px solid ${C.loss}`,
+          borderRadius: 14,
+          padding: 14,
+          fontSize: 12.5,
+          color: C.loss,
+        }}
+      >
         ⚠️ {output.error}
       </div>
     );
   }
 
-  const { symbol, expiration, contracts, spotPrice, totalContractsAvailable } = output;
+  const { symbol, expiration, contracts, spotPrice, totalContractsAvailable } =
+    output;
 
   return (
-    <div style={{ background: C.panel2, border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden' }}>
-      <div style={{ padding: '12px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `1px solid ${C.border}` }}>
+    <div
+      style={{
+        background: C.panel2,
+        border: `1px solid ${C.border}`,
+        borderRadius: 14,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          padding: "12px 14px",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          borderBottom: `1px solid ${C.border}`,
+        }}
+      >
         <span style={{ fontFamily: FONT_HEAD, fontWeight: 700, fontSize: 14 }}>
           {symbol} — {expiration}
           {spotPrice !== null && (
-            <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: C.textMuted, fontWeight: 400 }}> · السعر ${spotPrice.toFixed(2)}</span>
+            <span
+              style={{
+                fontFamily: FONT_MONO,
+                fontSize: 11,
+                color: C.textMuted,
+                fontWeight: 400,
+              }}
+            >
+              {" "}
+              · السعر ${spotPrice.toFixed(2)}
+            </span>
           )}
         </span>
-        <span style={{ fontFamily: FONT_MONO, fontSize: 10, background: C.lossBg, color: C.loss, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(229,72,77,0.3)' }}>
+        <span
+          style={{
+            fontFamily: FONT_MONO,
+            fontSize: 10,
+            background: C.lossBg,
+            color: C.loss,
+            padding: "3px 8px",
+            borderRadius: 6,
+            border: "1px solid rgba(229,72,77,0.3)",
+          }}
+        >
           Sandbox متأخر 15د
         </span>
       </div>
 
       {totalContractsAvailable > contracts.length && (
-        <div style={{ padding: '8px 14px 0', fontSize: 10.5, color: C.textMuted, fontFamily: FONT_AR }}>
-          عرض أقرب {contracts.length} عقد للسعر الحالي من أصل {totalContractsAvailable} عقد متاح
+        <div
+          style={{
+            padding: "8px 14px 0",
+            fontSize: 10.5,
+            color: C.textMuted,
+            fontFamily: FONT_AR,
+          }}
+        >
+          عرض أقرب {contracts.length} عقد للسعر الحالي من أصل{" "}
+          {totalContractsAvailable} عقد متاح
         </div>
       )}
 
-      <div style={{ padding: '4px 14px 14px' }}>
+      <div style={{ padding: "4px 14px 14px" }}>
         {contracts.map((c, i) => {
           const liq = liquidityStyle(c.liquidity_quality);
           return (
-            <div key={i} style={{ padding: '9px 0', borderTop: `1px solid ${C.border}` }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontFamily: FONT_MONO, fontSize: 11.5, marginBottom: 5 }}>
+            <div
+              key={i}
+              style={{ padding: "9px 0", borderTop: `1px solid ${C.border}` }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  fontFamily: FONT_MONO,
+                  fontSize: 11.5,
+                  marginBottom: 5,
+                }}
+              >
                 <span>
-                  {c.option_type === 'call' ? 'Call' : 'Put'} {c.strike} · Delta {c.greeks?.delta?.toFixed(2) ?? '—'}
+                  {c.option_type === "call" ? "Call" : "Put"} {c.strike} · Delta{" "}
+                  {c.greeks?.delta?.toFixed(2) ?? "—"}
                 </span>
-                <span style={{ background: liq.bg, color: liq.color, fontSize: 10, padding: '2px 7px', borderRadius: 5 }}>{c.liquidity_quality}</span>
+                <span
+                  style={{
+                    background: liq.bg,
+                    color: liq.color,
+                    fontSize: 10,
+                    padding: "2px 7px",
+                    borderRadius: 5,
+                  }}
+                >
+                  {c.liquidity_quality}
+                </span>
               </div>
-              <div style={{ display: 'flex', gap: 12, fontFamily: FONT_MONO, fontSize: 10, color: C.textMuted }}>
-                <span>Spread {c.spread_pct !== null ? c.spread_pct.toFixed(1) + '%' : '—'}</span>
+              <div
+                style={{
+                  display: "flex",
+                  gap: 12,
+                  fontFamily: FONT_MONO,
+                  fontSize: 10,
+                  color: C.textMuted,
+                }}
+              >
+                <span>
+                  Spread{" "}
+                  {c.spread_pct !== null ? c.spread_pct.toFixed(1) + "%" : "—"}
+                </span>
                 <span>OI {c.open_interest.toLocaleString()}</span>
                 <span>حجم اليوم {c.volume.toLocaleString()}</span>
               </div>
@@ -292,44 +594,136 @@ function OptionsChainCard({ output }: { output: OptionsChainOutput }) {
 // بطاقة المؤشرات الفنية
 // ============================================
 function IndicatorsCard({ output }: { output: TechnicalIndicatorsOutput }) {
-  if ('error' in output) {
+  if ("error" in output) {
     return (
-      <div style={{ background: C.panel2, border: `1px solid ${C.loss}`, borderRadius: 14, padding: 14, fontSize: 12.5, color: C.loss }}>
+      <div
+        style={{
+          background: C.panel2,
+          border: `1px solid ${C.loss}`,
+          borderRadius: 14,
+          padding: 14,
+          fontSize: 12.5,
+          color: C.loss,
+        }}
+      >
         ⚠️ {output.error}
       </div>
     );
   }
 
-  const { symbol, timeframe, lastPrice, rsi, macd, bollingerBands, supportResistance } = output;
+  const {
+    symbol,
+    timeframe,
+    lastPrice,
+    rsi,
+    macd,
+    bollingerBands,
+    supportResistance,
+  } = output;
   const rsiColor = rsi.value >= 70 ? C.loss : rsi.value <= 30 ? C.gain : C.text;
-  const macdColor = macd.histogram > 0 ? C.gain : macd.histogram < 0 ? C.loss : C.textMuted;
+  const macdColor =
+    macd.histogram > 0 ? C.gain : macd.histogram < 0 ? C.loss : C.textMuted;
 
-  const row = (label: string, value: string, color: string, signal?: string) => (
-    <div style={{ padding: '10px 14px', borderTop: `1px solid ${C.border}` }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ fontFamily: FONT_AR, fontSize: 12, color: C.textMuted }}>{label}</span>
-        <span style={{ fontFamily: FONT_MONO, fontSize: 13, fontWeight: 600, color }}>{value}</span>
+  const row = (
+    label: string,
+    value: string,
+    color: string,
+    signal?: string,
+  ) => (
+    <div style={{ padding: "10px 14px", borderTop: `1px solid ${C.border}` }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}
+      >
+        <span style={{ fontFamily: FONT_AR, fontSize: 12, color: C.textMuted }}>
+          {label}
+        </span>
+        <span
+          style={{
+            fontFamily: FONT_MONO,
+            fontSize: 13,
+            fontWeight: 600,
+            color,
+          }}
+        >
+          {value}
+        </span>
       </div>
-      {signal && <div style={{ fontSize: 10.5, color, marginTop: 2 }}>{signal}</div>}
+      {signal && (
+        <div style={{ fontSize: 10.5, color, marginTop: 2 }}>{signal}</div>
+      )}
     </div>
   );
 
   return (
-    <div style={{ background: C.panel2, border: `1px solid ${C.border}`, borderRadius: 14, overflow: 'hidden' }}>
-      <div style={{ padding: '12px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: `1px solid ${C.border}` }}>
+    <div
+      style={{
+        background: C.panel2,
+        border: `1px solid ${C.border}`,
+        borderRadius: 14,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          padding: "12px 14px",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          borderBottom: `1px solid ${C.border}`,
+        }}
+      >
         <span style={{ fontFamily: FONT_HEAD, fontWeight: 700, fontSize: 14 }}>
           {symbol} — مؤشرات فنية
-          <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: C.textMuted, fontWeight: 400 }}> · ${lastPrice.toFixed(2)}</span>
+          <span
+            style={{
+              fontFamily: FONT_MONO,
+              fontSize: 11,
+              color: C.textMuted,
+              fontWeight: 400,
+            }}
+          >
+            {" "}
+            · ${lastPrice.toFixed(2)}
+          </span>
         </span>
-        <span style={{ fontFamily: FONT_MONO, fontSize: 10, background: 'rgba(201,162,39,0.12)', color: C.gold, padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(201,162,39,0.3)' }}>
+        <span
+          style={{
+            fontFamily: FONT_MONO,
+            fontSize: 10,
+            background: "rgba(201,162,39,0.12)",
+            color: C.gold,
+            padding: "3px 8px",
+            borderRadius: 6,
+            border: "1px solid rgba(201,162,39,0.3)",
+          }}
+        >
           {timeframe}
         </span>
       </div>
 
-      {row('RSI (14)', rsi.value.toFixed(1), rsiColor, rsi.signal)}
-      {row('MACD', `${macd.macdLine} / ${macd.signalLine}`, macdColor, macd.signal)}
-      {row('Bollinger Bands', `${bollingerBands.lower} - ${bollingerBands.upper}`, C.text, bollingerBands.signal)}
-      {row('دعم / مقاومة', `$${supportResistance.support} / $${supportResistance.resistance}`, C.text, supportResistance.note)}
+      {row("RSI (14)", rsi.value.toFixed(1), rsiColor, rsi.signal)}
+      {row(
+        "MACD",
+        `${macd.macdLine} / ${macd.signalLine}`,
+        macdColor,
+        macd.signal,
+      )}
+      {row(
+        "Bollinger Bands",
+        `${bollingerBands.lower} - ${bollingerBands.upper}`,
+        C.text,
+        bollingerBands.signal,
+      )}
+      {row(
+        "دعم / مقاومة",
+        `$${supportResistance.support} / $${supportResistance.resistance}`,
+        C.text,
+        supportResistance.note,
+      )}
     </div>
   );
 }
@@ -337,24 +731,64 @@ function IndicatorsCard({ output }: { output: TechnicalIndicatorsOutput }) {
 // ============================================
 // بطاقة تواريخ الاستحقاق
 // ============================================
-function ExpirationsCard({ output, onPick }: { output: any; onPick: (d: string) => void }) {
+function ExpirationsCard({
+  output,
+  onPick,
+}: {
+  output: any;
+  onPick: (d: string) => void;
+}) {
   if (output.error) {
     return (
-      <div style={{ background: C.panel2, border: `1px solid ${C.loss}`, borderRadius: 14, padding: 14, fontSize: 12.5, color: C.loss }}>
+      <div
+        style={{
+          background: C.panel2,
+          border: `1px solid ${C.loss}`,
+          borderRadius: 14,
+          padding: 14,
+          fontSize: 12.5,
+          color: C.loss,
+        }}
+      >
         ⚠️ {output.error}
       </div>
     );
   }
   const dates: string[] = output.expirations || [];
   return (
-    <div style={{ background: C.panel2, border: `1px solid ${C.border}`, borderRadius: 14, padding: 14 }}>
-      <div style={{ fontFamily: FONT_HEAD, fontWeight: 700, fontSize: 13, marginBottom: 10 }}>تواريخ استحقاق {output.symbol}</div>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+    <div
+      style={{
+        background: C.panel2,
+        border: `1px solid ${C.border}`,
+        borderRadius: 14,
+        padding: 14,
+      }}
+    >
+      <div
+        style={{
+          fontFamily: FONT_HEAD,
+          fontWeight: 700,
+          fontSize: 13,
+          marginBottom: 10,
+        }}
+      >
+        تواريخ استحقاق {output.symbol}
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         {dates.slice(0, 8).map((d) => (
           <button
             key={d}
             onClick={() => onPick(d)}
-            style={{ fontFamily: FONT_MONO, fontSize: 11, background: C.panel, border: `1px solid ${C.border}`, color: C.text, padding: '6px 10px', borderRadius: 8, cursor: 'pointer' }}
+            style={{
+              fontFamily: FONT_MONO,
+              fontSize: 11,
+              background: C.panel,
+              border: `1px solid ${C.border}`,
+              color: C.text,
+              padding: "6px 10px",
+              borderRadius: 8,
+              cursor: "pointer",
+            }}
           >
             {d}
           </button>
@@ -365,25 +799,290 @@ function ExpirationsCard({ output, onPick }: { output: any; onPick: (d: string) 
 }
 
 // ============================================
+// بطاقة فحص فرص السوق (get_market_opportunities)
+// ============================================
+function tierStyle(tier: string) {
+  if (tier === "GOLD")
+    return {
+      bg: "rgba(201,162,39,0.14)",
+      color: C.gold,
+      border: "rgba(201,162,39,0.35)",
+    };
+  if (tier === "STRONG")
+    return { bg: C.gainBg, color: C.gain, border: "rgba(47,191,113,0.3)" };
+  return { bg: C.warnBg, color: C.warn, border: "rgba(224,168,62,0.3)" };
+}
+
+function ivSignalLabel(signal: string) {
+  if (signal === "LOW") return "تذبذب منخفض تاريخيًا";
+  if (signal === "HIGH") return "تذبذب مرتفع تاريخيًا";
+  if (signal === "NORMAL") return "تذبذب ضمن المعتاد";
+  return "بيانات IV غير كافية";
+}
+
+function OpportunityRow({ opp }: { opp: MarketOpportunity }) {
+  const tier = tierStyle(opp.tier);
+  const status = opp.triggerStatus ?? opp.status ?? "WAIT_TRIGGER";
+  const statusLabel =
+    status === "WAIT_TRIGGER" ? "بانتظار تأكيد الدخول" : status;
+
+  return (
+    <div style={{ padding: "12px 14px", borderTop: `1px solid ${C.border}` }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 6,
+        }}
+      >
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span
+            style={{
+              background: tier.bg,
+              color: tier.color,
+              border: `1px solid ${tier.border}`,
+              fontSize: 10.5,
+              fontWeight: 700,
+              padding: "2px 8px",
+              borderRadius: 6,
+              fontFamily: FONT_MONO,
+            }}
+          >
+            {opp.tier}
+          </span>
+          <span
+            style={{ fontFamily: FONT_MONO, fontSize: 12.5, fontWeight: 600 }}
+          >
+            {opp.underlying} · {opp.direction === "CALL" ? "Call" : "Put"}{" "}
+            {opp.strike}
+          </span>
+        </div>
+        <span
+          style={{ fontFamily: FONT_MONO, fontSize: 11, color: C.textMuted }}
+        >
+          {opp.expiration} · {opp.daysToExpiration} DTE
+        </span>
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          gap: 14,
+          fontFamily: FONT_MONO,
+          fontSize: 10.5,
+          color: C.textMuted,
+          marginBottom: 6,
+          flexWrap: "wrap",
+        }}
+      >
+        <span>السعر ${opp.midpoint.toFixed(2)}</span>
+        <span>جودة العقد {opp.score}</span>
+        <span style={{ color: C.gold, fontWeight: 600 }}>
+          Final Score {opp.finalScore}
+        </span>
+        <span>سبريد {opp.spreadPercent.toFixed(1)}%</span>
+        <span>OI {opp.openInterest.toLocaleString()}</span>
+        <span>حجم {opp.volume.toLocaleString()}</span>
+      </div>
+
+      {opp.ivContext && (
+        <div style={{ fontSize: 10.5, color: C.textMuted, marginBottom: 6 }}>
+          IV: {ivSignalLabel(opp.ivContext.signal)}
+          {opp.ivContext.ivRank !== null
+            ? ` · IV Rank ${opp.ivContext.ivRank.toFixed(0)}`
+            : ""}
+        </div>
+      )}
+
+      {opp.reasons?.length > 0 && (
+        <div
+          style={{
+            fontSize: 11,
+            color: C.gain,
+            lineHeight: 1.7,
+            marginBottom: opp.warnings?.length ? 4 : 0,
+          }}
+        >
+          {opp.reasons.map((r, i) => (
+            <div key={i}>✓ {r}</div>
+          ))}
+        </div>
+      )}
+
+      {opp.warnings?.length > 0 && (
+        <div style={{ fontSize: 11, color: C.warn, lineHeight: 1.7 }}>
+          {opp.warnings.map((w, i) => (
+            <div key={i}>⚠️ {w}</div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ marginTop: 8 }}>
+        <span
+          style={{
+            fontFamily: FONT_MONO,
+            fontSize: 10,
+            background: C.panel,
+            border: `1px solid ${C.border}`,
+            color: C.textMuted,
+            padding: "3px 8px",
+            borderRadius: 6,
+          }}
+        >
+          {statusLabel}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function OpportunitiesCard({ output }: { output: MarketOpportunitiesOutput }) {
+  if ("error" in output) {
+    return (
+      <div
+        style={{
+          background: C.panel2,
+          border: `1px solid ${C.loss}`,
+          borderRadius: 14,
+          padding: 14,
+          fontSize: 12.5,
+          color: C.loss,
+        }}
+      >
+        ⚠️ {output.error}
+      </div>
+    );
+  }
+
+  const {
+    strategy,
+    status,
+    opportunities,
+    message,
+    contractsScanned,
+    qualifiedContracts,
+  } = output;
+
+  const statusStyle =
+    status === "OPPORTUNITIES_FOUND"
+      ? { bg: C.gainBg, color: C.gain }
+      : status === "WAIT"
+        ? { bg: C.warnBg, color: C.warn }
+        : { bg: C.panel, color: C.textMuted };
+
+  const statusLabel =
+    status === "OPPORTUNITIES_FOUND"
+      ? "فرص متاحة"
+      : status === "WAIT"
+        ? "السوق غير واضح"
+        : "لا توجد فرصة الآن";
+
+  return (
+    <div
+      style={{
+        background: C.panel2,
+        border: `1px solid ${C.border}`,
+        borderRadius: 14,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          padding: "12px 14px",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          borderBottom: `1px solid ${C.border}`,
+        }}
+      >
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span
+            style={{ fontFamily: FONT_HEAD, fontWeight: 700, fontSize: 14 }}
+          >
+            فحص فرص السوق
+          </span>
+          <span
+            style={{
+              fontFamily: FONT_MONO,
+              fontSize: 10,
+              background: "rgba(201,162,39,0.12)",
+              color: C.gold,
+              padding: "3px 8px",
+              borderRadius: 6,
+              border: "1px solid rgba(201,162,39,0.3)",
+            }}
+          >
+            {strategy}
+          </span>
+        </div>
+        <span
+          style={{
+            fontFamily: FONT_MONO,
+            fontSize: 10,
+            background: statusStyle.bg,
+            color: statusStyle.color,
+            padding: "3px 8px",
+            borderRadius: 6,
+          }}
+        >
+          {statusLabel}
+        </span>
+      </div>
+
+      {(typeof contractsScanned === "number" ||
+        typeof qualifiedContracts === "number") && (
+        <div
+          style={{
+            padding: "8px 14px 0",
+            fontSize: 10.5,
+            color: C.textMuted,
+            fontFamily: FONT_AR,
+          }}
+        >
+          فحص {contractsScanned ?? 0} عقد، اجتاز الفلترة{" "}
+          {qualifiedContracts ?? 0} عقد
+        </div>
+      )}
+
+      {opportunities.length === 0 ? (
+        <div
+          style={{
+            padding: 14,
+            fontSize: 12.5,
+            color: C.textMuted,
+            lineHeight: 1.8,
+          }}
+        >
+          {message}
+        </div>
+      ) : (
+        opportunities.map((opp) => <OpportunityRow key={opp.rank} opp={opp} />)
+      )}
+    </div>
+  );
+}
+
+// ============================================
 // الصفحة الرئيسية
 // ============================================
 export default function FahdPage() {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [ticker, setTicker] = useState<TickerQuote[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
   useEffect(() => {
     let active = true;
     async function loadTicker() {
       try {
-        const res = await fetch('/api/market-ticker');
+        const res = await fetch("/api/market-ticker");
         const data = await res.json();
         if (active && data.quotes) setTicker(data.quotes);
       } catch {
@@ -402,25 +1101,38 @@ export default function FahdPage() {
     const text = (overrideText ?? input).trim();
     if (!text || loading) return;
 
-    setInput('');
-    setMessages((prev) => [...prev, { role: 'user', content: text }]);
+    setInput("");
+    setMessages((prev) => [...prev, { role: "user", content: text }]);
     setLoading(true);
 
     try {
-      const res = await fetch('/api/fahd-chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+      const res = await fetch("/api/fahd-chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text }),
       });
       const data = await res.json();
 
       if (data.reply) {
-        setMessages((prev) => [...prev, { role: 'assistant', content: data.reply, toolResults: data.toolResults || [] }]);
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: data.reply,
+            toolResults: data.toolResults || [],
+          },
+        ]);
       } else {
-        setMessages((prev) => [...prev, { role: 'assistant', content: 'صار خطأ، حاول مرة ثانية.' }]);
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: "صار خطأ، حاول مرة ثانية." },
+        ]);
       }
     } catch {
-      setMessages((prev) => [...prev, { role: 'assistant', content: 'تعذر الاتصال بالخادم.' }]);
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "تعذر الاتصال بالخادم." },
+      ]);
     } finally {
       setLoading(false);
     }
@@ -432,15 +1144,36 @@ export default function FahdPage() {
   }
 
   function renderToolResult(tr: ToolResult, key: number) {
-    if (tr.name === 'get_technical_indicators') return <IndicatorsCard key={key} output={tr.output as TechnicalIndicatorsOutput} />;
-    if (tr.name === 'run_backtest') return <BacktestCard key={key} output={tr.output as BacktestOutput} />;
-    if (tr.name === 'get_options_chain') return <OptionsChainCard key={key} output={tr.output as OptionsChainOutput} />;
-    if (tr.name === 'get_options_expirations') {
+    if (tr.name === "get_technical_indicators")
+      return (
+        <IndicatorsCard
+          key={key}
+          output={tr.output as TechnicalIndicatorsOutput}
+        />
+      );
+    if (tr.name === "run_backtest")
+      return <BacktestCard key={key} output={tr.output as BacktestOutput} />;
+    if (tr.name === "get_options_chain")
+      return (
+        <OptionsChainCard key={key} output={tr.output as OptionsChainOutput} />
+      );
+    if (tr.name === "get_market_opportunities")
+      return (
+        <OpportunitiesCard
+          key={key}
+          output={tr.output as MarketOpportunitiesOutput}
+        />
+      );
+    if (tr.name === "get_options_expirations") {
       return (
         <ExpirationsCard
           key={key}
           output={tr.output}
-          onPick={(d) => sendMessage(`قيّم لي خيارات ${tr.output.symbol} بتاريخ استحقاق ${d}`)}
+          onPick={(d) =>
+            sendMessage(
+              `قيّم لي خيارات ${tr.output.symbol} بتاريخ استحقاق ${d}`,
+            )
+          }
         />
       );
     }
@@ -450,7 +1183,15 @@ export default function FahdPage() {
   const tickerDouble = [...ticker, ...ticker];
 
   return (
-    <div style={{ minHeight: '100vh', background: C.bg, color: C.text, fontFamily: FONT_AR, direction: 'rtl' }}>
+    <div
+      style={{
+        minHeight: "100vh",
+        background: C.bg,
+        color: C.text,
+        fontFamily: FONT_AR,
+        direction: "rtl",
+      }}
+    >
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@500;700;900&family=IBM+Plex+Sans+Arabic:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
         @keyframes fahd-ticker-scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
@@ -464,14 +1205,32 @@ export default function FahdPage() {
       {/* شريط الأسعار الحي */}
       {ticker.length > 0 && (
         <>
-          <div style={{ position: 'sticky', top: 0, background: '#08090B', borderBottom: `1px solid ${C.border}`, padding: '8px 0', overflow: 'hidden', whiteSpace: 'nowrap', fontFamily: FONT_MONO, fontSize: 12, zIndex: 11 }}>
+          <div
+            style={{
+              position: "sticky",
+              top: 0,
+              background: "#08090B",
+              borderBottom: `1px solid ${C.border}`,
+              padding: "8px 0",
+              overflow: "hidden",
+              whiteSpace: "nowrap",
+              fontFamily: FONT_MONO,
+              fontSize: 12,
+              zIndex: 11,
+            }}
+          >
             <div className="fahd-ticker-track">
               {tickerDouble.map((q, i) => (
-                <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <div
+                  key={i}
+                  style={{ display: "flex", gap: 6, alignItems: "center" }}
+                >
                   <span style={{ color: C.textMuted }}>{q.symbol}</span>
-                  <span style={{ color: C.text, fontWeight: 500 }}>{q.price.toFixed(2)}</span>
+                  <span style={{ color: C.text, fontWeight: 500 }}>
+                    {q.price.toFixed(2)}
+                  </span>
                   <span style={{ color: q.changePct >= 0 ? C.gain : C.loss }}>
-                    {q.changePct >= 0 ? '▲' : '▼'}
+                    {q.changePct >= 0 ? "▲" : "▼"}
                     {Math.abs(q.changePct).toFixed(2)}%
                   </span>
                 </div>
@@ -482,75 +1241,264 @@ export default function FahdPage() {
       )}
 
       {/* رأس الصفحة */}
-      <div style={{ position: 'sticky', top: ticker.length > 0 ? 33 : 0, background: '#111118', borderBottom: `1px solid ${C.border}`, padding: '14px 22px', display: 'flex', alignItems: 'center', gap: 14, zIndex: 10 }}>
-        <div style={{ width: 46, height: 46, borderRadius: '50%', background: `linear-gradient(135deg, ${C.gold}, ${C.goldDim})`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, fontWeight: 900, color: '#000', fontFamily: FONT_HEAD }}>
+      <div
+        style={{
+          position: "sticky",
+          top: ticker.length > 0 ? 33 : 0,
+          background: "#111118",
+          borderBottom: `1px solid ${C.border}`,
+          padding: "14px 22px",
+          display: "flex",
+          alignItems: "center",
+          gap: 14,
+          zIndex: 10,
+        }}
+      >
+        <div
+          style={{
+            width: 46,
+            height: 46,
+            borderRadius: "50%",
+            background: `linear-gradient(135deg, ${C.gold}, ${C.goldDim})`,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 20,
+            fontWeight: 900,
+            color: "#000",
+            fontFamily: FONT_HEAD,
+          }}
+        >
           ف
         </div>
         <div>
-          <div style={{ fontSize: 17, fontWeight: 700, color: C.gold, fontFamily: FONT_HEAD }}>فهد</div>
-          <div style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.gain, display: 'inline-block' }} />
+          <div
+            style={{
+              fontSize: 17,
+              fontWeight: 700,
+              color: C.gold,
+              fontFamily: FONT_HEAD,
+            }}
+          >
+            فهد
+          </div>
+          <div
+            style={{
+              fontSize: 11,
+              display: "flex",
+              alignItems: "center",
+              gap: 5,
+              flexWrap: "wrap",
+            }}
+          >
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                background: C.gain,
+                display: "inline-block",
+              }}
+            />
             <span style={{ color: C.gain }}>السوق: حي</span>
             <span style={{ color: C.textMuted }}>·</span>
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.warn, display: 'inline-block' }} />
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                background: C.warn,
+                display: "inline-block",
+              }}
+            />
             <span style={{ color: C.warn }}>الخيارات: متأخرة 15د</span>
           </div>
         </div>
-        <div style={{ marginRight: 'auto' }}>
-          <a href="/" style={{ padding: '6px 14px', borderRadius: 10, background: '#16161f', border: `1px solid ${C.border}`, color: '#c8c8d4', fontSize: 13, textDecoration: 'none' }}>
+        <div style={{ marginRight: "auto" }}>
+          <a
+            href="/"
+            style={{
+              padding: "6px 14px",
+              borderRadius: 10,
+              background: "#16161f",
+              border: `1px solid ${C.border}`,
+              color: "#c8c8d4",
+              fontSize: 13,
+              textDecoration: "none",
+            }}
+          >
             ← أحمد
           </a>
         </div>
       </div>
 
-      <div style={{ maxWidth: 720, margin: '0 auto', padding: '24px 16px 100px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div
+        style={{
+          maxWidth: 720,
+          margin: "0 auto",
+          padding: "24px 16px 100px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 14,
+        }}
+      >
         {messages.length === 0 && (
           <>
-            <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 16, padding: '18px 20px', fontSize: 14, lineHeight: 1.9, color: '#c8c8d4' }}>
+            <div
+              style={{
+                background: C.panel,
+                border: `1px solid ${C.border}`,
+                borderRadius: 16,
+                padding: "18px 20px",
+                fontSize: 14,
+                lineHeight: 1.9,
+                color: "#c8c8d4",
+              }}
+            >
               أنا فهد، محلل التداول 📈
               <br />
               <br />
-              دوري أساعدك تطور نفسك كمتداول - أحلل معك الأسهم، أشغّل باك-تست على استراتيجيات، أقيّم عقود الخيارات، وأذكرك دائماً إن القرار والتنفيذ النهائي بيدك انت.
+              دوري أساعدك تطور نفسك كمتداول - أحلل معك الأسهم، أشغّل باك-تست على
+              استراتيجيات، أقيّم عقود الخيارات، وأذكرك دائماً إن القرار والتنفيذ
+              النهائي بيدك انت.
               <br />
               <br />
               وش تحب نسوي اليوم؟
             </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button className="fahd-qa-btn" onClick={() => quickFill('حلل لي سهم ')} style={{ background: C.panel2, border: `1px solid ${C.border}`, color: C.text, fontFamily: FONT_AR, fontSize: 12, padding: '8px 12px', borderRadius: 10, cursor: 'pointer' }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button
+                className="fahd-qa-btn"
+                onClick={() => quickFill("حلل لي سهم ")}
+                style={{
+                  background: C.panel2,
+                  border: `1px solid ${C.border}`,
+                  color: C.text,
+                  fontFamily: FONT_AR,
+                  fontSize: 12,
+                  padding: "8px 12px",
+                  borderRadius: 10,
+                  cursor: "pointer",
+                }}
+              >
                 📊 حلل سهم
               </button>
-              <button className="fahd-qa-btn" onClick={() => quickFill('شغّل لي باك-تست على ')} style={{ background: C.panel2, border: `1px solid ${C.border}`, color: C.text, fontFamily: FONT_AR, fontSize: 12, padding: '8px 12px', borderRadius: 10, cursor: 'pointer' }}>
+              <button
+                className="fahd-qa-btn"
+                onClick={() => quickFill("شغّل لي باك-تست على ")}
+                style={{
+                  background: C.panel2,
+                  border: `1px solid ${C.border}`,
+                  color: C.text,
+                  fontFamily: FONT_AR,
+                  fontSize: 12,
+                  padding: "8px 12px",
+                  borderRadius: 10,
+                  cursor: "pointer",
+                }}
+              >
                 🔁 باك-تست
               </button>
-              <button className="fahd-qa-btn" onClick={() => quickFill('قيّم لي خيارات ')} style={{ background: C.panel2, border: `1px solid ${C.border}`, color: C.text, fontFamily: FONT_AR, fontSize: 12, padding: '8px 12px', borderRadius: 10, cursor: 'pointer' }}>
+              <button
+                className="fahd-qa-btn"
+                onClick={() => quickFill("قيّم لي خيارات ")}
+                style={{
+                  background: C.panel2,
+                  border: `1px solid ${C.border}`,
+                  color: C.text,
+                  fontFamily: FONT_AR,
+                  fontSize: 12,
+                  padding: "8px 12px",
+                  borderRadius: 10,
+                  cursor: "pointer",
+                }}
+              >
                 🎯 قيّم خيارات
               </button>
-              <button className="fahd-qa-btn" onClick={() => quickFill('حلل لي المؤشرات الفنية لـ ')} style={{ background: C.panel2, border: `1px solid ${C.border}`, color: C.text, fontFamily: FONT_AR, fontSize: 12, padding: '8px 12px', borderRadius: 10, cursor: 'pointer' }}>
+              <button
+                className="fahd-qa-btn"
+                onClick={() => quickFill("حلل لي المؤشرات الفنية لـ ")}
+                style={{
+                  background: C.panel2,
+                  border: `1px solid ${C.border}`,
+                  color: C.text,
+                  fontFamily: FONT_AR,
+                  fontSize: 12,
+                  padding: "8px 12px",
+                  borderRadius: 10,
+                  cursor: "pointer",
+                }}
+              >
                 📐 مؤشرات فنية
+              </button>
+              <button
+                className="fahd-qa-btn"
+                onClick={() => quickFill("ابحث لي عن فرص تداول الحين")}
+                style={{
+                  background: C.panel2,
+                  border: `1px solid ${C.border}`,
+                  color: C.text,
+                  fontFamily: FONT_AR,
+                  fontSize: 12,
+                  padding: "8px 12px",
+                  borderRadius: 10,
+                  cursor: "pointer",
+                }}
+              >
+                🔍 فرص تداول
               </button>
             </div>
           </>
         )}
 
         {messages.map((m, i) => (
-          <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: m.role === 'user' ? 'flex-start' : 'flex-end' }}>
-            {m.role === 'assistant' && <div style={{ fontFamily: FONT_HEAD, fontSize: 11, color: C.gold, fontWeight: 700 }}>فهد</div>}
+          <div
+            key={i}
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+              alignItems: m.role === "user" ? "flex-start" : "flex-end",
+            }}
+          >
+            {m.role === "assistant" && (
+              <div
+                style={{
+                  fontFamily: FONT_HEAD,
+                  fontSize: 11,
+                  color: C.gold,
+                  fontWeight: 700,
+                }}
+              >
+                فهد
+              </div>
+            )}
             <div
               style={{
-                background: m.role === 'user' ? C.panel2 : 'linear-gradient(135deg, #2a3f1e, #1a2e0e)',
-                border: `1px solid ${m.role === 'user' ? C.border : '#3d5a1e'}`,
+                background:
+                  m.role === "user"
+                    ? C.panel2
+                    : "linear-gradient(135deg, #2a3f1e, #1a2e0e)",
+                border: `1px solid ${m.role === "user" ? C.border : "#3d5a1e"}`,
                 borderRadius: 16,
-                padding: '11px 15px',
-                maxWidth: '85%',
+                padding: "11px 15px",
+                maxWidth: "85%",
                 fontSize: 14,
                 lineHeight: 1.75,
-                whiteSpace: 'pre-wrap',
+                whiteSpace: "pre-wrap",
               }}
             >
               {m.content}
             </div>
             {m.toolResults && m.toolResults.length > 0 && (
-              <div style={{ width: '100%', maxWidth: '90%', display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div
+                style={{
+                  width: "100%",
+                  maxWidth: "90%",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 10,
+                }}
+              >
                 {m.toolResults.map((tr, j) => renderToolResult(tr, j))}
               </div>
             )}
@@ -558,7 +1506,21 @@ export default function FahdPage() {
         ))}
 
         {loading && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: C.panel, border: `1px solid ${C.border}`, borderRadius: 16, padding: '11px 15px', width: 'fit-content', fontFamily: FONT_MONO, fontSize: 12, color: C.textMuted }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              background: C.panel,
+              border: `1px solid ${C.border}`,
+              borderRadius: 16,
+              padding: "11px 15px",
+              width: "fit-content",
+              fontFamily: FONT_MONO,
+              fontSize: 12,
+              color: C.textMuted,
+            }}
+          >
             <div className="fahd-spin" />
             فهد يشتغل...
           </div>
@@ -566,18 +1528,51 @@ export default function FahdPage() {
         <div ref={bottomRef} />
       </div>
 
-      <div style={{ position: 'fixed', bottom: 0, width: '100%', background: '#111118', borderTop: `1px solid ${C.border}`, padding: '14px 22px' }}>
-        <div style={{ maxWidth: 720, margin: '0 auto', display: 'flex', gap: 10 }}>
+      <div
+        style={{
+          position: "fixed",
+          bottom: 0,
+          width: "100%",
+          background: "#111118",
+          borderTop: `1px solid ${C.border}`,
+          padding: "14px 22px",
+        }}
+      >
+        <div
+          style={{ maxWidth: 720, margin: "0 auto", display: "flex", gap: 10 }}
+        >
           <input
             ref={inputRef}
             className="fahd-input"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
+            onKeyDown={(e) => e.key === "Enter" && sendMessage()}
             placeholder="اسأل فهد عن سهم أو صفقة أو خيارات..."
-            style={{ flex: 1, background: C.panel2, border: `1px solid ${C.border}`, borderRadius: 12, padding: '11px 15px', color: C.text, fontFamily: FONT_AR, fontSize: 14, outline: 'none' }}
+            style={{
+              flex: 1,
+              background: C.panel2,
+              border: `1px solid ${C.border}`,
+              borderRadius: 12,
+              padding: "11px 15px",
+              color: C.text,
+              fontFamily: FONT_AR,
+              fontSize: 14,
+              outline: "none",
+            }}
           />
-          <button onClick={() => sendMessage()} disabled={loading} style={{ width: 44, height: 44, background: C.gold, border: 'none', borderRadius: 12, cursor: 'pointer', fontSize: 18 }}>
+          <button
+            onClick={() => sendMessage()}
+            disabled={loading}
+            style={{
+              width: 44,
+              height: 44,
+              background: C.gold,
+              border: "none",
+              borderRadius: 12,
+              cursor: "pointer",
+              fontSize: 18,
+            }}
+          >
             ↑
           </button>
         </div>
