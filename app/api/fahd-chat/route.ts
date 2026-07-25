@@ -1845,14 +1845,15 @@ export async function POST(req: NextRequest) {
               : "غير محدد";
 
         return (
-          `تم فحص ${scan.contractsScanned ?? 0} عقد` +
+          `لا توجد حاليًا أي فرصة SPXW تستوفي معايير الجودة والسيولة والاتجاه.\n\n` +
+          `تم فحص ${scan.contractsScanned ?? 0} عقد من سلسلة SPX،` +
           (typeof scan.spxwContractsFound === "number"
-            ? ` (${scan.spxwContractsFound} منها SPXW)`
+            ? ` وتم التعرف على ${scan.spxwContractsFound} عقد SPXW،`
             : "") +
-          ` ولم يجتز أي عقد شروط الجودة والسيولة والاتجاه الحالية.` +
-          ` اتجاه السوق العام: ${biasLabel}.` +
+          ` ولم يجتز أي عقد SPXW شروط الجودة والسيولة والاتجاه الحالية.` +
+          ` انحياز السوق: ${biasLabel}.` +
           (typeof scan.underlyingPrice === "number"
-            ? ` سعر SPX المستخدم حقيقي من Tradier (${scan.underlyingPrice})، وليس مشتقًا من SPY.`
+            ? ` سعر SPX الحقيقي المستخدم من Tradier (${scan.underlyingPrice})، وليس مشتقًا من SPY.`
             : "") +
           ` لا توجد خطة Trigger لأن المسح لم ينتج فرصة مؤهلة.`
         );
