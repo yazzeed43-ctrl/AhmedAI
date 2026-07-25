@@ -41,6 +41,19 @@ interface CandleValue {
   volume?: string;
 }
 
+export interface LatestCompletedCandle {
+  symbol: string;
+  timeframe: '5min';
+  startTime: string;
+  endTime: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  isClosed: true;
+  source: 'Twelve Data';
+}
+
 interface TwelveDataResponse {
   meta?: {
     symbol?: string;
@@ -697,6 +710,76 @@ function cleanupIndicatorCache() {
       indicatorCache.delete(key);
     }
   }
+}
+
+export async function getLatestCompletedFiveMinuteCandle(
+  symbol: string,
+  now = new Date()
+): Promise<LatestCompletedCandle> {
+  const normalizedSymbol =
+    normalizeRequestedSymbol(
+      symbol.toUpperCase().trim()
+    );
+
+  const { data } =
+    await fetchTwelveDataTimeSeries(
+      normalizedSymbol,
+      '5min',
+      true
+    );
+
+  const completed =
+    [...data.values]
+      .reverse()
+      .filter((value) => {
+        const timing =
+          getIntradayCandleTiming(
+            value.datetime,
+            '5min'
+          );
+
+        return Boolean(
+          timing &&
+          timing.candleEnd.getTime() <=
+            now.getTime()
+        );
+      });
+
+  const latest =
+    completed[completed.length - 1];
+
+  if (!latest) {
+    throw new Error(
+      'لم تتوفر شمعة SPX مغلقة لفريم 5 دقائق.'
+    );
+  }
+
+  const timing =
+    getIntradayCandleTiming(
+      latest.datetime,
+      '5min'
+    );
+
+  if (!timing) {
+    throw new Error(
+      'تعذر التحقق من وقت إغلاق شمعة SPX لفريم 5 دقائق.'
+    );
+  }
+
+  return {
+    symbol: normalizedSymbol,
+    timeframe: '5min',
+    startTime:
+      timing.candleStart.toISOString(),
+    endTime:
+      timing.candleEnd.toISOString(),
+    open: Number(latest.open),
+    high: Number(latest.high),
+    low: Number(latest.low),
+    close: Number(latest.close),
+    isClosed: true,
+    source: 'Twelve Data',
+  };
 }
 
 export async function getTechnicalIndicators(

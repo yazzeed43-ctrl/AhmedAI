@@ -3,12 +3,16 @@ import {
   getRealSpxPriceSnapshot,
 } from "./spxw-scanner-v3";
 import { canBuildSpxwTriggerFromQuote } from "./spx-price-freshness";
+import { getLatestCompletedFiveMinuteCandle } from "@/lib/market-indicators";
+import {
+  evaluateSpxwCandleConfirmation,
+  type FixedTriggerState,
+  type SpxwCandleConfirmationState,
+} from "./spxw-candle-confirmation";
 
 type TriggerState =
-  | "PRICE_TRIGGERED"
-  | "WAIT_TRIGGER"
+  | SpxwCandleConfirmationState
   | "WAIT_FRESH_PRICE"
-  | "CANCELLED"
   | "NO_OPPORTUNITY";
 
 type SpxwScanResult = Awaited<ReturnType<typeof scanSpxwOpportunitiesV3>>;
@@ -35,32 +39,78 @@ function round(value: number, decimals = 2): number {
 // هذا يفصل "بناء الخطة" عن "فحصها لاحقًا" فعليًا: مفيدة لاستدعاء مستقل
 // بعد دقائق/ساعات من البناء، بدون ما تعيد حساب triggerPrice من سعر جديد
 // (لو أعدنا حسابه، الهدف يتحرك مع كل فحص بدل ما يثبت).
-export function checkSpxwTriggerPlan(
-  plan: {
-    direction: "CALL" | "PUT";
-    triggerPrice: number;
-    invalidationPrice: number;
-  },
-  currentSpxPrice: number,
-): TriggerState {
-  const triggered =
-    plan.direction === "CALL"
-      ? currentSpxPrice >= plan.triggerPrice
-      : currentSpxPrice <= plan.triggerPrice;
+const STATE_PRIORITY: Record<SpxwCandleConfirmationState, number> = {
+  WAIT_TRIGGER: 1,
+  PRICE_TOUCHED: 2,
+  WAIT_CANDLE_CLOSE: 3,
+  CANDLE_CONFIRMED: 4,
+  CANCELLED: 5,
+};
 
-  const cancelled =
-    plan.direction === "CALL"
-      ? currentSpxPrice <= plan.invalidationPrice
-      : currentSpxPrice >= plan.invalidationPrice;
+function overallConfirmationState(
+  states: SpxwCandleConfirmationState[],
+): SpxwCandleConfirmationState {
+  return states.reduce(
+    (highest, state) =>
+      STATE_PRIORITY[state] > STATE_PRIORITY[highest] ? state : highest,
+    "WAIT_TRIGGER",
+  );
+}
 
-  // ملاحظة مهمة: "PRICE_TRIGGERED" يعني السعر اللحظي لمس/كسر المستوى فقط —
-  // مو تأكيد إغلاق شمعة 5 دقائق. تأكيد الشمعة شرط منفصل لازم يتحقق منه
-  // بمكان ثاني (يدويًا أو بمنطق شموع مستقبلي) قبل الدخول الفعلي.
-  return cancelled
-    ? "CANCELLED"
-    : triggered
-      ? "PRICE_TRIGGERED"
-      : "WAIT_TRIGGER";
+export async function followFixedSpxwTriggerPlans<
+  T extends FixedTriggerState,
+>(plans: T[]) {
+  const evaluatedAt = new Date();
+  const currentSpxQuote = await getRealSpxPriceSnapshot();
+
+  if (!canBuildSpxwTriggerFromQuote(currentSpxQuote)) {
+    return {
+      generatedAt: evaluatedAt.toISOString(),
+      state: "WAIT_FRESH_PRICE" as TriggerState,
+      plans,
+      priceFreshness: currentSpxQuote,
+      lastClosedCandle: null,
+      message:
+        "تعذر متابعة الخطة بسعر SPX لحظي؛ بقيت المستويات ثابتة ولم تصدر إشارة دخول.",
+    };
+  }
+
+  const lastClosedCandle = await getLatestCompletedFiveMinuteCandle(
+    "SPX",
+    evaluatedAt,
+  ).catch(() => null);
+
+  const evaluatedPlans = plans.map((plan) => ({
+    ...plan,
+    ...evaluateSpxwCandleConfirmation({
+      plan,
+      currentSpxPrice: currentSpxQuote.price,
+      lastClosedCandle,
+      evaluatedAt,
+    }),
+    currentUnderlyingPrice: round(currentSpxQuote.price),
+  }));
+  const state = overallConfirmationState(
+    evaluatedPlans.map((plan) => plan.state),
+  );
+
+  return {
+    generatedAt: evaluatedAt.toISOString(),
+    state,
+    plans: evaluatedPlans,
+    priceFreshness: currentSpxQuote,
+    lastClosedCandle,
+    message:
+      state === "CANCELLED"
+        ? "أُلغيت الخطة بعد تحقق مستوى الإبطال قبل تأكيد الشمعة."
+        : state === "CANDLE_CONFIRMED"
+          ? "أكدت آخر شمعة 5 دقائق مغلقة مستوى التفعيل."
+          : state === "WAIT_CANDLE_CLOSE"
+            ? "تم لمس السعر سابقًا وما زال إغلاق شمعة 5 دقائق مؤكدة مطلوبًا."
+            : state === "PRICE_TOUCHED"
+              ? "تم لمس مستوى التفعيل؛ بانتظار إغلاق شمعة 5 دقائق لاحقة."
+              : "لم يصل SPX إلى مستوى التفعيل بعد.",
+  };
 }
 
 export async function buildSpxwTriggerPlan(config: SpxwTriggerConfig = {}) {
@@ -136,6 +186,12 @@ export async function buildSpxwTriggerPlan(config: SpxwTriggerConfig = {}) {
 
   const market = scan.market;
 
+  const createdAt = new Date();
+  const lastClosedCandle = await getLatestCompletedFiveMinuteCandle(
+    "SPX",
+    createdAt,
+  ).catch(() => null);
+
   const plans = scan.opportunities.map((opportunity) => {
     const isCall = opportunity.direction === "CALL";
 
@@ -155,14 +211,16 @@ export async function buildSpxwTriggerPlan(config: SpxwTriggerConfig = {}) {
       ? triggerPrice + target2
       : triggerPrice - target2;
 
-    const state = checkSpxwTriggerPlan(
-      {
+    const confirmation = evaluateSpxwCandleConfirmation({
+      plan: {
         direction: opportunity.direction,
         triggerPrice,
         invalidationPrice,
       },
       currentSpxPrice,
-    );
+      lastClosedCandle,
+      evaluatedAt: createdAt,
+    });
 
     const riskPoints = Math.abs(triggerPrice - invalidationPrice);
     const reward1Points = Math.abs(target1Price - triggerPrice);
@@ -178,7 +236,10 @@ export async function buildSpxwTriggerPlan(config: SpxwTriggerConfig = {}) {
       finalScore: opportunity.finalScore,
       marketBias: opportunity.marketBias,
       marketScore: opportunity.marketScore,
-      state,
+      state: confirmation.state,
+      priceTouchedAt: confirmation.priceTouchedAt,
+      confirmedCandle: confirmation.confirmedCandle,
+      createdAt: createdAt.toISOString(),
       // مو نفس الرقم بالضرورة: reference هو سعر لحظة اكتشاف الفرصة
       // (اللي حُسبت منه مستويات trigger/invalidation/target)، وcurrent
       // هو سعر حي جديد وقت فحص التفعيل نفسه.
@@ -210,30 +271,26 @@ export async function buildSpxwTriggerPlan(config: SpxwTriggerConfig = {}) {
     };
   });
 
-  const hasActiveTrigger = plans.some(
-    (plan) => plan.state === "PRICE_TRIGGERED",
+  const overallState: TriggerState = overallConfirmationState(
+    plans.map((plan) => plan.state),
   );
-
-  const allCancelled =
-    plans.length > 0 && plans.every((plan) => plan.state === "CANCELLED");
-
-  const overallState: TriggerState = allCancelled
-    ? "CANCELLED"
-    : hasActiveTrigger
-      ? "PRICE_TRIGGERED"
-      : "WAIT_TRIGGER";
 
   return {
     generatedAt: new Date().toISOString(),
     state: overallState,
     market,
     priceFreshness: currentSpxQuote,
+    lastClosedCandle,
     plans,
     message:
       overallState === "CANCELLED"
         ? "تم إلغاء فرص SPXW بعد كسر مستوى الإبطال."
-        : overallState === "PRICE_TRIGGERED"
-          ? "وصل SPX إلى مستوى التفعيل، وما زال تأكيد إغلاق شمعة 5 دقائق مطلوبًا."
-          : "الفرص جاهزة لكنها تنتظر الوصول إلى مستوى التفعيل.",
+        : overallState === "CANDLE_CONFIRMED"
+          ? "أكدت آخر شمعة 5 دقائق مغلقة مستوى التفعيل."
+          : overallState === "WAIT_CANDLE_CLOSE"
+            ? "تم لمس السعر سابقًا وما زال تأكيد إغلاق شمعة 5 دقائق مطلوبًا."
+            : overallState === "PRICE_TOUCHED"
+              ? "وصل SPX إلى مستوى التفعيل؛ بانتظار إغلاق شمعة 5 دقائق لاحقة."
+              : "الفرص جاهزة لكنها تنتظر الوصول إلى مستوى التفعيل.",
   };
 }

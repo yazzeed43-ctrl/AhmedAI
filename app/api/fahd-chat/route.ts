@@ -1017,8 +1017,10 @@ export async function POST(req: NextRequest) {
   4. scan.status = "NO_MATCH": اكتمل المسح بنجاح ولم يجتز أي عقد شروط الجودة والسيولة. يمكنك هنا فقط أن تقول إن العقود فُحصت ولم توجد فرصة مؤهلة.
   5. scan.status = "OPPORTUNITIES_FOUND": اكتمل المسح بنجاح وفيه عقد أو أكثر مؤهل. انتقل لفحص trigger.state.
 - إذا trigger.state = WAIT_TRIGGER اكتب: لا تدخل الآن، السعر لسا ما وصل مستوى التفعيل.
+- إذا trigger.state = PRICE_TOUCHED اكتب: السعر لمس مستوى التفعيل، لكن لا دخول قبل إغلاق شمعة 5 دقائق لاحقة.
+- إذا trigger.state = WAIT_CANDLE_CLOSE اكتب: تم لمس السعر سابقًا وما زلنا ننتظر إغلاق شمعة 5 دقائق مؤكدة.
+- إذا trigger.state = CANDLE_CONFIRMED اكتب: أكدت آخر شمعة 5 دقائق المغلقة مستوى التفعيل. اذكر confirmedCandle.endTime وconfirmedCandle.close.
 - إذا trigger.state = WAIT_FRESH_PRICE اكتب: بيانات SPX غير لحظية حاليًا؛ الفرص للتحضير فقط ولم يتم بناء Trigger أو توصية دخول. اذكر freshness وageSeconds وtradeDate إن توفرت، ولا تستخدم كلمة "لحظي".
-- إذا trigger.state = PRICE_TRIGGERED اكتب بوضوح: السعر لمس مستوى التفعيل لحظيًا، لكن تأكيد إغلاق شمعة 5 دقائق لسا مطلوب قبل الدخول الفعلي. لا تقل "ادخل الآن" ولا تعتبرها إشارة دخول مؤكدة — هذي نقطة حساسة، PRICE_TRIGGERED يعني لمس السعر فقط مو تأكيد.
 - إذا trigger.state = CANCELLED اكتب: الفرصة أُلغيت بعد كسر مستوى الإبطال، لا تقترحها.
 - اعرض فقط: العقد، التفعيل، الإلغاء، الهدف الأول، الهدف الثاني، والحالة.
 `;
