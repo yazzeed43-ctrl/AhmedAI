@@ -9,6 +9,17 @@ function getToken(): string {
   return token;
 }
 
+// Timeout موحد لكل استدعاءات Tradier بهذا الملف. هذا الملف يُستخدم
+// من محركات SPXW والسكانر الموحد، فتعليقه يعني تعليق تحليل تداول
+// حقيقي — نفس نمط fetchWithTimeout بباقي الملفات الخارجية بالمشروع.
+async function fetchWithTimeout(
+  url: string | URL,
+  init: RequestInit = {},
+  timeoutMs = 10_000,
+): Promise<Response> {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+}
+
 async function tradierGet<T>(
   path: string,
   params: Record<string, string | number | boolean>,
@@ -18,19 +29,30 @@ async function tradierGet<T>(
     url.searchParams.set(key, String(value));
   }
 
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${getToken()}`,
-      Accept: "application/json",
-    },
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(
+      url,
+      {
+        headers: {
+          Authorization: `Bearer ${getToken()}`,
+          Accept: "application/json",
+        },
+        cache: "no-store",
+      },
+      10_000,
+    );
+  } catch (error: any) {
+    if (error?.name === "TimeoutError" || error?.name === "AbortError") {
+      throw new Error("انتهت مهلة الاتصال بـ Tradier، حاول مرة ثانية.");
+    }
+    throw error;
+  }
 
   const text = await response.text();
   if (!response.ok) {
     throw new Error(`Tradier ${response.status}: ${text.slice(0, 500)}`);
   }
-
   return JSON.parse(text) as T;
 }
 
@@ -83,7 +105,6 @@ export async function getTradierQuotes(
     symbols: symbols.join(","),
     greeks: false,
   });
-
   return arrayify(data.quotes?.quote);
 }
 
@@ -95,7 +116,6 @@ export async function getTradierExpirations(symbol: string): Promise<string[]> {
     includeAllRoots: false,
     strikes: false,
   });
-
   return arrayify(data.expirations?.date);
 }
 
@@ -110,6 +130,5 @@ export async function getTradierOptionChain(
     expiration,
     greeks: true,
   });
-
   return arrayify(data.options?.option);
 }

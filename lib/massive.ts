@@ -30,6 +30,16 @@ function getLastTradingDay(): Date {
   return d;
 }
 
+// Timeout موحد لاستدعاء Massive بهذا الملف — نفس نمط باقي مزودي
+// البيانات الخارجية بالمشروع.
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = 10_000,
+): Promise<Response> {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+}
+
 async function fetchMinuteBars(
   symbol: string,
   date: Date,
@@ -37,10 +47,22 @@ async function fetchMinuteBars(
 ): Promise<AggBar[]> {
   const dateStr = formatDate(date);
   const url = `${MASSIVE_BASE}/v2/aggs/ticker/${symbol}/range/5/minute/${dateStr}/${dateStr}?adjusted=true&sort=asc&limit=500`;
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    cache: "no-store",
-  });
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(
+      url,
+      {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        cache: "no-store",
+      },
+      10_000,
+    );
+  } catch (error: any) {
+    if (error?.name === "TimeoutError" || error?.name === "AbortError") {
+      throw new Error("انتهت مهلة الاتصال بـ Massive، حاول مرة ثانية.");
+    }
+    throw error;
+  }
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`Massive API error: ${res.status} - ${body}`);

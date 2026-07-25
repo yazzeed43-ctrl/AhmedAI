@@ -24,17 +24,35 @@ function ensureTradierConfigured() {
   }
 }
 
+// Timeout موحد لكل استدعاءات Tradier بهذا الملف. لو Tradier علّق
+// (نادر بس وارد)، الطلب يفشل بوضوح بعد المهلة بدل ما يعلّق الرد كامل.
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = 10_000,
+): Promise<Response> {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+}
+
 async function tradierGet(path: string) {
   ensureTradierConfigured();
 
-  const response = await fetch(`${TRADIER_BASE}${path}`, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${TRADIER_TOKEN}`,
-      Accept: "application/json",
-    },
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(`${TRADIER_BASE}${path}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${TRADIER_TOKEN}`,
+        Accept: "application/json",
+      },
+      cache: "no-store",
+    });
+  } catch (error: any) {
+    if (error?.name === "TimeoutError" || error?.name === "AbortError") {
+      throw new Error("انتهت مهلة الاتصال بـ Tradier، حاول مرة ثانية.");
+    }
+    throw error;
+  }
 
   const responseText = await response.text();
 
