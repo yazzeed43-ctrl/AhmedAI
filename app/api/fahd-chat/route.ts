@@ -1084,7 +1084,8 @@ export async function POST(req: NextRequest) {
 3. لو النتيجة status = "WAIT"، معناها اتجاه السوق العام (SPY/QQQ) غير واضح حاليًا، فما فيه فحص فرص أصلاً — وضّح هذا ليزيد ولا تقترح عقود.
 4. لو status = "NO_MATCH"، معناها فحص عقود فعليًا بس ولا وحد اجتاز شروط الجودة والاتجاه معًا الآن — اذكر عدد العقود المفحوصة (contractsScanned) واقترح المحاولة بعد فترة.
 5. لكل فرصة راجعة، اذكر: tier (GOLD/STRONG/WATCH)، finalScore، الاتجاه (CALL/PUT)، الرمز والسترايك والاستحقاق، وأهم reasons أو warnings إن وجدت. لا تخترع تفاصيل غير موجودة بالنتيجة.
-6. هذي أداة تقييم وفحص فقط، مثل باقي أدوات الخيارات — لا توصي بالدخول المباشر، اعرض الجودة والمخاطر واترك القرار النهائي ليزيد.`;
+6. هذي أداة تقييم وفحص فقط، مثل باقي أدوات الخيارات — لا توصي بالدخول المباشر، اعرض الجودة والمخاطر واترك القرار النهائي ليزيد.
+7. مهم جدًا: لو طلب يزيد يذكر SPX أو SPXW بس (بدون ذكر رمز سهم عام صراحة زي NVDA أو QQQ أو AAPL)، استخدم get_spxw_trade_plan وحدها — لا تستدعِ get_market_opportunities إطلاقًا لهذا النوع من الطلبات، حتى لو فكرت إنها معلومة إضافية مفيدة. لو استدعيتها بالغلط برجع لك سبب رفض بدل النتيجة.`;
 
     const workingMessages: any[] = [
       ...conversationHistory.map((m: { role: string; content: string }) => ({
@@ -1101,6 +1102,18 @@ export async function POST(req: NextRequest) {
     const collectedToolResults: { name: string; input: any; output: any }[] =
       [];
     const maxRounds = 3;
+
+    // لو الطلب يذكر SPX/SPXW صراحة بدون أي رمز سهم عام آخر، نعتبره طلب
+    // SPXW حصري — ونمنع get_market_opportunities من التنفيذ حتى لو
+    // فهد استدعاها بالغلط، بدل الاعتماد على تعليمات الـ prompt فقط.
+    // نستخدم extractTickers نفسها (بدل قائمة رموز ثابتة) عشان تعمم على
+    // أي رمز يذكره يزيد، مو بس القائمة الافتراضية المعروفة مسبقًا.
+    const mentionedTickers = extractTickers(message);
+    const nonSpxTickers = mentionedTickers.filter(
+      (ticker) => ticker !== "SPX" && ticker !== "SPXW",
+    );
+    const isSpxwOnlyRequest =
+      /\bSPXW?\b/i.test(message) && nonSpxTickers.length === 0;
 
     for (let round = 0; round < maxRounds; round++) {
       const data = await callClaude(workingMessages, fullSystemPrompt);
@@ -1123,6 +1136,28 @@ export async function POST(req: NextRequest) {
       // نفّذ كل أداة مطلوبة
       const toolResults = [];
       for (const block of toolUseBlocks) {
+        if (isSpxwOnlyRequest && block.name === "get_market_opportunities") {
+          // الطلب يخص SPXW حصرًا (SPX/SPXW بدون رمز سهم عام آخر) —
+          // نمنع أداة فرص الأسهم العامة من التنفيذ حتى لو فهد استدعاها،
+          // ونعيد له سبب واضح بدل النتيجة الفعلية.
+          //
+          // مهم: ما نضيفها لـ collectedToolResults، لأن onlySpxwToolWasUsed
+          // تحته يعتمد على إن SPXW هي الأداة الوحيدة اللي "نُفّذت فعليًا" —
+          // لو ضفناها هنا، إنفاذ رد WAIT/NO_MATCH الثابت تحته بيتعطل بصمت
+          // حتى لو الأداة المحظورة ما نُفذت فعليًا، بس النموذج حاول يستدعيها.
+          const output = {
+            skipped: true,
+            reason:
+              "هذا الطلب يخص SPXW فقط. لا تستخدم نتائج هذه الأداة ولا تذكر أي عقود أسهم عامة (زي QQQ أو AAPL) بردك؛ اعتمد فقط على get_spxw_trade_plan.",
+          };
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: JSON.stringify(output),
+            is_error: true,
+          });
+          continue;
+        }
         if (block.name === "get_spxw_trade_plan") {
           try {
             const maxResults = Math.max(
@@ -1771,14 +1806,17 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // إنفاذ برمجي: لو آخر استدعاء لأداة SPXW رجع scan.status = WAIT، نفرض
-    // رسالة ثابتة بدل الاعتماد على النموذج أو السماح لـ buildFahdResponse
-    // بإعادة صياغتها. يغطي هذا مسار الخروج الطبيعي ومسار استنفاد الجولات معًا.
+    // إنفاذ برمجي: لو آخر استدعاء لأداة SPXW رجع scan.status = WAIT أو
+    // NO_MATCH، نفرض رسالة ثابتة مبنية من حقول scan الحقيقية بدل ما نسيب
+    // النموذج يصوغ نص حر — لأن التجربة أثبتت إنه ممكن يضيف ادعاءات غلط
+    // (زي "SPX تقديري عبر Proxy" أو خلط NO_MATCH بمنطق التريغر) حتى مع
+    // تعليمات صريحة بالـ prompt. يغطي هذا مسار الخروج الطبيعي ومسار
+    // استنفاد الجولات معًا.
     const lastSpxwResult = [...collectedToolResults]
       .reverse()
       .find((result) => result.name === "get_spxw_trade_plan");
 
-    // نفرض رسالة WAIT الثابتة فقط لو SPXW كانت الأداة الوحيدة المستخدمة —
+    // نفرض الرد الثابت فقط لو SPXW كانت الأداة الوحيدة المستخدمة —
     // لو فيه أدوات ثانية (مثلاً طلب مختلط: "SPXW + حلل NVDA")، نسيب
     // buildFahdResponse يعرض نتائج الأدوات الثانية، وتعليمات الـ prompt
     // تمنع الادعاء بفحص SPXW ضمن ردها.
@@ -1788,13 +1826,45 @@ export async function POST(req: NextRequest) {
         (result) => result.name === "get_spxw_trade_plan",
       );
 
-    const enforcedSpxwWaitReply =
-      onlySpxwToolWasUsed && lastSpxwResult?.output?.scan?.status === "WAIT"
-        ? "اتجاه السوق غير مؤكد حاليًا، لذلك لم يتم جلب أو فحص عقود SPXW."
-        : null;
+    const spxwScanStatus = lastSpxwResult?.output?.scan?.status;
+
+    function buildEnforcedSpxwReply(): string | null {
+      if (!onlySpxwToolWasUsed || !lastSpxwResult) return null;
+
+      if (spxwScanStatus === "WAIT") {
+        return "اتجاه السوق غير مؤكد حاليًا، لذلك لم يتم جلب أو فحص عقود SPXW.";
+      }
+
+      if (spxwScanStatus === "NO_MATCH") {
+        const scan = lastSpxwResult.output.scan;
+        const biasLabel =
+          scan.market?.bias === "CALL_BIAS"
+            ? "صاعد (CALL_BIAS)"
+            : scan.market?.bias === "PUT_BIAS"
+              ? "هابط (PUT_BIAS)"
+              : "غير محدد";
+
+        return (
+          `تم فحص ${scan.contractsScanned ?? 0} عقد` +
+          (typeof scan.spxwContractsFound === "number"
+            ? ` (${scan.spxwContractsFound} منها SPXW)`
+            : "") +
+          ` ولم يجتز أي عقد شروط الجودة والسيولة والاتجاه الحالية.` +
+          ` اتجاه السوق العام: ${biasLabel}.` +
+          (typeof scan.underlyingPrice === "number"
+            ? ` سعر SPX المستخدم حقيقي من Tradier (${scan.underlyingPrice})، وليس مشتقًا من SPY.`
+            : "") +
+          ` لا توجد خطة Trigger لأن المسح لم ينتج فرصة مؤهلة.`
+        );
+      }
+
+      return null;
+    }
+
+    const enforcedSpxwReply = buildEnforcedSpxwReply();
 
     const finalReply =
-      enforcedSpxwWaitReply ??
+      enforcedSpxwReply ??
       buildFahdResponse({
         userMessage: message,
         assistantText,
