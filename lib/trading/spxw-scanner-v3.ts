@@ -13,6 +13,10 @@ import {
   summarizeExpirationScans,
   type ExpirationScanResult,
 } from "./spxw-scan-completeness";
+import {
+  buildSpxPriceSnapshot,
+  type SpxPriceSnapshot,
+} from "./spx-price-freshness";
 
 type Direction = "CALL" | "PUT";
 
@@ -36,22 +40,17 @@ function n(value: number | null | undefined, fallback = 0): number {
 
 // السعر الحقيقي لـ SPX من Tradier مباشرة، بدون استخدام SPY كبديل.
 // تستخدمها أداة الفحص ومحرك التريغر حتى يكون مصدر السعر موحدًا.
-export async function getRealSpxPrice(): Promise<number> {
+export async function getRealSpxPriceSnapshot(): Promise<SpxPriceSnapshot> {
   const quotes = await getTradierQuotes(["SPX"]);
 
   const quote = quotes.find((item) => item.symbol?.toUpperCase() === "SPX");
+  const snapshot = quote ? buildSpxPriceSnapshot(quote) : null;
 
-  const price =
-    n(quote?.last) ||
-    (n(quote?.bid) > 0 && n(quote?.ask) > 0
-      ? (n(quote?.bid) + n(quote?.ask)) / 2
-      : n(quote?.close));
-
-  if (price <= 0) {
+  if (!snapshot) {
     throw new Error("تعذر جلب سعر SPX من Tradier.");
   }
 
-  return price;
+  return snapshot;
 }
 
 function optionRoot(symbol: string): string {
@@ -198,7 +197,8 @@ export async function scanSpxwOpportunitiesV3(
     };
   }
 
-  const underlyingPrice = await getRealSpxPrice();
+  const underlyingQuote = await getRealSpxPriceSnapshot();
+  const underlyingPrice = underlyingQuote.price;
 
   const maxDte = Math.max(0, Math.floor(config.maxDte ?? 10));
 
@@ -301,6 +301,13 @@ export async function scanSpxwOpportunitiesV3(
     source: "Tradier SPX chains filtered to SPXW",
     market,
     underlyingPrice: Number(underlyingPrice.toFixed(2)),
+    tradeDate: underlyingQuote.tradeDate,
+    ageSeconds: underlyingQuote.ageSeconds,
+    freshness: underlyingQuote.freshness,
+    underlyingQuote: {
+      ...underlyingQuote,
+      price: Number(underlyingQuote.price.toFixed(2)),
+    },
     expirationsScanned: discovered.map((item) => item.expiration),
     expirationsRequested: completeness.expirationsRequested,
     expirationsSucceeded: completeness.expirationsSucceeded,

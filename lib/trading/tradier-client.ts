@@ -68,6 +68,7 @@ export interface TradierQuote {
   change_percentage?: number | null;
   volume?: number | null;
   average_volume?: number | null;
+  trade_date?: number | string | null;
 }
 
 export interface TradierOption {

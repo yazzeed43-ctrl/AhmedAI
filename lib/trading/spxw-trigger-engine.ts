@@ -1,7 +1,15 @@
-import { scanSpxwOpportunitiesV3, getRealSpxPrice } from "./spxw-scanner-v3";
+import {
+  scanSpxwOpportunitiesV3,
+  getRealSpxPriceSnapshot,
+} from "./spxw-scanner-v3";
+import { canBuildSpxwTriggerFromQuote } from "./spx-price-freshness";
 
 type TriggerState =
-  "PRICE_TRIGGERED" | "WAIT_TRIGGER" | "CANCELLED" | "NO_OPPORTUNITY";
+  | "PRICE_TRIGGERED"
+  | "WAIT_TRIGGER"
+  | "WAIT_FRESH_PRICE"
+  | "CANCELLED"
+  | "NO_OPPORTUNITY";
 
 type SpxwScanResult = Awaited<ReturnType<typeof scanSpxwOpportunitiesV3>>;
 
@@ -88,10 +96,38 @@ export async function buildSpxwTriggerPlan(config: SpxwTriggerConfig = {}) {
     throw new Error("تعذر تحديد سعر SPX لبناء خطة الدخول.");
   }
 
+  if (!canBuildSpxwTriggerFromQuote(scan.underlyingQuote)) {
+    return {
+      generatedAt: new Date().toISOString(),
+      state: "WAIT_FRESH_PRICE" as TriggerState,
+      scan,
+      plans: [],
+      preparationOpportunities: scan.opportunities,
+      priceFreshness: scan.underlyingQuote ?? null,
+      message:
+        "بيانات SPX غير لحظية حاليًا؛ أُبقيت الفرص للتحضير فقط ولم يتم بناء Trigger دخول.",
+    };
+  }
+
   // سعر حي منفصل عن لحظة الفحص (scan)، عشان currentTriggered/cancelled
   // تقارن ضد سعر جديد فعليًا، مو ضد نفس السعر اللي حُسب منه triggerPrice.
   // نفس دالة السعر الحقيقي المعتمدة بمسار SPXW (بدون بروكسي SPY).
-  const currentSpxPrice = await getRealSpxPrice();
+  const currentSpxQuote = await getRealSpxPriceSnapshot();
+
+  if (!canBuildSpxwTriggerFromQuote(currentSpxQuote)) {
+    return {
+      generatedAt: new Date().toISOString(),
+      state: "WAIT_FRESH_PRICE" as TriggerState,
+      scan,
+      plans: [],
+      preparationOpportunities: scan.opportunities,
+      priceFreshness: currentSpxQuote,
+      message:
+        "تعذر التحقق من Trigger بسعر SPX لحظي؛ أُبقيت الفرص للتحضير فقط دون توصية دخول.",
+    };
+  }
+
+  const currentSpxPrice = currentSpxQuote.price;
 
   const confirmationBuffer = config.confirmationBufferPoints ?? 1.5;
   const stopBuffer = config.stopBufferPoints ?? 6;
@@ -191,6 +227,7 @@ export async function buildSpxwTriggerPlan(config: SpxwTriggerConfig = {}) {
     generatedAt: new Date().toISOString(),
     state: overallState,
     market,
+    priceFreshness: currentSpxQuote,
     plans,
     message:
       overallState === "CANCELLED"
