@@ -9,17 +9,17 @@ const TRADIER_TOKEN =
   process.env.TRADIER_SANDBOX_TOKEN;
 
 const TRADIER_BASE = (
-  process.env.TRADIER_BASE_URL || 'https://api.tradier.com/v1'
-).replace(/\/+$/, '');
+  process.env.TRADIER_BASE_URL || "https://api.tradier.com/v1"
+).replace(/\/+$/, "");
 
 const TRADIER_ACCOUNT_ID = process.env.TRADIER_ACCOUNT_ID;
 
-const IS_SANDBOX = TRADIER_BASE.includes('sandbox.tradier.com');
+const IS_SANDBOX = TRADIER_BASE.includes("sandbox.tradier.com");
 
 function ensureTradierConfigured() {
   if (!TRADIER_TOKEN) {
     throw new Error(
-      'مفتاح Tradier غير موجود. أضف TRADIER_TOKEN في Environment Variables داخل Vercel.'
+      "مفتاح Tradier غير موجود. أضف TRADIER_TOKEN في Environment Variables داخل Vercel.",
     );
   }
 }
@@ -28,12 +28,12 @@ async function tradierGet(path: string) {
   ensureTradierConfigured();
 
   const response = await fetch(`${TRADIER_BASE}${path}`, {
-    method: 'GET',
+    method: "GET",
     headers: {
       Authorization: `Bearer ${TRADIER_TOKEN}`,
-      Accept: 'application/json',
+      Accept: "application/json",
     },
-    cache: 'no-store',
+    cache: "no-store",
   });
 
   const responseText = await response.text();
@@ -52,14 +52,12 @@ async function tradierGet(path: string) {
       data?.error ||
       data?.message ||
       responseText ||
-      'Unknown Tradier error';
+      "Unknown Tradier error";
 
     throw new Error(
       `Tradier API error ${response.status}: ${
-        typeof apiMessage === 'string'
-          ? apiMessage
-          : JSON.stringify(apiMessage)
-      }`
+        typeof apiMessage === "string" ? apiMessage : JSON.stringify(apiMessage)
+      }`,
     );
   }
 
@@ -92,7 +90,7 @@ export interface TradierQuote {
 export interface OptionContract {
   symbol: string;
   strike: number;
-  option_type: 'call' | 'put';
+  option_type: "call" | "put";
   expiration_date: string;
   bid: number;
   ask: number;
@@ -112,7 +110,7 @@ export interface OptionContract {
     smv_vol?: number;
   };
   spread_pct: number | null;
-  liquidity_quality: 'جيد' | 'متوسط' | 'ضعيف - احذر';
+  liquidity_quality: "جيد" | "متوسط" | "ضعيف - احذر";
   liquidity_reason: string;
 }
 
@@ -153,7 +151,7 @@ function numberOrZero(value: unknown): number {
 }
 
 function nullableNumber(value: unknown): number | null {
-  if (value === null || value === undefined || value === '') {
+  if (value === null || value === undefined || value === "") {
     return null;
   }
 
@@ -165,16 +163,15 @@ function evaluateLiquidity(
   bid: number,
   ask: number,
   openInterest: number,
-  volume: number
+  volume: number,
 ) {
   const mid = (bid + ask) / 2;
 
-  const spreadPct =
-    mid > 0 && ask >= bid ? ((ask - bid) / mid) * 100 : null;
+  const spreadPct = mid > 0 && ask >= bid ? ((ask - bid) / mid) * 100 : null;
 
   const reasons: string[] = [];
 
-  let quality: 'جيد' | 'متوسط' | 'ضعيف - احذر' = 'جيد';
+  let quality: "جيد" | "متوسط" | "ضعيف - احذر" = "جيد";
 
   const invalidPrices = bid <= 0 || ask <= 0 || ask < bid;
 
@@ -185,7 +182,7 @@ function evaluateLiquidity(
   const lowVolume = volume < VOLUME_LOW_THRESHOLD;
 
   if (invalidPrices) {
-    reasons.push('أسعار Bid/Ask غير مكتملة');
+    reasons.push("أسعار Bid/Ask غير مكتملة");
   }
 
   if (wideSpread) {
@@ -208,24 +205,21 @@ function evaluateLiquidity(
   ].filter(Boolean).length;
 
   if (invalidPrices || flagsCount >= 2) {
-    quality = 'ضعيف - احذر';
+    quality = "ضعيف - احذر";
   } else if (flagsCount === 1) {
-    quality = 'متوسط';
+    quality = "متوسط";
   }
 
   return {
     spread_pct: spreadPct,
     liquidity_quality: quality,
-    liquidity_reason:
-      reasons.length > 0 ? reasons.join(' / ') : 'سيولة طبيعية',
+    liquidity_reason: reasons.length > 0 ? reasons.join(" / ") : "سيولة طبيعية",
   };
 }
 
-function liquidityRank(
-  quality: 'جيد' | 'متوسط' | 'ضعيف - احذر'
-): number {
-  if (quality === 'جيد') return 0;
-  if (quality === 'متوسط') return 1;
+function liquidityRank(quality: "جيد" | "متوسط" | "ضعيف - احذر"): number {
+  if (quality === "جيد") return 0;
+  if (quality === "متوسط") return 1;
   return 2;
 }
 
@@ -234,12 +228,12 @@ function liquidityRank(
 // ============================================
 
 export async function getTradierProfile() {
-  const data = await tradierGet('/user/profile');
+  const data = await tradierGet("/user/profile");
 
   const profile = data?.profile;
 
   if (!profile) {
-    throw new Error('Tradier لم يرجع بيانات الملف الشخصي.');
+    throw new Error("Tradier لم يرجع بيانات الملف الشخصي.");
   }
 
   return profile;
@@ -268,7 +262,7 @@ export async function resolveTradierAccountId(): Promise<string> {
 
   if (!accountId) {
     throw new Error(
-      'تعذر معرفة رقم حساب Tradier. أضف TRADIER_ACCOUNT_ID في Vercel.'
+      "تعذر معرفة رقم حساب Tradier. أضف TRADIER_ACCOUNT_ID في Vercel.",
     );
   }
 
@@ -279,19 +273,17 @@ export async function resolveTradierAccountId(): Promise<string> {
 // أسعار السوق
 // ============================================
 
-export async function getTradierQuote(
-  symbol: string
-): Promise<TradierQuote> {
+export async function getTradierQuote(symbol: string): Promise<TradierQuote> {
   const normalizedSymbol = symbol.trim().toUpperCase();
 
   if (!/^[A-Z0-9.:-]{1,32}$/.test(normalizedSymbol)) {
-    throw new Error('صيغة رمز السهم غير صحيحة.');
+    throw new Error("صيغة رمز السهم غير صحيحة.");
   }
 
   const data = await tradierGet(
     `/markets/quotes?symbols=${encodeURIComponent(
-      normalizedSymbol
-    )}&greeks=false`
+      normalizedSymbol,
+    )}&greeks=false`,
   );
 
   const rawQuote = data?.quotes?.quote;
@@ -321,14 +313,12 @@ export async function getTradierQuote(
   };
 }
 
-async function getUnderlyingSpotPrice(
-  symbol: string
-): Promise<number | null> {
+async function getUnderlyingSpotPrice(symbol: string): Promise<number | null> {
   try {
     const quote = await getTradierQuote(symbol);
     return quote.last ?? quote.close;
   } catch (error) {
-    console.error('Tradier spot price error:', error);
+    console.error("Tradier spot price error:", error);
     return null;
   }
 }
@@ -341,19 +331,17 @@ export async function getAccountBalance(): Promise<TradierAccountSummary> {
   const accountId = await resolveTradierAccountId();
 
   const data = await tradierGet(
-    `/accounts/${encodeURIComponent(accountId)}/balances`
+    `/accounts/${encodeURIComponent(accountId)}/balances`,
   );
 
   const balances = data?.balances;
 
   if (!balances) {
-    throw new Error('Tradier لم يرجع بيانات رصيد الحساب.');
+    throw new Error("Tradier لم يرجع بيانات رصيد الحساب.");
   }
 
   const accountType =
-    balances.account_type ||
-    balances.type ||
-    balances.classification;
+    balances.account_type || balances.type || balances.classification;
 
   const cashDetails = balances.cash || {};
   const marginDetails = balances.margin || {};
@@ -392,7 +380,7 @@ export async function getPositions(): Promise<{
   const accountId = await resolveTradierAccountId();
 
   const data = await tradierGet(
-    `/accounts/${encodeURIComponent(accountId)}/positions`
+    `/accounts/${encodeURIComponent(accountId)}/positions`,
   );
 
   const rawPositions = data?.positions?.position;
@@ -409,15 +397,13 @@ export async function getPositions(): Promise<{
     ? rawPositions
     : [rawPositions];
 
-  const positions: TradierPosition[] = positionList.map(
-    (position: any) => ({
-      id: nullableNumber(position.id) ?? undefined,
-      symbol: String(position.symbol || ''),
-      quantity: numberOrZero(position.quantity),
-      cost_basis: numberOrZero(position.cost_basis),
-      date_acquired: position.date_acquired,
-    })
-  );
+  const positions: TradierPosition[] = positionList.map((position: any) => ({
+    id: nullableNumber(position.id) ?? undefined,
+    symbol: String(position.symbol || ""),
+    quantity: numberOrZero(position.quantity),
+    cost_basis: numberOrZero(position.cost_basis),
+    date_acquired: position.date_acquired,
+  }));
 
   return {
     accountId,
@@ -430,15 +416,13 @@ export async function getPositions(): Promise<{
 // خيارات: تواريخ الاستحقاق
 // ============================================
 
-export async function getOptionsExpirations(
-  symbol: string
-): Promise<string[]> {
+export async function getOptionsExpirations(symbol: string): Promise<string[]> {
   const normalizedSymbol = symbol.trim().toUpperCase();
 
   const data = await tradierGet(
     `/markets/options/expirations?symbol=${encodeURIComponent(
-      normalizedSymbol
-    )}&includeAllRoots=true&strikes=false`
+      normalizedSymbol,
+    )}&includeAllRoots=true&strikes=false`,
   );
 
   const dates = data?.expirations?.date;
@@ -458,29 +442,27 @@ const MAX_RETURNED_CONTRACTS = 12;
 
 export async function getOptionsChain(
   symbol: string,
-  expiration: string
+  expiration: string,
 ): Promise<{
   symbol: string;
   expiration: string;
   spotPrice: number | null;
   contracts: OptionContract[];
   totalContractsAvailable: number;
-  environment: 'production' | 'sandbox';
+  environment: "production" | "sandbox";
   dataDelayNote: string;
 }> {
   const normalizedSymbol = symbol.trim().toUpperCase();
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(expiration)) {
-    throw new Error(
-      'تاريخ الاستحقاق يجب أن يكون بصيغة YYYY-MM-DD.'
-    );
+    throw new Error("تاريخ الاستحقاق يجب أن يكون بصيغة YYYY-MM-DD.");
   }
 
   const [data, spotPrice] = await Promise.all([
     tradierGet(
       `/markets/options/chains?symbol=${encodeURIComponent(
-        normalizedSymbol
-      )}&expiration=${encodeURIComponent(expiration)}&greeks=true`
+        normalizedSymbol,
+      )}&expiration=${encodeURIComponent(expiration)}&greeks=true`,
     ),
     getUnderlyingSpotPrice(normalizedSymbol),
   ]);
@@ -499,15 +481,10 @@ export async function getOptionsChain(
     const openInterest = numberOrZero(option.open_interest);
     const volume = numberOrZero(option.volume);
 
-    const liquidity = evaluateLiquidity(
-      bid,
-      ask,
-      openInterest,
-      volume
-    );
+    const liquidity = evaluateLiquidity(bid, ask, openInterest, volume);
 
     return {
-      symbol: String(option.symbol || ''),
+      symbol: String(option.symbol || ""),
       strike: numberOrZero(option.strike),
       option_type: option.option_type,
       expiration_date: option.expiration_date,
@@ -565,7 +542,7 @@ export async function getOptionsChain(
     contracts = contracts.sort(
       (first, second) =>
         liquidityRank(first.liquidity_quality) -
-        liquidityRank(second.liquidity_quality)
+        liquidityRank(second.liquidity_quality),
     );
   }
 
@@ -577,9 +554,9 @@ export async function getOptionsChain(
     spotPrice,
     contracts,
     totalContractsAvailable,
-    environment: IS_SANDBOX ? 'sandbox' : 'production',
+    environment: IS_SANDBOX ? "sandbox" : "production",
     dataDelayNote: IS_SANDBOX
-      ? 'بيانات Sandbox متأخرة ومخصصة للتجربة والتداول الورقي.'
-      : 'الاتصال ببيئة Production. بيانات السوق تعتمد على صلاحيات واشتراك حساب Tradier.',
+      ? "بيانات Sandbox متأخرة ومخصصة للتجربة والتداول الورقي."
+      : "الاتصال ببيئة Production. بيانات السوق تعتمد على صلاحيات واشتراك حساب Tradier.",
   };
 }

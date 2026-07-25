@@ -5,7 +5,7 @@
 // متوافقة مع حدود الخطة المجانية (Minute Aggregates)
 // ============================================
 
-const MASSIVE_BASE = 'https://api.massive.com';
+const MASSIVE_BASE = "https://api.massive.com";
 
 interface AggBar {
   o: number; // open
@@ -17,7 +17,7 @@ interface AggBar {
 }
 
 function formatDate(d: Date) {
-  return d.toISOString().split('T')[0];
+  return d.toISOString().split("T")[0];
 }
 
 // آخر يوم تداول فعلي (يتجاوز عطلة نهاية الأسبوع تقريبياً)
@@ -30,15 +30,19 @@ function getLastTradingDay(): Date {
   return d;
 }
 
-async function fetchMinuteBars(symbol: string, date: Date, apiKey: string): Promise<AggBar[]> {
+async function fetchMinuteBars(
+  symbol: string,
+  date: Date,
+  apiKey: string,
+): Promise<AggBar[]> {
   const dateStr = formatDate(date);
   const url = `${MASSIVE_BASE}/v2/aggs/ticker/${symbol}/range/5/minute/${dateStr}/${dateStr}?adjusted=true&sort=asc&limit=500`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${apiKey}` },
-    cache: 'no-store',
+    cache: "no-store",
   });
   if (!res.ok) {
-    const body = await res.text().catch(() => '');
+    const body = await res.text().catch(() => "");
     throw new Error(`Massive API error: ${res.status} - ${body}`);
   }
   const data = await res.json();
@@ -85,7 +89,10 @@ function computeVolumeProfile(bars: AggBar[]) {
   let lowBin = pocBin;
   let highBin = pocBin;
 
-  while (accumulatedVolume < targetVolume && (lowBin > 0 || highBin < numBins - 1)) {
+  while (
+    accumulatedVolume < targetVolume &&
+    (lowBin > 0 || highBin < numBins - 1)
+  ) {
     const volBelow = lowBin > 0 ? volumeByBin[lowBin - 1] : -1;
     const volAbove = highBin < numBins - 1 ? volumeByBin[highBin + 1] : -1;
     if (volAbove >= volBelow) {
@@ -120,7 +127,7 @@ function computeVolumeProfile(bars: AggBar[]) {
 export async function getPreviousDayVolumeProfile(symbol: string) {
   const apiKey = process.env.MASSIVE_API_KEY;
   if (!apiKey) {
-    return { error: 'مفتاح Massive API غير مُعرّف' };
+    return { error: "مفتاح Massive API غير مُعرّف" };
   }
 
   try {
@@ -134,19 +141,21 @@ export async function getPreviousDayVolumeProfile(symbol: string) {
     }
 
     if (bars.length === 0) {
-      return { error: `لا توجد بيانات تداول متوفرة لـ ${symbol} بالأيام الأخيرة` };
+      return {
+        error: `لا توجد بيانات تداول متوفرة لـ ${symbol} بالأيام الأخيرة`,
+      };
     }
 
     const profile = computeVolumeProfile(bars);
-    if (!profile) return { error: 'فشل حساب Volume Profile' };
+    if (!profile) return { error: "فشل حساب Volume Profile" };
 
     return {
       symbol,
       date: formatDate(date),
-      source: 'Massive.com (بيانات فعلية 5-دقائق)',
+      source: "Massive.com (بيانات فعلية 5-دقائق)",
       ...profile,
     };
   } catch (e: any) {
-    return { error: e.message || 'فشل جلب بيانات Massive' };
+    return { error: e.message || "فشل جلب بيانات Massive" };
   }
 }

@@ -87,9 +87,7 @@ export async function getTradierQuotes(
   return arrayify(data.quotes?.quote);
 }
 
-export async function getTradierExpirations(
-  symbol: string,
-): Promise<string[]> {
+export async function getTradierExpirations(symbol: string): Promise<string[]> {
   const data = await tradierGet<{
     expirations?: { date?: string | string[] };
   }>("/markets/options/expirations", {
