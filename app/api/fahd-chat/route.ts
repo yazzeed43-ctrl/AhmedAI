@@ -30,8 +30,17 @@ import { buildFahdResponse } from "@/lib/fahd/compact-response";
 
 const FINNHUB_BASE = "https://finnhub.io/api/v1";
 
-// رموز افتراضية لأداة get_market_opportunities لو يزيد ما حدد رموز
-// معينة بسؤاله (نفس القائمة المستخدمة بروابط golden-opportunities-v3).
+// Timeout موحد لكل استدعاءات fetch الخارجية بهذا الملف (Finnhub +
+// Anthropic). لو الخدمة الخارجية علّقت، ما يبقى طلب Vercel معلّق لحد
+// ما تنتهي مهلة المنصة نفسها — يفشل بوضوح بعد المهلة المحددة بدلها.
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = 10_000,
+): Promise<Response> {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+}
+
 const DEFAULT_MARKET_OPPORTUNITIES_SYMBOLS = [
   "SPY",
   "QQQ",
@@ -45,9 +54,6 @@ const DEFAULT_MARKET_OPPORTUNITIES_SYMBOLS = [
   "MSFT",
 ];
 
-// مفتاح إيقاف احترازي مؤقت: الحفظ التلقائي للذاكرة طويلة المدى معطّل
-// حاليًا لحين إصلاح تلف الترميز (mojibake) بباقي الملف بشكل شامل،
-// حتى لو كانت mightContainSaveworthyInfo نفسها مُصلحة الآن — طبقة حماية إضافية.
 const ENABLE_AUTO_MEMORY = false;
 
 function extractTickers(text: string): string[] {
@@ -137,9 +143,10 @@ function extractTickers(text: string): string[] {
 
 async function getQuote(symbol: string, apiKey: string) {
   try {
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `${FINNHUB_BASE}/quote?symbol=${symbol}&token=${apiKey}`,
       { cache: "no-store" },
+      10_000,
     );
     if (!res.ok) {
       const bodyText = await res.text().catch(() => "");
@@ -168,14 +175,14 @@ function formatDate(d: Date) {
   return d.toISOString().split("T")[0];
 }
 
-// آخر 3 أخبار مهمة للسهم خلال 5 أيام
 async function getCompanyNews(symbol: string, apiKey: string) {
   try {
     const to = new Date();
     const from = new Date(to.getTime() - 5 * 24 * 60 * 60 * 1000);
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `${FINNHUB_BASE}/company-news?symbol=${symbol}&from=${formatDate(from)}&to=${formatDate(to)}&token=${apiKey}`,
       { cache: "no-store" },
+      10_000,
     );
     if (!res.ok) return null;
     const items = await res.json();
@@ -194,14 +201,14 @@ async function getCompanyNews(symbol: string, apiKey: string) {
   }
 }
 
-// تحقق هل فيه إعلان أرباح خلال الـ14 يوم الجاية (مهم جداً لمتداولي الخيارات)
 async function getUpcomingEarnings(symbol: string, apiKey: string) {
   try {
     const from = new Date();
     const to = new Date(from.getTime() + 14 * 24 * 60 * 60 * 1000);
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `${FINNHUB_BASE}/calendar/earnings?from=${formatDate(from)}&to=${formatDate(to)}&symbol=${symbol}&token=${apiKey}`,
       { cache: "no-store" },
+      10_000,
     );
     if (!res.ok) return null;
     const data = await res.json();
@@ -217,21 +224,19 @@ async function getUpcomingEarnings(symbol: string, apiKey: string) {
   }
 }
 
-// كاش بسيط بالذاكرة (15 دقيقة) للأخبار الكلية والتقويم الاقتصادي
-// عشان ما نستهلك حد Finnhub بكل رسالة - هذي البيانات ما تتغير بالثانية أصلاً
 const CACHE_TTL_MS = 15 * 60 * 1000;
 let generalNewsCache: { data: string | null; expiresAt: number } | null = null;
 let econCalendarCache: { data: string | null; expiresAt: number } | null = null;
 
-// أخبار السوق العامة (اقتصاد كلي، لا ترتبط بسهم معين) - آخر 4 عناوين
 async function getGeneralMarketNews(apiKey: string) {
   if (generalNewsCache && generalNewsCache.expiresAt > Date.now()) {
     return generalNewsCache.data;
   }
   try {
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `${FINNHUB_BASE}/news?category=general&token=${apiKey}`,
       { cache: "no-store" },
+      10_000,
     );
     if (!res.ok) return null;
     const items = await res.json();
@@ -250,7 +255,6 @@ async function getGeneralMarketNews(apiKey: string) {
   }
 }
 
-// أحداث اقتصادية مهمة قادمة خلال 7 أيام (فائدة، تضخم، وظائف...الخ)
 async function getEconomicCalendar(apiKey: string) {
   if (econCalendarCache && econCalendarCache.expiresAt > Date.now()) {
     return econCalendarCache.data;
@@ -258,15 +262,15 @@ async function getEconomicCalendar(apiKey: string) {
   try {
     const from = new Date();
     const to = new Date(from.getTime() + 7 * 24 * 60 * 60 * 1000);
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `${FINNHUB_BASE}/calendar/economic?from=${formatDate(from)}&to=${formatDate(to)}&token=${apiKey}`,
       { cache: "no-store" },
+      10_000,
     );
     if (!res.ok) return null;
     const data = await res.json();
     const items = data?.economicCalendar;
     if (!Array.isArray(items) || items.length === 0) return null;
-    // نركز بس على الأحداث عالية التأثير (impact = 2 أو 3 عادة بمقياس Finnhub)
     const important = items
       .filter((e: any) => (e.impact ?? 0) >= 2)
       .slice(0, 5);
@@ -286,9 +290,6 @@ async function getEconomicCalendar(apiKey: string) {
   }
 }
 
-// ============================================
-// أداة الباك-تست: تعريف الأداة اللي فهد يقدر يستدعيها بنفسه
-// ============================================
 const TOOLS = [
   {
     name: "get_spxw_trade_plan",
@@ -392,19 +393,13 @@ const TOOLS = [
     name: "get_account",
     description:
       "يجلب بيانات حساب يزيد الحقيقي في Tradier: إجمالي قيمة الحساب، النقد، القوة الشرائية للأسهم والخيارات، والأرباح والخسائر المفتوحة. استخدمها عندما يسأل يزيد عن رصيده، السيولة، القوة الشرائية، أو حالة الحساب.",
-    input_schema: {
-      type: "object",
-      properties: {},
-    },
+    input_schema: { type: "object", properties: {} },
   },
   {
     name: "get_positions",
     description:
       "يجلب المراكز المفتوحة الحالية في حساب يزيد على Tradier، بما فيها الرمز والكمية والتكلفة. استخدمها عندما يسأل عن الصفقات أو المراكز المفتوحة أو ما يملكه حالياً.",
-    input_schema: {
-      type: "object",
-      properties: {},
-    },
+    input_schema: { type: "object", properties: {} },
   },
   {
     name: "get_tradier_quote",
@@ -443,10 +438,7 @@ const TOOLS = [
     input_schema: {
       type: "object",
       properties: {
-        symbol: {
-          type: "string",
-          description: "رمز السهم الأمريكي",
-        },
+        symbol: { type: "string", description: "رمز السهم الأمريكي" },
         expiration: {
           type: "string",
           description: "تاريخ الاستحقاق بصيغة YYYY-MM-DD",
@@ -492,7 +484,6 @@ const TOOLS = [
       },
     },
   },
-
   {
     name: "get_recent_social_signals",
     description:
@@ -528,7 +519,6 @@ const TOOLS = [
       },
     },
   },
-
   {
     name: "analyze_trade",
     description:
@@ -630,10 +620,7 @@ const TOOLS = [
           properties: {
             symbol: { type: "string" },
             strike: { type: "number" },
-            optionType: {
-              type: "string",
-              enum: ["CALL", "PUT"],
-            },
+            optionType: { type: "string", enum: ["CALL", "PUT"] },
             expiration: { type: "string" },
             bid: { type: "number" },
             ask: { type: "number" },
@@ -660,10 +647,7 @@ const TOOLS = [
           type: "object",
           description: "بيانات تأكيد الدخول",
           properties: {
-            direction: {
-              type: "string",
-              enum: ["CALL", "PUT", "NEUTRAL"],
-            },
+            direction: { type: "string", enum: ["CALL", "PUT", "NEUTRAL"] },
             candleClose: { type: "number" },
             previousCandleClose: { type: "number" },
             breakoutLevel: { type: "number" },
@@ -717,31 +701,22 @@ const TOOLS = [
 
 function enrichTradierQuoteFreshness(quote: any) {
   const rawTradeDate = Number(quote?.trade_date);
-
-  // Tradier قد يرجع trade_date بالمللي ثانية أو بالثواني حسب نوع البيانات.
   const tradeTimestampMs =
     Number.isFinite(rawTradeDate) && rawTradeDate > 0
       ? rawTradeDate > 10_000_000_000
         ? rawTradeDate
         : rawTradeDate * 1000
       : null;
-
   const ageSeconds = tradeTimestampMs
     ? Math.max(0, Math.round((Date.now() - tradeTimestampMs) / 1000))
     : null;
-
   let freshness: "live" | "delayed" | "stale" | "unknown" = "unknown";
-
   if (ageSeconds !== null) {
     if (ageSeconds <= 60) freshness = "live";
     else if (ageSeconds <= 20 * 60) freshness = "delayed";
     else freshness = "stale";
   }
-
-  // نحذف average_volume من النتيجة المرسلة للنموذج حتى لا يقارن
-  // حجمًا جزئيًا أثناء الجلسة بمتوسط يوم كامل ويخرج بنسبة مضللة.
   const { average_volume: _removedAverageVolume, ...safeQuote } = quote || {};
-
   const displayTitle =
     freshness === "live"
       ? `سعر ${safeQuote.symbol || ""} — Tradier (حديث جداً)`
@@ -750,7 +725,6 @@ function enrichTradierQuoteFreshness(quote: any) {
         : freshness === "stale"
           ? `سعر ${safeQuote.symbol || ""} — Tradier (قديم)`
           : `سعر ${safeQuote.symbol || ""} — Tradier (حداثة غير مؤكدة)`;
-
   return {
     ...safeQuote,
     display_title: displayTitle,
@@ -776,11 +750,7 @@ function enrichTradierQuoteFreshness(quote: any) {
   };
 }
 
-// حفظ تلقائي: يسأل Claude إذا كانت رسالة يزيد تحتوي معلومة تستحق الحفظ الدائم
-// فلتر سريع بدون AI: هل الرسالة يُحتمل تحتوي معلومة تستحق الحفظ؟
-// يشتغل قبل أي استدعاء لـ Claude، عشان نوفر الوقت والتكلفة لمعظم الرسائل العادية
 function mightContainSaveworthyInfo(userMessage: string): boolean {
-  // لا نحفظ بيانات الحساب الحساسة أو المؤقتة في الذاكرة طويلة المدى
   if (
     /رصيد|قوة\s*شرائية|مراكزي|مراكز\s*مفتوحة|حساب\s*Tradier|تريدير/i.test(
       userMessage,
@@ -788,9 +758,8 @@ function mightContainSaveworthyInfo(userMessage: string): boolean {
   ) {
     return false;
   }
-
   const signals = [
-    /\d/, // أي رقم (سعر، نسبة، كمية)
+    /\d/,
     /دخلت|خرجت|صفقة|قاعدة|تعلمت|درس|أفضل\s*ما|ما\s*أدخل|ما\s*أدخل\s*قبل|وقف\s*خسارة|هدف\s*ربح/,
   ];
   return signals.some((re) => re.test(userMessage));
@@ -798,17 +767,19 @@ function mightContainSaveworthyInfo(userMessage: string): boolean {
 
 async function autoSaveMemory(userMessage: string) {
   try {
-    const checkRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY!,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 300,
-        system: `أنت نظام فرز للذاكرة طويلة المدى لمساعد تداول. مهمتك: تحديد إذا كانت رسالة المستخدم تحتوي معلومة تستحق الحفظ الدائم.
+    const checkRes = await fetchWithTimeout(
+      "https://api.anthropic.com/v1/messages",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": process.env.ANTHROPIC_API_KEY!,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 300,
+          system: `أنت نظام فرز للذاكرة طويلة المدى لمساعد تداول. مهمتك: تحديد إذا كانت رسالة المستخدم تحتوي معلومة تستحق الحفظ الدائم.
 
 يستحق الحفظ فقط:
 - صفقة فعلية (دخول/خروج بسعر محدد)
@@ -826,9 +797,11 @@ async function autoSaveMemory(userMessage: string) {
 {"save": false}
 
 رد بـ JSON فقط بدون أي نص إضافي.`,
-        messages: [{ role: "user", content: `رسالة يزيد: "${userMessage}"` }],
-      }),
-    });
+          messages: [{ role: "user", content: `رسالة يزيد: "${userMessage}"` }],
+        }),
+      },
+      15_000,
+    );
     if (!checkRes.ok) return;
     const checkData = await checkRes.json();
     const rawText = checkData.content
@@ -840,10 +813,7 @@ async function autoSaveMemory(userMessage: string) {
     if (parsed.save && parsed.key && parsed.value) {
       const { error: memoryInsertError } = await supabase
         .from("fahd_memory")
-        .insert({
-          key: parsed.key,
-          value: parsed.value,
-        });
+        .insert({ key: parsed.key, value: parsed.value });
       if (memoryInsertError) {
         console.error("Failed to save fahd_memory:", memoryInsertError);
       }
@@ -854,21 +824,33 @@ async function autoSaveMemory(userMessage: string) {
 }
 
 async function callClaude(messages: any[], systemPrompt: string) {
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": process.env.ANTHROPIC_API_KEY!,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1500,
-      system: systemPrompt,
-      tools: TOOLS,
-      messages,
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(
+      "https://api.anthropic.com/v1/messages",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": process.env.ANTHROPIC_API_KEY!,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1500,
+          system: systemPrompt,
+          tools: TOOLS,
+          messages,
+        }),
+      },
+      30_000,
+    );
+  } catch (e: any) {
+    if (e?.name === "TimeoutError" || e?.name === "AbortError") {
+      throw new Error("انتهت مهلة الاتصال بالنموذج، حاول مرة ثانية.");
+    }
+    throw e;
+  }
   if (!response.ok) {
     const errText = await response.text();
     console.error("Anthropic API error:", errText);
@@ -922,8 +904,6 @@ export async function POST(req: NextRequest) {
     let marketData = "";
     const finnhubKey = process.env.FINNHUB_API_KEY;
     if (finnhubKey) {
-      // نشمل آخر رسائل يزيد بالبحث عن الرمز، مو بس الرسالة الحالية،
-      // عشان لو سأل بالسياق ("وش سعره؟") بعد ما ذكر الرمز برسالة سابقة
       const recentUserText = conversationHistory
         .filter((m: { role: string; content: string }) => m.role === "user")
         .slice(-4)
@@ -947,7 +927,6 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // أخبار وتقويم أرباح - بس للأسهم المحددة (مو SPY/QQQ) عشان نتجنب طلبات زايدة
       if (tickers.length > 0) {
         const newsResults = await Promise.all(
           tickers.map((s) => getCompanyNews(s, finnhubKey)),
@@ -965,7 +944,6 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // أخبار كلية وتقويم اقتصادي - دائماً، بغض النظر عن السهم المذكور
       const [generalNews, econCalendar] = await Promise.all([
         getGeneralMarketNews(finnhubKey),
         getEconomicCalendar(finnhubKey),
@@ -1095,19 +1073,11 @@ export async function POST(req: NextRequest) {
       { role: "user", content: message },
     ];
 
-    // ============================================
-    // حلقة تنفيذ الأدوات: لغاية 3 جولات (نفس نمط أحمد)
-    // ============================================
     let assistantText = "";
     const collectedToolResults: { name: string; input: any; output: any }[] =
       [];
     const maxRounds = 3;
 
-    // لو الطلب يذكر SPX/SPXW صراحة بدون أي رمز سهم عام آخر، نعتبره طلب
-    // SPXW حصري — ونمنع get_market_opportunities من التنفيذ حتى لو
-    // فهد استدعاها بالغلط، بدل الاعتماد على تعليمات الـ prompt فقط.
-    // نستخدم extractTickers نفسها (بدل قائمة رموز ثابتة) عشان تعمم على
-    // أي رمز يذكره يزيد، مو بس القائمة الافتراضية المعروفة مسبقًا.
     const mentionedTickers = extractTickers(message);
     const nonSpxTickers = mentionedTickers.filter(
       (ticker) => ticker !== "SPX" && ticker !== "SPXW",
@@ -1130,21 +1100,11 @@ export async function POST(req: NextRequest) {
         break;
       }
 
-      // أضف رد المساعد (يحتوي على طلب استخدام الأداة) للمحادثة
       workingMessages.push({ role: "assistant", content: data.content });
 
-      // نفّذ كل أداة مطلوبة
       const toolResults = [];
       for (const block of toolUseBlocks) {
         if (isSpxwOnlyRequest && block.name === "get_market_opportunities") {
-          // الطلب يخص SPXW حصرًا (SPX/SPXW بدون رمز سهم عام آخر) —
-          // نمنع أداة فرص الأسهم العامة من التنفيذ حتى لو فهد استدعاها،
-          // ونعيد له سبب واضح بدل النتيجة الفعلية.
-          //
-          // مهم: ما نضيفها لـ collectedToolResults، لأن onlySpxwToolWasUsed
-          // تحته يعتمد على إن SPXW هي الأداة الوحيدة اللي "نُفّذت فعليًا" —
-          // لو ضفناها هنا، إنفاذ رد WAIT/NO_MATCH الثابت تحته بيتعطل بصمت
-          // حتى لو الأداة المحظورة ما نُفذت فعليًا، بس النموذج حاول يستدعيها.
           const output = {
             skipped: true,
             reason:
@@ -1165,12 +1125,6 @@ export async function POST(req: NextRequest) {
               Math.min(2, Number(block.input?.maxResults) || 2),
             );
             const scan = await scanSpxwOpportunitiesV3({ maxResults });
-
-            // لا نبني خطة التريغر إلا لو فيه فرص فعلية — بحالة WAIT (اتجاه
-            // السوق غير محدد) أو NO_MATCH ما فيه داعي نسوي سكان ثاني كامل،
-            // وهذا يمنع كمان رسالة trigger مربكة تتعارض مع scan.status.
-            // نمرر scan الجاهز عبر precomputedScan حتى buildSpxwTriggerPlan
-            // ما يعيد سكان كامل ثاني لنفس البيانات (كان يسوي سكان مزدوج).
             const trigger =
               scan.status === "OPPORTUNITIES_FOUND"
                 ? await buildSpxwTriggerPlan({
@@ -1200,9 +1154,7 @@ export async function POST(req: NextRequest) {
               content: JSON.stringify(output),
             });
           } catch (e: any) {
-            const output = {
-              error: e?.message || "فشل تشغيل محركات SPXW",
-            };
+            const output = { error: e?.message || "فشل تشغيل محركات SPXW" };
             collectedToolResults.push({
               name: "get_spxw_trade_plan",
               input: block.input,
@@ -1219,7 +1171,6 @@ export async function POST(req: NextRequest) {
           try {
             const strategy: "FAHD" | "GOLDEN" =
               block.input?.strategy === "GOLDEN" ? "GOLDEN" : "FAHD";
-
             const requestedSymbols = Array.isArray(block.input?.symbols)
               ? block.input.symbols
                   .filter(
@@ -1230,34 +1181,28 @@ export async function POST(req: NextRequest) {
                   .filter(Boolean)
                   .slice(0, 20)
               : [];
-
             const symbols: string[] =
               requestedSymbols.length > 0
                 ? requestedSymbols
                 : DEFAULT_MARKET_OPPORTUNITIES_SYMBOLS;
-
             const maxDte =
               typeof block.input?.maxDte === "number"
                 ? Math.max(0, Math.min(60, Math.floor(block.input.maxDte)))
                 : undefined;
-
             const maxResults =
               typeof block.input?.maxResults === "number"
                 ? Math.max(1, Math.min(5, Math.floor(block.input.maxResults)))
                 : undefined;
-
             const scanConfig = {
               symbols,
               maxDte,
               maxResults,
               results: maxResults,
             };
-
             const result =
               strategy === "GOLDEN"
                 ? await scanGoldenOpportunities(scanConfig)
                 : await runFahdScannerV3(scanConfig);
-
             const output = {
               source: `Fahd Market Opportunities (${strategy})`,
               strategy,
@@ -1330,9 +1275,7 @@ export async function POST(req: NextRequest) {
               content: JSON.stringify(output),
             });
           } catch (e: any) {
-            const output = {
-              error: e.message || "فشل تشغيل محرك قرار السوق",
-            };
+            const output = { error: e.message || "فشل تشغيل محرك قرار السوق" };
             collectedToolResults.push({
               name: "get_market_decision",
               input: block.input,
@@ -1351,29 +1294,23 @@ export async function POST(req: NextRequest) {
               block.input.symbol,
               block.input.timeframe || "15min",
             );
-
             collectedToolResults.push({
               name: "get_stock_decision",
               input: block.input,
               output,
             });
-
             toolResults.push({
               type: "tool_result",
               tool_use_id: block.id,
               content: JSON.stringify(output),
             });
           } catch (e: any) {
-            const output = {
-              error: e.message || "فشل تشغيل محرك اتجاه السهم",
-            };
-
+            const output = { error: e.message || "فشل تشغيل محرك اتجاه السهم" };
             collectedToolResults.push({
               name: "get_stock_decision",
               input: block.input,
               output,
             });
-
             toolResults.push({
               type: "tool_result",
               tool_use_id: block.id,
@@ -1424,9 +1361,7 @@ export async function POST(req: NextRequest) {
               content: JSON.stringify(output),
             });
           } catch (e: any) {
-            const output = {
-              error: e.message || "فشل جلب مراكز Tradier",
-            };
+            const output = { error: e.message || "فشل جلب مراكز Tradier" };
             collectedToolResults.push({
               name: "get_positions",
               input: block.input,
@@ -1454,9 +1389,7 @@ export async function POST(req: NextRequest) {
               content: JSON.stringify(output),
             });
           } catch (e: any) {
-            const output = {
-              error: e.message || "فشل جلب السعر من Tradier",
-            };
+            const output = { error: e.message || "فشل جلب السعر من Tradier" };
             collectedToolResults.push({
               name: "get_tradier_quote",
               input: block.input,
@@ -1484,9 +1417,7 @@ export async function POST(req: NextRequest) {
               content: JSON.stringify(output),
             });
           } catch (e: any) {
-            const output = {
-              error: e.message || "فشل جلب تواريخ الاستحقاق",
-            };
+            const output = { error: e.message || "فشل جلب تواريخ الاستحقاق" };
             collectedToolResults.push({
               name: "get_options_expirations",
               input: block.input,
@@ -1522,11 +1453,9 @@ export async function POST(req: NextRequest) {
               typeof block.input?.symbol === "string"
                 ? block.input.symbol.trim().toUpperCase()
                 : "";
-
             if (symbol && !/^[A-Z0-9][A-Z0-9.:-]{0,31}$/.test(symbol)) {
               throw new Error("صيغة رمز السهم غير صحيحة");
             }
-
             let query = supabase
               .from("tradingview_signals")
               .select("symbol, signal_type, price, timeframe, created_at")
@@ -1549,9 +1478,7 @@ export async function POST(req: NextRequest) {
               is_error: !!error,
             });
           } catch (e: any) {
-            const output = {
-              error: e.message || "فشل جلب إشارات TradingView",
-            };
+            const output = { error: e.message || "فشل جلب إشارات TradingView" };
             collectedToolResults.push({
               name: "get_recent_tv_signals",
               input: block.input,
@@ -1571,42 +1498,34 @@ export async function POST(req: NextRequest) {
               block.input.symbol.trim()
                 ? block.input.symbol.trim().toUpperCase()
                 : undefined;
-
             if (symbol && !/^[A-Z0-9][A-Z0-9.:-]{0,31}$/.test(symbol)) {
               throw new Error("صيغة رمز الأصل غير صحيحة");
             }
-
             const platform =
               block.input?.platform === "telegram" ||
               block.input?.platform === "x"
                 ? block.input.platform
                 : undefined;
-
             const requestedMinutes = Number(block.input?.minutes);
             const minutes = Number.isFinite(requestedMinutes)
               ? Math.min(1440, Math.max(1, Math.trunc(requestedMinutes)))
               : 180;
-
             const requestedLimit = Number(block.input?.limit);
             const limit = Number.isFinite(requestedLimit)
               ? Math.min(100, Math.max(1, Math.trunc(requestedLimit)))
               : 20;
-
             const signals = await getRecentSocialSignals({
               symbol,
               platform,
               minutes,
               limit,
             });
-
             const output = summarizeSocialSignals(signals);
-
             collectedToolResults.push({
               name: "get_recent_social_signals",
               input: block.input,
               output,
             });
-
             toolResults.push({
               type: "tool_result",
               tool_use_id: block.id,
@@ -1616,13 +1535,11 @@ export async function POST(req: NextRequest) {
             const output = {
               error: e?.message || "فشل جلب الإشارات الاجتماعية",
             };
-
             collectedToolResults.push({
               name: "get_recent_social_signals",
               input: block.input,
               output,
             });
-
             toolResults.push({
               type: "tool_result",
               tool_use_id: block.id,
@@ -1647,9 +1564,7 @@ export async function POST(req: NextRequest) {
               content: JSON.stringify(chain),
             });
           } catch (e: any) {
-            const output = {
-              error: e.message || "فشل جلب سلسلة الخيارات",
-            };
+            const output = { error: e.message || "فشل جلب سلسلة الخيارات" };
             collectedToolResults.push({
               name: "get_options_chain",
               input: block.input,
@@ -1665,7 +1580,6 @@ export async function POST(req: NextRequest) {
         } else if (block.name === "analyze_trade") {
           try {
             const input = block.input as TradeEngineInput;
-
             if (
               !input ||
               !input.market ||
@@ -1679,7 +1593,6 @@ export async function POST(req: NextRequest) {
                 "بيانات السوق أو الأصل أو العقد أو التفعيل غير مكتملة",
               );
             }
-
             if (
               typeof input.market.spy.price !== "number" ||
               !Number.isFinite(input.market.spy.price) ||
@@ -1690,7 +1603,6 @@ export async function POST(req: NextRequest) {
                 "سعر SPY وسعر QQQ مطلوبان ويجب أن يكونا رقمين صحيحين",
               );
             }
-
             if (
               typeof input.stock.symbol !== "string" ||
               input.stock.symbol.trim().length === 0 ||
@@ -1699,7 +1611,6 @@ export async function POST(req: NextRequest) {
             ) {
               throw new Error("رمز الأصل وسعره الحالي مطلوبان");
             }
-
             if (
               typeof input.option.symbol !== "string" ||
               input.option.symbol.trim().length === 0 ||
@@ -1712,14 +1623,12 @@ export async function POST(req: NextRequest) {
             ) {
               throw new Error("بيانات العقد الأساسية غير مكتملة");
             }
-
             if (
               input.option.optionType !== "CALL" &&
               input.option.optionType !== "PUT"
             ) {
               throw new Error("نوع العقد يجب أن يكون CALL أو PUT");
             }
-
             if (
               input.trigger.direction !== "CALL" &&
               input.trigger.direction !== "PUT" &&
@@ -1729,14 +1638,12 @@ export async function POST(req: NextRequest) {
                 "اتجاه التفعيل يجب أن يكون CALL أو PUT أو NEUTRAL",
               );
             }
-
             if (
               typeof input.trigger.candleClose !== "number" ||
               !Number.isFinite(input.trigger.candleClose)
             ) {
               throw new Error("إغلاق شمعة التفعيل مطلوب");
             }
-
             const normalizedInput: TradeEngineInput = {
               ...input,
               stock: {
@@ -1748,22 +1655,16 @@ export async function POST(req: NextRequest) {
                 symbol: input.option.symbol.trim().toUpperCase(),
               },
             };
-
             const baseOutput = runTradeEngine(normalizedInput);
             const output = await applySocialIntelligenceToTradeReport(
               baseOutput,
-              {
-                minutes: 1440,
-                limit: 50,
-              },
+              { minutes: 1440, limit: 50 },
             );
-
             collectedToolResults.push({
               name: "analyze_trade",
               input: normalizedInput,
               output,
             });
-
             toolResults.push({
               type: "tool_result",
               tool_use_id: block.id,
@@ -1773,13 +1674,11 @@ export async function POST(req: NextRequest) {
             const output = {
               error: e?.message || "فشل تشغيل محرك تقييم الصفقة",
             };
-
             collectedToolResults.push({
               name: "analyze_trade",
               input: block.input,
               output,
             });
-
             toolResults.push({
               type: "tool_result",
               tool_use_id: block.id,
@@ -1798,7 +1697,6 @@ export async function POST(req: NextRequest) {
       }
       workingMessages.push({ role: "user", content: toolResults });
 
-      // لو وصلنا آخر جولة وما زال فيه tool_use، خذ أي نص متوفر كحل احتياطي
       if (round === maxRounds - 1) {
         assistantText =
           textBlocks ||
@@ -1806,20 +1704,10 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // إنفاذ برمجي: لو آخر استدعاء لأداة SPXW رجع scan.status = WAIT أو
-    // NO_MATCH، نفرض رسالة ثابتة مبنية من حقول scan الحقيقية بدل ما نسيب
-    // النموذج يصوغ نص حر — لأن التجربة أثبتت إنه ممكن يضيف ادعاءات غلط
-    // (زي "SPX تقديري عبر Proxy" أو خلط NO_MATCH بمنطق التريغر) حتى مع
-    // تعليمات صريحة بالـ prompt. يغطي هذا مسار الخروج الطبيعي ومسار
-    // استنفاد الجولات معًا.
     const lastSpxwResult = [...collectedToolResults]
       .reverse()
       .find((result) => result.name === "get_spxw_trade_plan");
 
-    // نفرض الرد الثابت فقط لو SPXW كانت الأداة الوحيدة المستخدمة —
-    // لو فيه أدوات ثانية (مثلاً طلب مختلط: "SPXW + حلل NVDA")، نسيب
-    // buildFahdResponse يعرض نتائج الأدوات الثانية، وتعليمات الـ prompt
-    // تمنع الادعاء بفحص SPXW ضمن ردها.
     const onlySpxwToolWasUsed =
       collectedToolResults.length > 0 &&
       collectedToolResults.every(
@@ -1830,11 +1718,9 @@ export async function POST(req: NextRequest) {
 
     function buildEnforcedSpxwReply(): string | null {
       if (!onlySpxwToolWasUsed || !lastSpxwResult) return null;
-
       if (spxwScanStatus === "WAIT") {
         return "اتجاه السوق غير مؤكد حاليًا، لذلك لم يتم جلب أو فحص عقود SPXW.";
       }
-
       if (spxwScanStatus === "NO_MATCH") {
         const scan = lastSpxwResult.output.scan;
         const biasLabel =
@@ -1843,7 +1729,6 @@ export async function POST(req: NextRequest) {
             : scan.market?.bias === "PUT_BIAS"
               ? "هابط (PUT_BIAS)"
               : "غير محدد";
-
         return (
           `لا توجد حاليًا أي فرصة SPXW تستوفي معايير الجودة والسيولة والاتجاه.\n\n` +
           `تم فحص ${scan.contractsScanned ?? 0} عقد من سلسلة SPX،` +
@@ -1858,7 +1743,6 @@ export async function POST(req: NextRequest) {
           ` لا توجد خطة Trigger لأن المسح لم ينتج فرصة مؤهلة.`
         );
       }
-
       return null;
     }
 
@@ -1882,8 +1766,6 @@ export async function POST(req: NextRequest) {
       console.error("Failed to save Fahd conversation:", conversationSaveError);
     }
 
-    // الحفظ التلقائي للذاكرة طويلة المدى - بس لو الفلتر السريع اشتبه فيها،
-    // عشان نتجنب استدعاء Claude إضافي على كل رسالة عادية
     if (ENABLE_AUTO_MEMORY && mightContainSaveworthyInfo(message)) {
       await autoSaveMemory(message);
     }
