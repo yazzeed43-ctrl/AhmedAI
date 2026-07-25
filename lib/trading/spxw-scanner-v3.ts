@@ -8,6 +8,11 @@ import {
   scoreOption as scoreOptionBrain,
   type OptionBrainInput,
 } from "@/lib/fahd/option-brain";
+import {
+  scanExpirationCandidates,
+  summarizeExpirationScans,
+  type ExpirationScanResult,
+} from "./spxw-scan-completeness";
 
 type Direction = "CALL" | "PUT";
 
@@ -158,37 +163,14 @@ function scoreOption(option: TradierOption, underlyingPrice: number) {
   };
 }
 
-async function discoverDailyExpirations(maxDte: number): Promise<
-  {
-    expiration: string;
-    contracts: TradierOption[];
-  }[]
-> {
+async function discoverDailyExpirations(
+  maxDte: number,
+): Promise<ExpirationScanResult[]> {
   const candidates = nextWeekdays(10).filter(
     (expiration) => daysToExpiration(expiration) <= maxDte,
   );
 
-  const results = await Promise.all(
-    candidates.map(async (expiration) => {
-      try {
-        const contracts = await getTradierOptionChain("SPX", expiration);
-
-        return {
-          expiration,
-          contracts,
-        };
-      } catch {
-        return {
-          expiration,
-          contracts: [] as TradierOption[],
-        };
-      }
-    }),
-  );
-
-  return results.filter((item) =>
-    item.contracts.some((contract) => optionRoot(contract.symbol) === "SPXW"),
-  );
+  return scanExpirationCandidates(candidates, getTradierOptionChain);
 }
 
 export async function scanSpxwOpportunitiesV3(
@@ -207,6 +189,10 @@ export async function scanSpxwOpportunitiesV3(
     return {
       status: "WAIT",
       market,
+      expirationsRequested: 0,
+      expirationsSucceeded: 0,
+      expirationsFailed: 0,
+      providerErrors: [],
       opportunities: [],
       message: "اتجاه السوق غير مؤكد؛ لا توجد فرصة SPXW.",
     };
@@ -216,16 +202,25 @@ export async function scanSpxwOpportunitiesV3(
 
   const maxDte = Math.max(0, Math.floor(config.maxDte ?? 10));
 
-  const discovered = config.expiration
+  const expirationResults: ExpirationScanResult[] = config.expiration
     ? daysToExpiration(config.expiration) <= maxDte
-      ? [
-          {
-            expiration: config.expiration,
-            contracts: await getTradierOptionChain("SPX", config.expiration),
-          },
-        ]
+      ? await scanExpirationCandidates(
+          [config.expiration],
+          getTradierOptionChain,
+        )
       : []
     : await discoverDailyExpirations(maxDte);
+
+  const successfulScans = expirationResults.filter(
+    (
+      result,
+    ): result is Extract<ExpirationScanResult, { status: "SUCCESS" }> =>
+      result.status === "SUCCESS",
+  );
+
+  const discovered = successfulScans.filter((item) =>
+    item.contracts.some((contract) => optionRoot(contract.symbol) === "SPXW"),
+  );
 
   const all = discovered.flatMap((item) => item.contracts);
 
@@ -282,18 +277,38 @@ export async function scanSpxwOpportunitiesV3(
       ...item,
     }));
 
+  const completeness = summarizeExpirationScans(
+    expirationResults,
+    opportunities.length,
+  );
+
+  const message =
+    completeness.status === "DATA_PROVIDER_ERROR"
+      ? completeness.providerErrors.some(
+          (error) => error.code === "NO_EXPIRATIONS_AVAILABLE",
+        )
+        ? "تعذر إكمال مسح SPXW لعدم توفر استحقاقات قابلة للمسح حاليًا. لم يتم بناء خطة دخول."
+        : "تعذر إكمال مسح SPXW بسبب فشل بيانات Tradier. لم يتم بناء خطة دخول."
+      : completeness.status === "PARTIAL_DATA"
+        ? "اكتمل جزء فقط من مسح SPXW بسبب فشل بعض طلبات Tradier. النتائج جزئية وللتشخيص فقط، ولم يتم بناء خطة دخول."
+        : opportunities.length
+          ? `وجد فهد ${opportunities.length} فرصة SPXW متوافقة مع السوق.`
+          : "تم العثور على عقود SPXW، لكن لا يوجد عقد يحقق شروط الجودة الآن.";
+
   return {
     generatedAt: new Date().toISOString(),
-    status: opportunities.length ? "OPPORTUNITIES_FOUND" : "NO_MATCH",
+    status: completeness.status,
     source: "Tradier SPX chains filtered to SPXW",
     market,
     underlyingPrice: Number(underlyingPrice.toFixed(2)),
     expirationsScanned: discovered.map((item) => item.expiration),
+    expirationsRequested: completeness.expirationsRequested,
+    expirationsSucceeded: completeness.expirationsSucceeded,
+    expirationsFailed: completeness.expirationsFailed,
+    providerErrors: completeness.providerErrors,
     contractsScanned: all.length,
     spxwContractsFound: spxw.length,
     opportunities,
-    message: opportunities.length
-      ? `وجد فهد ${opportunities.length} فرصة SPXW متوافقة مع السوق.`
-      : "تم العثور على عقود SPXW، لكن لا يوجد عقد يحقق شروط الجودة الآن.",
+    message,
   };
 }

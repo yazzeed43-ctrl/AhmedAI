@@ -31,7 +31,11 @@ export async function scanSpxwOpportunities(config: SpxwScannerConfig = {}) {
     maxDelta: config.maxDelta ?? 0.7,
   });
 
-  if (result.status === "WAIT") {
+  if (
+    result.status === "WAIT" ||
+    result.status === "DATA_PROVIDER_ERROR" ||
+    result.status === "PARTIAL_DATA"
+  ) {
     return {
       ...result,
       source: "Tradier SPX/SPXW option chains via SPXW Scanner V3",
@@ -47,11 +51,15 @@ export async function scanSpxwOpportunities(config: SpxwScannerConfig = {}) {
 
   return {
     generatedAt: result.generatedAt,
-    status: opportunities.length > 0 ? "OPPORTUNITIES_FOUND" : "NO_MATCH",
+    status: result.status,
     source: "Tradier SPX/SPXW option chains via SPXW Scanner V3",
     market: result.market,
     underlyingPrice: result.underlyingPrice,
     expirationsScanned: result.expirationsScanned ?? [],
+    expirationsRequested: result.expirationsRequested,
+    expirationsSucceeded: result.expirationsSucceeded,
+    expirationsFailed: result.expirationsFailed,
+    providerErrors: result.providerErrors,
     contractsScanned: result.contractsScanned,
     spxwContractsFound: result.spxwContractsFound,
     opportunities,

@@ -62,13 +62,20 @@ export async function buildSpxwTriggerPlan(config: SpxwTriggerConfig = {}) {
       maxResults: config.maxResults ?? 2,
     }));
 
-  if (!scan.opportunities.length) {
+  if (scan.status !== "OPPORTUNITIES_FOUND" || !scan.opportunities.length) {
+    const message =
+      scan.status === "DATA_PROVIDER_ERROR"
+        ? "تعذر بناء خطة SPXW لأن بيانات المسح غير مكتملة."
+        : scan.status === "PARTIAL_DATA"
+          ? "لم تُبنَ خطة SPXW لأن نتائج المسح جزئية وللتشخيص فقط."
+          : "لا توجد فرصة SPXW مطابقة للشروط الآن.";
+
     return {
       generatedAt: new Date().toISOString(),
       state: "NO_OPPORTUNITY" as TriggerState,
       scan,
       plans: [],
-      message: "لا توجد فرصة SPXW مطابقة للشروط الآن.",
+      message,
     };
   }
 

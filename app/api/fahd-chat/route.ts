@@ -1010,10 +1010,12 @@ export async function POST(req: NextRequest) {
 - استخدم contractSymbol وstrike وexpiration كما رجعت حرفيًا.
 - استخدم سعر SPX الحقيقي من Tradier فقط. ممنوع نهائيًا وصف سعر SPX بأنه "تقديري" أو "Proxy" أو مشتق من SPY بأي صيغة، حتى لو كنت متأكد إن هذا شائع بمصادر ثانية — الأداة ترجع سعر SPX الحقيقي دايمًا (راجع strictRules.useRealSpxPrice و forbidApproximationFromSpy بمخرجات الأداة).
 - ممنوع SPY × 10 وممنوع اختراع عقد أو تاريخ.
-- فرّق دايمًا بين ثلاث حالات مختلفة بحقل scan.status (مو trigger.state):
+- فرّق دايمًا بين خمس حالات مختلفة بحقل scan.status (مو trigger.state):
   1. scan.status = "WAIT": السوق غير واضح الاتجاه، والمحرك لم يفحص أي عقود SPXW إطلاقًا (ما جلب السلسلة حتى). اكتب بالضبط: "اتجاه السوق غير مؤكد حاليًا، لذلك لم يتم جلب أو فحص عقود SPXW." لا تقل "فحص العقود ولم يجد فرصة" ولا تذكر أي رقم عقود مفحوصة في هذي الحالة.
-  2. scan.status = "NO_MATCH": المحرك فحص عقود SPXW فعليًا ولم يجتز أي عقد شروط الجودة والسيولة. يمكنك هنا فقط أن تقول إن العقود فُحصت ولم توجد فرصة مؤهلة.
-  3. scan.status = "OPPORTUNITIES_FOUND": فيه عقد أو أكثر مؤهل. انتقل لفحص trigger.state.
+  2. scan.status = "DATA_PROVIDER_ERROR": تعذر إكمال المسح بسبب عدم توفر استحقاقات قابلة للمسح أو فشل بيانات Tradier. لا تبنِ Trigger ولا تدّع أن العقود فُحصت بنجاح.
+  3. scan.status = "PARTIAL_DATA": نجح جزء من المسح وفشل جزء آخر. النتائج جزئية وللتشخيص فقط؛ لا تعرض أي فرصة كتوصية ولا تبنِ Trigger.
+  4. scan.status = "NO_MATCH": اكتمل المسح بنجاح ولم يجتز أي عقد شروط الجودة والسيولة. يمكنك هنا فقط أن تقول إن العقود فُحصت ولم توجد فرصة مؤهلة.
+  5. scan.status = "OPPORTUNITIES_FOUND": اكتمل المسح بنجاح وفيه عقد أو أكثر مؤهل. انتقل لفحص trigger.state.
 - إذا trigger.state = WAIT_TRIGGER اكتب: لا تدخل الآن، السعر لسا ما وصل مستوى التفعيل.
 - إذا trigger.state = PRICE_TRIGGERED اكتب بوضوح: السعر لمس مستوى التفعيل لحظيًا، لكن تأكيد إغلاق شمعة 5 دقائق لسا مطلوب قبل الدخول الفعلي. لا تقل "ادخل الآن" ولا تعتبرها إشارة دخول مؤكدة — هذي نقطة حساسة، PRICE_TRIGGERED يعني لمس السعر فقط مو تأكيد.
 - إذا trigger.state = CANCELLED اكتب: الفرصة أُلغيت بعد كسر مستوى الإبطال، لا تقترحها.
@@ -1774,6 +1776,26 @@ export async function POST(req: NextRequest) {
       if (!onlySpxwToolWasUsed || !lastSpxwResult) return null;
       if (spxwScanStatus === "WAIT") {
         return "اتجاه السوق غير مؤكد حاليًا، لذلك لم يتم جلب أو فحص عقود SPXW.";
+      }
+      if (spxwScanStatus === "DATA_PROVIDER_ERROR") {
+        const providerErrors =
+          lastSpxwResult.output.scan?.providerErrors ?? [];
+        const noExpirations = providerErrors.some(
+          (error: { code?: string }) =>
+            error.code === "NO_EXPIRATIONS_AVAILABLE",
+        );
+
+        return noExpirations
+          ? "تعذر إكمال مسح SPXW لعدم توفر استحقاقات قابلة للمسح حاليًا. لم يتم بناء خطة دخول."
+          : "تعذر إكمال مسح SPXW بسبب فشل بيانات Tradier. لم يتم بناء خطة دخول.";
+      }
+      if (spxwScanStatus === "PARTIAL_DATA") {
+        const scan = lastSpxwResult.output.scan;
+        return (
+          "اكتمل جزء فقط من مسح SPXW بسبب فشل بعض طلبات Tradier. " +
+          `نجح ${scan.expirationsSucceeded ?? 0} من أصل ${scan.expirationsRequested ?? 0} استحقاق. ` +
+          "النتائج جزئية وللتشخيص فقط، ولم يتم بناء خطة دخول."
+        );
       }
       if (spxwScanStatus === "NO_MATCH") {
         const scan = lastSpxwResult.output.scan;
