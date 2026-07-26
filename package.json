@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "test": "tsc --module commonjs --moduleResolution node --target ES2020 --outDir .test-dist --esModuleInterop --skipLibCheck tests/spxw-scan-completeness.test.ts tests/spx-price-freshness.test.ts tests/spxw-candle-confirmation.test.ts tests/exact-option-contract.test.ts tests/premarket-universe-ranking.test.ts tests/tradier-scan-completeness.test.ts lib/trading/spxw-scan-completeness.ts lib/trading/spx-price-freshness.ts lib/trading/spxw-candle-confirmation.ts lib/trading/exact-option-contract.ts lib/trading/premarket-universe-ranking.ts lib/trading/tradier-scanner-core/completeness.ts lib/tradier.ts && node --test .test-dist/tests/spxw-scan-completeness.test.js .test-dist/tests/spx-price-freshness.test.js .test-dist/tests/spxw-candle-confirmation.test.js .test-dist/tests/exact-option-contract.test.js .test-dist/tests/premarket-universe-ranking.test.js .test-dist/tests/tradier-scan-completeness.test.js && npm run test:tradier-scanner && npm run test:fahd-decision",
-    "test:tradier-scanner": "tsc -p tsconfig.tradier-scanner-tests.json && node --test .test-dist-tradier-scanner/tests/tradier-scanner-integration.test.js",
+    "test:tradier-scanner": "tsc -p tsconfig.tradier-scanner-tests.json && node --test .test-dist-tradier-scanner/tests/tradier-scanner-integration.test.js .test-dist-tradier-scanner/tests/premarket-cron.test.js",
     "test:fahd-decision": "tsc -p tsconfig.fahd-decision-tests.json && node --test .test-dist-fahd-decision/tests/fahd-decision/*.test.js",
     "start": "next start"
   },
