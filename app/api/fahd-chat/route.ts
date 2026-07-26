@@ -27,6 +27,8 @@ import {
 } from "@/lib/social/social-signals";
 import { applySocialIntelligenceToTradeReport } from "@/lib/social/social-decision-context";
 import { buildFahdResponse } from "@/lib/fahd/compact-response";
+import { buildSpxwDecisionContext } from "@/lib/trading/fahd-decision/spxw-decision-context";
+import type { RawHeadline } from "@/lib/trading/fahd-decision/news-modifier-types";
 
 const FINNHUB_BASE = "https://finnhub.io/api/v1";
 
@@ -288,6 +290,85 @@ async function getEconomicCalendar(apiKey: string) {
     console.error(`Finnhub economic calendar fetch threw: ${e?.message || e}`);
     return null;
   }
+}
+
+let decisionHeadlineCache: {
+  data: RawHeadline[];
+  expiresAt: number;
+} | null = null;
+
+async function getDecisionHeadlines(apiKey: string): Promise<RawHeadline[]> {
+  if (decisionHeadlineCache && decisionHeadlineCache.expiresAt > Date.now()) {
+    return decisionHeadlineCache.data;
+  }
+
+  const response = await fetchWithTimeout(
+    `${FINNHUB_BASE}/news?category=general&token=${apiKey}`,
+    { cache: "no-store" },
+    10_000,
+  );
+  if (!response.ok) {
+    throw new Error(`Finnhub news HTTP ${response.status}`);
+  }
+
+  const payload = await response.json();
+  if (!Array.isArray(payload)) {
+    throw new Error("Finnhub news response is invalid");
+  }
+
+  const headlines = payload.slice(0, 8).flatMap((item: any) => {
+    const title =
+      typeof item?.headline === "string" ? item.headline.trim() : "";
+    const timestamp = Number(item?.datetime);
+    if (!title || !Number.isFinite(timestamp) || timestamp <= 0) return [];
+    return [{
+      title,
+      source: typeof item?.source === "string" ? item.source : undefined,
+      publishedAt: new Date(timestamp * 1_000).toISOString(),
+    }];
+  });
+
+  decisionHeadlineCache = {
+    data: headlines,
+    expiresAt: Date.now() + 5 * 60 * 1_000,
+  };
+  return headlines;
+}
+
+async function classifyDecisionHeadlines(input: {
+  symbol: string;
+  headlines: RawHeadline[];
+}): Promise<string> {
+  const response = await fetchWithTimeout(
+    "https://api.anthropic.com/v1/messages",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY!,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: process.env.ANTHROPIC_NEWS_MODEL || "claude-sonnet-4-6",
+        max_tokens: 250,
+        system:
+          "Classify the current market-news effect for SPXW. Return valid JSON only with sentiment POSITIVE, NEGATIVE, NEUTRAL, or MIXED; confidence from 0 to 1; scoreAdjustment from -8 to 4; and warnings as a string array.",
+        messages: [{ role: "user", content: JSON.stringify(input) }],
+      }),
+    },
+    12_000,
+  );
+  if (!response.ok) {
+    throw new Error(`News classifier HTTP ${response.status}`);
+  }
+  const payload = await response.json();
+  return Array.isArray(payload?.content)
+    ? payload.content
+        .filter((block: any) => block?.type === "text")
+        .map((block: any) => String(block.text ?? ""))
+        .join("")
+        .trim()
+    : "";
 }
 
 const TOOLS = [
@@ -1184,22 +1265,37 @@ export async function POST(req: NextRequest) {
               Math.min(2, Number(block.input?.maxResults) || 2),
             );
             const scan = await scanSpxwOpportunitiesV3({ maxResults });
-            const trigger =
-              scan.status === "OPPORTUNITIES_FOUND"
-                ? await buildSpxwTriggerPlan({
+            const decisionContext = await buildSpxwDecisionContext(scan, {
+              finnhubKey,
+              finnhubBase: FINNHUB_BASE,
+              fetchWithTimeout,
+              formatDate,
+              getPositions,
+              fetchGeneralHeadlines: () =>
+                finnhubKey
+                  ? getDecisionHeadlines(finnhubKey)
+                  : Promise.resolve([]),
+              classifyFn: classifyDecisionHeadlines,
+              buildTrigger: () =>
+                buildSpxwTriggerPlan({
                     maxResults,
                     precomputedScan: scan,
-                  })
-                : null;
+                  }),
+            });
             const output = {
               source: "Fahd SPXW engines",
               scan,
-              trigger,
+              trigger: decisionContext.enforcement.executableTrigger,
+              monitoringPlans: decisionContext.monitoringPlans,
+              decisionContext,
+              userMessage: decisionContext.enforcement.userMessage,
               strictRules: {
                 useExactContractSymbol: true,
                 useRealSpxPrice: true,
                 forbidApproximationFromSpy: true,
                 forbidInventedStrikeOrExpiration: true,
+                economicCalendarGateCannotBeOverridden: true,
+                finalTradeDecisionCannotBeOverridden: true,
               },
             };
             collectedToolResults.push({
@@ -1777,6 +1873,14 @@ export async function POST(req: NextRequest) {
 
     function buildEnforcedSpxwReply(): string | null {
       if (!onlySpxwToolWasUsed || !lastSpxwResult) return null;
+      const enforcement = lastSpxwResult.output?.decisionContext?.enforcement;
+      if (enforcement && enforcement.isExecutable === false) {
+        return String(
+          lastSpxwResult.output?.userMessage ??
+            enforcement.userMessage ??
+            "لم تصدر توصية دخول قابلة للتنفيذ.",
+        );
+      }
       if (spxwScanStatus === "WAIT") {
         return "اتجاه السوق غير مؤكد حاليًا، لذلك لم يتم جلب أو فحص عقود SPXW.";
       }

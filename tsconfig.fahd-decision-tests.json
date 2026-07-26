@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": ".test-dist-fahd-decision",
+    "rootDir": ".",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "types": ["node"],
+    "lib": ["ES2020", "DOM"]
+  },
+  "include": [
+    "lib/trading/fahd-decision/**/*.ts",
+    "tests/fahd-decision/**/*.test.ts"
+  ]
+}
