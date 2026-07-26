@@ -1119,7 +1119,8 @@ export async function POST(req: NextRequest) {
     staticSystemPrompt += `
 
 # SPXW reporting invariants
-- If economicGate.dataStatus is UNAVAILABLE or PARTIAL, report finalDecision as WAIT_DATA and blockNewTrades as true. Keep scan.status unchanged for diagnostics, but never present NO_OPPORTUNITY as the overall decision while calendar data is unavailable.
+- If economicGate.blockCause is INCOMPLETE_DATA, report finalDecision as WAIT_DATA and blockNewTrades as true. EVENT_AND_INCOMPLETE_DATA remains a confirmed economic-event block. Keep scan.status unchanged for diagnostics, but never present NO_OPPORTUNITY as the overall decision while calendar data is unavailable.
+- Explain economic blocking from economicGate.blockCause: ECONOMIC_EVENT means a confirmed event, INCOMPLETE_DATA means a fail-closed data outage, and EVENT_AND_INCOMPLETE_DATA means both. Never describe INCOMPLETE_DATA as a confirmed economic event.
 - For SPX prices, always display provider and priceSource separately. Example: provider=Tradier, priceSource=close. Never describe a stale or close-derived value as live, current, or merely "real" without the stale warning.
 - Display tradeDate exactly as an ISO-8601 timestamp with its original timezone or UTC designator. Do not relabel UTC as ET. Convert to America/New_York only with an explicit timezone conversion and label.
 - Never say today or tomorrow in an SPXW report. Print the exact report date and target session date as YYYY-MM-DD. Do not invent the next trading session; if it was not calculated from the exchange calendar, say that it needs verification.

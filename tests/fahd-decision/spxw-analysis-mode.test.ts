@@ -8,6 +8,7 @@ import { determineFinalTradeDecision } from "../../lib/trading/fahd-decision/fin
 const unavailableGate = {
   level: "CAUTION" as const,
   blockNewTrades: true,
+  blockCause: "INCOMPLETE_DATA" as const,
   warnExistingPositions: false,
   existingPositionAction: "NONE" as const,
   dataStatus: "UNAVAILABLE" as const,

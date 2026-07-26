@@ -197,7 +197,7 @@ export function formatSpxwPremarketWatchlist(input: {
     `حداثة البيانات: ${preparation.dataFreshness}`,
     `سعر SPX المرجعي: ${String(scan.underlyingPrice ?? "غير متاح")}`,
     `مزود السعر: Tradier | priceSource: ${quote.priceSource ?? "unknown"} | freshness: ${quote.freshness ?? "unknown"} | ageSeconds: ${quote.ageSeconds ?? "unknown"} | tradeDate: ${quote.tradeDate ?? "unknown"}`,
-    `التقويم الاقتصادي: ${economicGate.dataStatus} | blockNewTrades: ${economicGate.blockNewTrades}`,
+    `التقويم الاقتصادي: ${economicGate.dataStatus} | blockNewTrades: ${economicGate.blockNewTrades} | blockCause: ${economicGate.blockCause}`,
     "الأخبار: لم تُستخدم لاعتماد دخول في وضع التحضير؛ يجب إعادة فحصها قبل التنفيذ.",
   ];
 

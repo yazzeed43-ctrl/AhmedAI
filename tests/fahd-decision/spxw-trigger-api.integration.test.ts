@@ -23,6 +23,7 @@ test("POST /api/spxw-trigger blocks a newly appeared economic event after candle
     refreshEconomicGate: async () => ({
       level: "BLOCK",
       blockNewTrades: true,
+      blockCause: "ECONOMIC_EVENT",
       warnExistingPositions: true,
       existingPositionAction: "REDUCE_RISK",
       dataStatus: "AVAILABLE",
@@ -85,6 +86,7 @@ test("SPXW Trigger POST parses monitoringPlans, follows them, and returns the pu
       refreshEconomicGate: async () => ({
         level: "BLOCK",
         blockNewTrades: true,
+        blockCause: "ECONOMIC_EVENT",
         warnExistingPositions: false,
         existingPositionAction: "NONE",
         dataStatus: "AVAILABLE",

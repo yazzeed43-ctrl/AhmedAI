@@ -55,6 +55,7 @@ function unavailableEconomicGate(
   return {
     level: "CAUTION",
     blockNewTrades: true,
+    blockCause: "INCOMPLETE_DATA",
     warnExistingPositions: false,
     existingPositionAction: "NONE",
     dataStatus: "UNAVAILABLE",

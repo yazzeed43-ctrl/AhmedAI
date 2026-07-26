@@ -8,6 +8,7 @@ function noneGate(): EconomicGateDecision {
   return {
     level: "NONE",
     blockNewTrades: false,
+    blockCause: "NONE",
     warnExistingPositions: false,
     existingPositionAction: "NONE",
     dataStatus: "AVAILABLE",
@@ -16,7 +17,13 @@ function noneGate(): EconomicGateDecision {
 }
 
 function blockGate(): EconomicGateDecision {
-  return { ...noneGate(), level: "BLOCK", blockNewTrades: true, reason: "حدث عالي التأثير ظهر أثناء الانتظار." };
+  return {
+    ...noneGate(),
+    level: "BLOCK",
+    blockNewTrades: true,
+    blockCause: "ECONOMIC_EVENT",
+    reason: "حدث عالي التأثير ظهر أثناء الانتظار.",
+  };
 }
 
 test("لا حدث جديد أثناء الانتظار => يعيد الجلب ويصل READY طبيعياً", async () => {
@@ -64,7 +71,13 @@ test("حدث اقتصادي ظهر أثناء الانتظار (لم يكن مو
 
 test("بيانات التقويم أصبحت UNAVAILABLE أثناء الانتظار => WAIT_DATA، بدون استدعاء الأخبار", async () => {
   let newsCalled = false;
-  const unavailableGate: EconomicGateDecision = { ...noneGate(), level: "CAUTION", dataStatus: "UNAVAILABLE" };
+  const unavailableGate: EconomicGateDecision = {
+    ...noneGate(),
+    level: "CAUTION",
+    blockNewTrades: true,
+    blockCause: "INCOMPLETE_DATA",
+    dataStatus: "UNAVAILABLE",
+  };
 
   const result = await reevaluateGatesAtCandleConfirmation(
     { scanStatus: "OPPORTUNITIES_FOUND", triggerBuilt: true },

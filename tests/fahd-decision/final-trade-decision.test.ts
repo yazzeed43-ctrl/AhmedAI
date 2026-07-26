@@ -11,6 +11,7 @@ function noneGate(): EconomicGateDecision {
   return {
     level: "NONE",
     blockNewTrades: false,
+    blockCause: "NONE",
     warnExistingPositions: false,
     existingPositionAction: "NONE",
     dataStatus: "AVAILABLE",
@@ -19,7 +20,13 @@ function noneGate(): EconomicGateDecision {
 }
 
 function blockGate(): EconomicGateDecision {
-  return { ...noneGate(), level: "BLOCK", blockNewTrades: true, reason: "حدث عالي التأثير قريب." };
+  return {
+    ...noneGate(),
+    level: "BLOCK",
+    blockNewTrades: true,
+    blockCause: "ECONOMIC_EVENT",
+    reason: "حدث عالي التأثير قريب.",
+  };
 }
 
 function baseInput(overrides: Partial<FinalTradeDecisionInput> = {}): FinalTradeDecisionInput {
@@ -92,6 +99,7 @@ test("NO_MATCH remains a scan diagnostic but unavailable calendar makes the over
   const unavailableGate: EconomicGateDecision = {
     level: "CAUTION",
     blockNewTrades: true,
+    blockCause: "INCOMPLETE_DATA",
     warnExistingPositions: false,
     existingPositionAction: "NONE",
     dataStatus: "UNAVAILABLE",
@@ -120,7 +128,8 @@ test("scanStatus بقيمة غير معروفة (مثل DATA_UNAVAILABLE) => WAI
 test("economicGate.dataStatus = UNAVAILABLE (حتى مع level=CAUTION فقط) => WAIT_DATA وليس READY", () => {
   const cautionGate: EconomicGateDecision = {
     level: "CAUTION",
-    blockNewTrades: false,
+    blockNewTrades: true,
+    blockCause: "INCOMPLETE_DATA",
     warnExistingPositions: false,
     existingPositionAction: "NONE",
     dataStatus: "UNAVAILABLE",
@@ -133,7 +142,8 @@ test("economicGate.dataStatus = UNAVAILABLE (حتى مع level=CAUTION فقط) =
 test("economicGate.dataStatus = PARTIAL => WAIT_DATA", () => {
   const partialGate: EconomicGateDecision = {
     level: "CAUTION",
-    blockNewTrades: false,
+    blockNewTrades: true,
+    blockCause: "INCOMPLETE_DATA",
     warnExistingPositions: false,
     existingPositionAction: "NONE",
     dataStatus: "PARTIAL",
@@ -148,17 +158,18 @@ test("economicGate.dataStatus = AVAILABLE مع level=NONE => يستمر طبيع
   assert.equal(result, "READY");
 });
 
-test("economicGate PARTIAL remains WAIT_DATA even when a known event also blocks", () => {
+test("a known blocking event remains BLOCKED_ECONOMIC_EVENT when calendar data is partial", () => {
   const blockWithPartialData: EconomicGateDecision = {
     level: "BLOCK",
     blockNewTrades: true,
+    blockCause: "EVENT_AND_INCOMPLETE_DATA",
     warnExistingPositions: false,
     existingPositionAction: "NONE",
     dataStatus: "PARTIAL",
     reason: "حدث عالي التأثير مؤكد رغم نقص بعض البيانات.",
   };
   const result = determineFinalTradeDecision(baseInput({ economicGate: blockWithPartialData }));
-  assert.equal(result, "WAIT_DATA");
+  assert.equal(result, "BLOCKED_ECONOMIC_EVENT");
 });
 
 // ============================================================

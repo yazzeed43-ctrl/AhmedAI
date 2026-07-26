@@ -33,6 +33,12 @@ export type ExistingPositionAction =
   | "REDUCE_RISK"
   | "AVOID_NEW_SIZE";
 
+export type EconomicBlockCause =
+  | "NONE"
+  | "ECONOMIC_EVENT"
+  | "INCOMPLETE_DATA"
+  | "EVENT_AND_INCOMPLETE_DATA";
+
 export type EconomicEventPolicy = {
   policyName: string;
   blockMinutesBefore: number;
@@ -60,6 +66,7 @@ export type ActiveEventDetail = {
 export type EconomicGateDecision = {
   level: GateLevel;
   blockNewTrades: boolean;
+  blockCause: EconomicBlockCause;
   warnExistingPositions: boolean;
   existingPositionAction: ExistingPositionAction;
   dataStatus: DataStatus;
@@ -240,10 +247,12 @@ export function evaluateEconomicGate(
     return {
       level: "CAUTION",
       blockNewTrades: true,
+      blockCause: "INCOMPLETE_DATA",
       warnExistingPositions: options.hasOpenPosition,
-      existingPositionAction: options.hasOpenPosition ? "REVIEW_STOPS" : "NONE",
+      existingPositionAction: options.hasOpenPosition ? "AVOID_NEW_SIZE" : "NONE",
       dataStatus: "UNAVAILABLE",
-      reason: "تعذر التحقق من التقويم الاقتصادي حالياً؛ يُنصح بالحذر حتى استعادة البيانات.",
+      reason:
+        "تعذر التحقق من التقويم الاقتصادي حاليًا؛ تم تعليق فتح صفقات جديدة حتى استعادة البيانات.",
     };
   }
 
@@ -263,15 +272,18 @@ export function evaluateEconomicGate(
       return {
         level: "CAUTION",
         blockNewTrades: true,
+        blockCause: "INCOMPLETE_DATA",
         warnExistingPositions: options.hasOpenPosition,
-        existingPositionAction: options.hasOpenPosition ? "REVIEW_STOPS" : "NONE",
+        existingPositionAction: options.hasOpenPosition ? "AVOID_NEW_SIZE" : "NONE",
         dataStatus: "PARTIAL",
-        reason: "بيانات التقويم الاقتصادي غير مكتملة؛ لا يمكن تأكيد خلو النافذة الحالية من أحداث مؤثرة.",
+        reason:
+          "بيانات التقويم الاقتصادي غير مكتملة؛ تم تعليق فتح صفقات جديدة حتى اكتمال التحقق.",
       };
     }
     return {
       level: "NONE",
       blockNewTrades: false,
+      blockCause: "NONE",
       warnExistingPositions: false,
       existingPositionAction: "NONE",
       dataStatus: "AVAILABLE",
@@ -280,8 +292,17 @@ export function evaluateEconomicGate(
   }
 
   // 4) يوجد حدث ضمن النافذة (سواء كانت البيانات AVAILABLE أو PARTIAL)
-  const isBlock =
-    worst.level === "BLOCK" || options.dataStatus === "PARTIAL";
+  const blockedByEvent = worst.level === "BLOCK";
+  const blockedByIncompleteData = options.dataStatus === "PARTIAL";
+  const blockNewTrades = blockedByEvent || blockedByIncompleteData;
+  const blockCause: EconomicBlockCause =
+    blockedByEvent && blockedByIncompleteData
+      ? "EVENT_AND_INCOMPLETE_DATA"
+      : blockedByEvent
+        ? "ECONOMIC_EVENT"
+        : blockedByIncompleteData
+          ? "INCOMPLETE_DATA"
+          : "NONE";
   const timingText =
     worst.detail.minutesUntilEvent !== null
       ? `خلال ${worst.detail.minutesUntilEvent} دقيقة`
@@ -291,17 +312,23 @@ export function evaluateEconomicGate(
 
   return {
     level: worst.level,
-    blockNewTrades: isBlock,
+    blockNewTrades,
+    blockCause,
     warnExistingPositions: options.hasOpenPosition,
     existingPositionAction: options.hasOpenPosition
-      ? isBlock
+      ? blockNewTrades
         ? "AVOID_NEW_SIZE"
         : "REVIEW_STOPS"
       : "NONE",
     dataStatus: options.dataStatus,
     activeEvent: worst.detail,
-    reason: isBlock
-      ? `حدث عالي التأثير (${worst.detail.name}) ${timingText} — تم منع فتح صفقات جديدة مؤقتاً.${partialSuffix}`
-      : `حدث اقتصادي (${worst.detail.name}) ${timingText} — يُنصح بالحذر دون منع الدخول.${partialSuffix}`,
+    reason:
+      blockCause === "EVENT_AND_INCOMPLETE_DATA"
+        ? `حدث اقتصادي مؤثر (${worst.detail.name}) ${timingText}، وبيانات التقويم غير مكتملة؛ تم تعليق فتح صفقات جديدة.`
+        : blockCause === "ECONOMIC_EVENT"
+          ? `حدث عالي التأثير (${worst.detail.name}) ${timingText} — تم منع فتح صفقات جديدة مؤقتًا.`
+          : blockCause === "INCOMPLETE_DATA"
+            ? `حدث اقتصادي (${worst.detail.name}) ${timingText}، لكن بيانات التقويم غير مكتملة؛ تم تعليق فتح صفقات جديدة حتى اكتمال التحقق.`
+            : `حدث اقتصادي (${worst.detail.name}) ${timingText} — يُنصح بالحذر دون منع الدخول.${partialSuffix}`,
   };
 }

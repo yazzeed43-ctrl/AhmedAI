@@ -98,14 +98,16 @@ export function determineFinalTradeDecision(input: FinalTradeDecisionInput): Fin
     return "WAIT_DATA";
   }
 
+  if (input.economicGate.blockNewTrades) {
+    return input.economicGate.blockCause === "ECONOMIC_EVENT" ||
+      input.economicGate.blockCause === "EVENT_AND_INCOMPLETE_DATA"
+      ? "BLOCKED_ECONOMIC_EVENT"
+      : "WAIT_DATA";
+  }
+
   // غياب/نقص بيانات التقويم يعني WAIT_DATA، لا حدثًا اقتصاديًا مؤكدًا.
   if (input.economicGate.dataStatus !== "AVAILABLE") {
     return "WAIT_DATA";
-  }
-
-  // حدث مؤكد من تقويم مكتمل يمنع قبل الأخبار أو أي فحص إضافي.
-  if (input.economicGate.blockNewTrades) {
-    return "BLOCKED_ECONOMIC_EVENT";
   }
 
   // 3) حداثة البيانات

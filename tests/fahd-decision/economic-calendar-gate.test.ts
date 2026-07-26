@@ -24,6 +24,7 @@ test("لا توجد أحداث => NONE", () => {
   const result = evaluateEconomicGate([], NOW, { dataStatus: "AVAILABLE", hasOpenPosition: false });
   assert.equal(result.level, "NONE");
   assert.equal(result.blockNewTrades, false);
+  assert.equal(result.blockCause, "NONE");
   assert.equal(result.dataStatus, "AVAILABLE");
 });
 
@@ -34,6 +35,7 @@ test("UNAVAILABLE => CAUTION دائماً، حتى مع وجود حدث BLOCK م
   const result = evaluateEconomicGate(events, NOW, { dataStatus: "UNAVAILABLE", hasOpenPosition: false });
   assert.equal(result.level, "CAUTION");
   assert.equal(result.blockNewTrades, true);
+  assert.equal(result.blockCause, "INCOMPLETE_DATA");
   assert.equal(result.dataStatus, "UNAVAILABLE");
 });
 
@@ -45,6 +47,7 @@ test("PARTIAL بدون حدث نشط => CAUTION وليس NONE", () => {
   const result = evaluateEconomicGate([], NOW, { dataStatus: "PARTIAL", hasOpenPosition: false });
   assert.equal(result.level, "CAUTION");
   assert.equal(result.blockNewTrades, true);
+  assert.equal(result.blockCause, "INCOMPLETE_DATA");
   assert.equal(result.dataStatus, "PARTIAL");
 });
 
@@ -255,10 +258,10 @@ test("لا مركز مفتوح => لا تحذير حتى مع BLOCK", () => {
   assert.equal(result.existingPositionAction, "NONE");
 });
 
-test("مركز مفتوح + UNAVAILABLE => REVIEW_STOPS", () => {
+test("مركز مفتوح + UNAVAILABLE => AVOID_NEW_SIZE", () => {
   const result = evaluateEconomicGate([], NOW, { dataStatus: "UNAVAILABLE", hasOpenPosition: true });
   assert.equal(result.warnExistingPositions, true);
-  assert.equal(result.existingPositionAction, "REVIEW_STOPS");
+  assert.equal(result.existingPositionAction, "AVOID_NEW_SIZE");
 });
 
 // ============================================================
