@@ -6,7 +6,7 @@ import {
   type TradierQuote,
 } from "./tradier-client";
 
-import { scoreOption } from "@/lib/fahd/option-brain";
+import { scoreOption } from "../fahd/option-brain";
 import { buildSpxPriceSnapshot } from "./spx-price-freshness";
 
 // الأنواع انتقلت لـ tradier-scanner-core/types.ts (خطوة 1 من خطة
@@ -32,13 +32,31 @@ import {
   normalizeTier,
 } from "./tradier-scanner-core/utils";
 
-import { enrichWithIVHistory } from "./tradier-scanner-core/iv-context";
 import { passesContractFilters } from "./tradier-scanner-core/filters";
 import {
   createShortlist,
   rankOpportunities,
 } from "./tradier-scanner-core/ranking";
-import { deriveTradierScanStatus } from "./tradier-scanner-core/completeness";
+import { deriveTradierScanCompletion } from "./tradier-scanner-core/completeness";
+
+export interface TradierScannerDependencies {
+  getQuotes: typeof getTradierQuotes;
+  getExpirations: typeof getTradierExpirations;
+  getOptionChain: typeof getTradierOptionChain;
+  enrichWithIVHistory: (
+    item: BaseOpportunity,
+  ) => Promise<Omit<import("./tradier-scanner-core/types").TradierOpportunity, "rank">>;
+}
+
+const defaultTradierScannerDependencies: TradierScannerDependencies = {
+  getQuotes: getTradierQuotes,
+  getExpirations: getTradierExpirations,
+  getOptionChain: getTradierOptionChain,
+  enrichWithIVHistory: async (item) => {
+    const module = await import("./tradier-scanner-core/iv-context");
+    return module.enrichWithIVHistory(item);
+  },
+};
 
 function scoreContract(
   option: TradierOption,
@@ -145,7 +163,14 @@ function scoreContract(
   };
 }
 
-export async function scanTradierOpportunities(config: TradierScannerConfig) {
+export async function scanTradierOpportunities(
+  config: TradierScannerConfig,
+  dependencyOverrides: Partial<TradierScannerDependencies> = {},
+) {
+  const dependencies = {
+    ...defaultTradierScannerDependencies,
+    ...dependencyOverrides,
+  };
   const symbols = [
     ...new Set(config.symbols.map((symbol) => symbol.trim().toUpperCase())),
   ]
@@ -179,19 +204,62 @@ export async function scanTradierOpportunities(config: TradierScannerConfig) {
     code: string;
     message: string;
   }> = [];
-  try {
-    quotes = await getTradierQuotes(symbols);
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+
+  if (symbols.length === 0) {
+    const completion = deriveTradierScanCompletion({
+      symbolsRequested: 0,
+      symbolsWithAnySuccess: 0,
+      symbolsFailedCompletely: 0,
+      expirationsRequested: 0,
+      expirationsSucceeded: 0,
+      expirationsFailed: 0,
+      opportunityCount: 0,
+    });
+    console.error("Tradier scan completion diagnostic", completion);
     return {
       source: "Tradier Brokerage API",
       engine: "Fahd Option Brain V2 + IV History",
       generatedAt: new Date().toISOString(),
-      status: "DATA_PROVIDER_ERROR" as const,
+      ...completion,
+      symbolsScanned: symbols,
+      symbolsRequested: 0,
+      symbolsWithAnySuccess: 0,
+      symbolsFailedCompletely: 0,
+      expirationsRequested: 0,
+      expirationsSucceeded: 0,
+      expirationsFailed: 0,
+      providerErrors,
+      contractsScanned: 0,
+      qualifiedContracts: 0,
+      ivHistoryEnriched: 0,
+      opportunities: [],
+      message: "Tradier scan received an empty symbol request.",
+    };
+  }
+
+  try {
+    quotes = await dependencies.getQuotes(symbols);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    const completion = deriveTradierScanCompletion({
+      symbolsRequested: symbols.length,
+      symbolsWithAnySuccess: 0,
+      symbolsFailedCompletely: symbols.length,
+      expirationsRequested: 0,
+      expirationsSucceeded: 0,
+      expirationsFailed: 0,
+      opportunityCount: 0,
+    });
+    console.error("Tradier scan completion diagnostic", completion);
+    return {
+      source: "Tradier Brokerage API",
+      engine: "Fahd Option Brain V2 + IV History",
+      generatedAt: new Date().toISOString(),
+      ...completion,
       symbolsScanned: symbols,
       symbolsRequested: symbols.length,
-      symbolsSucceeded: 0,
-      symbolsFailed: symbols.length,
+      symbolsWithAnySuccess: 0,
+      symbolsFailedCompletely: symbols.length,
       expirationsRequested: 0,
       expirationsSucceeded: 0,
       expirationsFailed: 0,
@@ -213,8 +281,8 @@ export async function scanTradierOpportunities(config: TradierScannerConfig) {
   const opportunities: BaseOpportunity[] = [];
 
   let contractsScanned = 0;
-  let symbolsSucceeded = 0;
-  let symbolsFailed = 0;
+  let symbolsWithAnySuccess = 0;
+  let symbolsFailedCompletely = 0;
   let expirationsRequested = 0;
   let expirationsSucceeded = 0;
   let expirationsFailed = 0;
@@ -223,7 +291,7 @@ export async function scanTradierOpportunities(config: TradierScannerConfig) {
     const quote = quoteMap.get(symbol);
 
     if (!quote || quotePrice(quote) <= 0) {
-      symbolsFailed += 1;
+      symbolsFailedCompletely += 1;
       providerErrors.push({
         symbol,
         code: "QUOTE_UNAVAILABLE",
@@ -234,11 +302,11 @@ export async function scanTradierOpportunities(config: TradierScannerConfig) {
 
     let expirations: string[];
     try {
-      expirations = (await getTradierExpirations(symbol))
+      expirations = (await dependencies.getExpirations(symbol))
         .filter((date) => daysToExpiration(date) <= maxDte)
         .slice(0, expirationLimit);
     } catch {
-      symbolsFailed += 1;
+      symbolsFailedCompletely += 1;
       providerErrors.push({
         symbol,
         code: "EXPIRATIONS_REQUEST_FAILED",
@@ -248,7 +316,7 @@ export async function scanTradierOpportunities(config: TradierScannerConfig) {
     }
 
     if (expirations.length === 0) {
-      symbolsFailed += 1;
+      symbolsFailedCompletely += 1;
       providerErrors.push({
         symbol,
         code: "NO_EXPIRATIONS_AVAILABLE",
@@ -257,16 +325,16 @@ export async function scanTradierOpportunities(config: TradierScannerConfig) {
       continue;
     }
 
-    let symbolComplete = true;
-    expirationsRequested += expirations.length;
+    let expirationSuccesses = 0;
 
     for (const expiration of expirations) {
+      expirationsRequested += 1;
       let chain: TradierOption[];
       try {
-        chain = await getTradierOptionChain(symbol, expiration);
+        chain = await dependencies.getOptionChain(symbol, expiration);
         expirationsSucceeded += 1;
+        expirationSuccesses += 1;
       } catch {
-        symbolComplete = false;
         expirationsFailed += 1;
         providerErrors.push({
           symbol,
@@ -304,8 +372,11 @@ export async function scanTradierOpportunities(config: TradierScannerConfig) {
       }
     }
 
-    if (symbolComplete) symbolsSucceeded += 1;
-    else symbolsFailed += 1;
+    if (expirationSuccesses > 0) {
+      symbolsWithAnySuccess += 1;
+    } else {
+      symbolsFailedCompletely += 1;
+    }
   }
 
   const shortlist = createShortlist(opportunities, resultLimit);
@@ -313,7 +384,7 @@ export async function scanTradierOpportunities(config: TradierScannerConfig) {
   const enriched = await Promise.all(
     shortlist.map(async (item) => {
       try {
-        return await enrichWithIVHistory(item);
+        return await dependencies.enrichWithIVHistory(item);
       } catch {
         return {
           ...item,
@@ -335,22 +406,37 @@ export async function scanTradierOpportunities(config: TradierScannerConfig) {
 
   const ranked = rankOpportunities(enriched, resultLimit);
 
-  const status = deriveTradierScanStatus({
+  const completion = deriveTradierScanCompletion({
     symbolsRequested: symbols.length,
-    symbolsSucceeded,
-    symbolsFailed,
+    symbolsWithAnySuccess,
+    symbolsFailedCompletely,
+    expirationsRequested,
+    expirationsSucceeded,
+    expirationsFailed,
     opportunityCount: ranked.length,
   });
+
+  if (completion.diagnostic !== "NONE") {
+    console.error("Tradier scan completion diagnostic", {
+      ...completion,
+      symbolsRequested: symbols.length,
+      symbolsWithAnySuccess,
+      symbolsFailedCompletely,
+      expirationsRequested,
+      expirationsSucceeded,
+      expirationsFailed,
+    });
+  }
 
   return {
     source: "Tradier Brokerage API",
     engine: "Fahd Option Brain V2 + IV History",
     generatedAt: new Date().toISOString(),
-    status,
+    ...completion,
     symbolsScanned: symbols,
     symbolsRequested: symbols.length,
-    symbolsSucceeded,
-    symbolsFailed,
+    symbolsWithAnySuccess,
+    symbolsFailedCompletely,
     expirationsRequested,
     expirationsSucceeded,
     expirationsFailed,
@@ -360,7 +446,11 @@ export async function scanTradierOpportunities(config: TradierScannerConfig) {
     ivHistoryEnriched: enriched.length,
     opportunities: ranked,
     message:
-      ranked.length > 0
+      completion.dataStatus === "PARTIAL_DATA"
+        ? `Found ${ranked.length} diagnostic opportunities from partial data; no complete watchlist was published.`
+        : completion.dataStatus === "DATA_PROVIDER_ERROR"
+          ? "Tradier scan data was unavailable or internally inconsistent; no watchlist was published."
+          : ranked.length > 0
         ? `Found ${ranked.length} qualified option contracts.`
         : "No contracts passed Option Brain, liquidity, spread, and delta filters.",
   };

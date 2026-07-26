@@ -1,8 +1,34 @@
-import { getMarketDecision } from "@/lib/market-decision-engine";
-import { scanSpxwOpportunitiesV3 } from "./spxw-scanner-v3";
-import { scanTradierOpportunities } from "./tradier-scanner";
 import { rankPremarketDirections } from "./premarket-universe-ranking";
 import { FAHD_STRATEGY } from "./scanner-strategies";
+
+export interface UnifiedPremarketScannerDependencies {
+  getMarketDecision: (timeframe: "15min") => Promise<any>;
+  scanStocks: (
+    config: Parameters<
+      typeof import("./tradier-scanner").scanTradierOpportunities
+    >[0],
+  ) => Promise<any>;
+  scanSpxw: (
+    config: Parameters<
+      typeof import("./spxw-scanner-v3").scanSpxwOpportunitiesV3
+    >[0],
+  ) => Promise<any>;
+}
+
+const defaultUnifiedPremarketScannerDependencies: UnifiedPremarketScannerDependencies = {
+  getMarketDecision: async (timeframe) => {
+    const module = await import("../market-decision-engine");
+    return module.getMarketDecision(timeframe);
+  },
+  scanStocks: async (config) => {
+    const module = await import("./tradier-scanner");
+    return module.scanTradierOpportunities(config);
+  },
+  scanSpxw: async (config) => {
+    const module = await import("./spxw-scanner-v3");
+    return module.scanSpxwOpportunitiesV3(config);
+  },
+};
 
 export const DEFAULT_PREMARKET_UNIVERSE = [
   "SPY",
@@ -22,7 +48,11 @@ export async function scanUnifiedPremarketUniverse(config: {
   maxDte?: number;
   expirationsPerSymbol?: number;
   resultsPerDirection?: number;
-} = {}) {
+} = {}, dependencyOverrides: Partial<UnifiedPremarketScannerDependencies> = {}) {
+  const dependencies = {
+    ...defaultUnifiedPremarketScannerDependencies,
+    ...dependencyOverrides,
+  };
   const symbols = [
     ...new Set(
       (config.symbols ?? [...DEFAULT_PREMARKET_UNIVERSE])
@@ -36,8 +66,8 @@ export async function scanUnifiedPremarketUniverse(config: {
     Math.min(5, Math.floor(config.resultsPerDirection ?? 2)),
   );
 
-  const market = await getMarketDecision("15min");
-  const stockScan = await scanTradierOpportunities({
+  const market = await dependencies.getMarketDecision("15min");
+  const stockScan = await dependencies.scanStocks({
     symbols,
     maxDte,
     expirationsPerSymbol: config.expirationsPerSymbol ?? 3,
@@ -53,7 +83,7 @@ export async function scanUnifiedPremarketUniverse(config: {
     resultsPerDirection,
   });
 
-  const spxwScan = await scanSpxwOpportunitiesV3({
+  const spxwScan = await dependencies.scanSpxw({
     analysisMode: "PREMARKET_PREP",
     maxDte: Math.min(10, maxDte),
     maxResults: resultsPerDirection,
@@ -61,9 +91,7 @@ export async function scanUnifiedPremarketUniverse(config: {
   const spxwOpportunities = Array.isArray(spxwScan.opportunities)
     ? spxwScan.opportunities
     : [];
-  const mayPublishStocks =
-    stockScan.status === "OPPORTUNITIES_FOUND" ||
-    stockScan.status === "NO_MATCH";
+  const mayPublishStocks = stockScan.dataStatus === "COMPLETE";
   const mayPublishSpxw = spxwScan.status === "OPPORTUNITIES_FOUND";
   const rankDirection = <T extends { direction: "CALL" | "PUT" }>(
     values: T[],
@@ -86,13 +114,12 @@ export async function scanUnifiedPremarketUniverse(config: {
     marketBias: market.bias,
     universe: symbols,
     stockScan: {
-      status:
-        stockScan.status === "OPPORTUNITIES_FOUND"
-          ? ("WATCHLIST_READY" as const)
-          : stockScan.status,
+      dataStatus: stockScan.dataStatus,
+      outcome: stockScan.outcome,
+      diagnostic: stockScan.diagnostic,
       symbolsRequested: stockScan.symbolsRequested,
-      symbolsSucceeded: stockScan.symbolsSucceeded,
-      symbolsFailed: stockScan.symbolsFailed,
+      symbolsWithAnySuccess: stockScan.symbolsWithAnySuccess,
+      symbolsFailedCompletely: stockScan.symbolsFailedCompletely,
       expirationsRequested: stockScan.expirationsRequested,
       expirationsSucceeded: stockScan.expirationsSucceeded,
       expirationsFailed: stockScan.expirationsFailed,
@@ -102,7 +129,7 @@ export async function scanUnifiedPremarketUniverse(config: {
       callWatchlist: mayPublishStocks ? stocks.calls : [],
       putWatchlist: mayPublishStocks ? stocks.puts : [],
       diagnosticOpportunities:
-        stockScan.status === "PARTIAL_DATA"
+        stockScan.dataStatus === "PARTIAL_DATA"
           ? [...stocks.calls, ...stocks.puts]
           : [],
     },
@@ -134,8 +161,8 @@ export function formatUnifiedPremarketWatchlist(
     "قائمة فهد الموحدة قبل السوق — تحضير ومراقبة فقط.",
     `تاريخ الجلسة: ${result.sessionDate}`,
     `انحياز السوق: ${result.marketBias}`,
-    `حالة بيانات الأسهم: ${result.stockScan.status}`,
-    `الرموز: طلب ${result.stockScan.symbolsRequested} | نجح ${result.stockScan.symbolsSucceeded} | فشل ${result.stockScan.symbolsFailed}`,
+    `حالة بيانات الأسهم: ${result.stockScan.dataStatus} | النتيجة: ${result.stockScan.outcome} | التشخيص: ${result.stockScan.diagnostic}`,
+    `الرموز: طلب ${result.stockScan.symbolsRequested} | له نجاح واحد على الأقل ${result.stockScan.symbolsWithAnySuccess} | فشل بالكامل ${result.stockScan.symbolsFailedCompletely}`,
     `الاستحقاقات: طلب ${result.stockScan.expirationsRequested} | نجح ${result.stockScan.expirationsSucceeded} | فشل ${result.stockScan.expirationsFailed}`,
     `حالة SPXW: ${result.spxwScan.status}`,
     `SPXW الاستحقاقات: طلب ${result.spxwScan.expirationsRequested} | نجح ${result.spxwScan.expirationsSucceeded} | فشل ${result.spxwScan.expirationsFailed}`,
@@ -167,7 +194,7 @@ export function formatUnifiedPremarketWatchlist(
   addList("SPXW PUT", result.spxwScan.putWatchlist);
   addList("Stocks/ETF CALL", result.stockScan.callWatchlist);
   addList("Stocks/ETF PUT", result.stockScan.putWatchlist);
-  if (result.stockScan.status === "PARTIAL_DATA") {
+  if (result.stockScan.dataStatus === "PARTIAL_DATA") {
     lines.push(
       "",
       "هذه النتائج جزئية وغير صالحة كقائمة مراقبة موثوقة.",
@@ -190,13 +217,13 @@ export function formatUnifiedPremarketWatchlist(
   if (result.stockScan.providerErrors.length) {
     lines.push(
       "",
-      `تحذيرات المزود: ${result.stockScan.providerErrors.map((error) => `${error.symbol}:${error.code}`).join("، ")}`,
+      `تحذيرات المزود: ${result.stockScan.providerErrors.map((error: { symbol: string; code: string }) => `${error.symbol}:${error.code}`).join("، ")}`,
     );
   }
   if (result.spxwScan.providerErrors.length) {
     lines.push(
       "",
-      `تحذيرات مزود SPXW: ${result.spxwScan.providerErrors.map((error) => `${error.expiration}:${error.code}`).join("، ")}`,
+      `تحذيرات مزود SPXW: ${result.spxwScan.providerErrors.map((error: { expiration: string; code: string }) => `${error.expiration}:${error.code}`).join("، ")}`,
     );
   }
   lines.push(
