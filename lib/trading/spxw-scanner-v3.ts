@@ -17,10 +17,12 @@ import {
   buildSpxPriceSnapshot,
   type SpxPriceSnapshot,
 } from "./spx-price-freshness";
+import type { AnalysisMode } from "./fahd-decision/spxw-analysis-mode";
 
 type Direction = "CALL" | "PUT";
 
 export interface SpxwScannerV3Config {
+  analysisMode?: AnalysisMode;
   expiration?: string;
   maxDte?: number;
   maxResults?: number;
@@ -177,14 +179,21 @@ export async function scanSpxwOpportunitiesV3(
 ) {
   const market = await getMarketDecision("15min");
 
-  const direction: Direction | null =
+  const liveDirection: Direction | null =
     market.bias === "CALL_BIAS"
       ? "CALL"
       : market.bias === "PUT_BIAS"
         ? "PUT"
         : null;
 
-  if (!direction) {
+  const directions: Direction[] =
+    config.analysisMode === "PREMARKET_PREP"
+      ? ["CALL", "PUT"]
+      : liveDirection
+        ? [liveDirection]
+        : [];
+
+  if (!directions.length) {
     return {
       status: "WAIT",
       market,
@@ -235,17 +244,28 @@ export async function scanSpxwOpportunitiesV3(
   const maxDelta = config.maxDelta ?? 0.7;
   const minimumFinalScore = config.minimumFinalScore ?? 72;
 
-  const marketScore =
+  const marketScoreFor = (direction: Direction) =>
     direction === "CALL"
       ? market.probabilities.bullish
       : market.probabilities.bearish;
+
+  const filterCriteria = {
+    minPrice,
+    maxPrice,
+    minVolume,
+    minOpenInterest,
+    maxSpreadPercent: maxSpread,
+    minDelta,
+    maxDelta,
+    minimumFinalScore,
+  };
 
   const opportunities = spxw
     .map((option) => scoreOption(option, underlyingPrice))
     .filter((item): item is NonNullable<typeof item> => Boolean(item))
     .filter(
       (item) =>
-        item.direction === direction &&
+        directions.includes(item.direction) &&
         item.daysToExpiration <= maxDte &&
         item.midpoint >= minPrice &&
         item.midpoint <= maxPrice &&
@@ -260,8 +280,10 @@ export async function scanSpxwOpportunitiesV3(
       underlying: "SPX",
       underlyingPrice: Number(underlyingPrice.toFixed(2)),
       marketBias: market.bias,
-      marketScore,
-      finalScore: Math.round(item.contractScore * 0.6 + marketScore * 0.4),
+      marketScore: marketScoreFor(item.direction),
+      finalScore: Math.round(
+        item.contractScore * 0.6 + marketScoreFor(item.direction) * 0.4,
+      ),
       triggerStatus: "WAIT_TRIGGER" as const,
     }))
     .filter((item) => item.finalScore >= minimumFinalScore)
@@ -315,6 +337,13 @@ export async function scanSpxwOpportunitiesV3(
     providerErrors: completeness.providerErrors,
     contractsScanned: all.length,
     spxwContractsFound: spxw.length,
+    filterCriteria,
+    rejectionReasons:
+      opportunities.length === 0
+        ? [
+            "لم يجتز أي عقد جميع فلاتر الاتجاه وDelta والسعر والحجم وOpen Interest والسبريد وfinalScore الحالية.",
+          ]
+        : [],
     opportunities,
     message,
   };

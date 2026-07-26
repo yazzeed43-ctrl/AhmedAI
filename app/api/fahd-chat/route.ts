@@ -29,6 +29,11 @@ import { applySocialIntelligenceToTradeReport } from "@/lib/social/social-decisi
 import { buildFahdResponse } from "@/lib/fahd/compact-response";
 import { buildSpxwDecisionContext } from "@/lib/trading/fahd-decision/spxw-decision-context";
 import type { RawHeadline } from "@/lib/trading/fahd-decision/news-modifier-types";
+import {
+  buildSpxwPremarketWatchlist,
+  formatSpxwPremarketWatchlist,
+  type AnalysisMode,
+} from "@/lib/trading/fahd-decision/spxw-analysis-mode";
 
 const FINNHUB_BASE = "https://finnhub.io/api/v1";
 
@@ -379,6 +384,12 @@ const TOOLS = [
     input_schema: {
       type: "object",
       properties: {
+        analysisMode: {
+          type: "string",
+          enum: ["PREMARKET_PREP", "LIVE_EXECUTION"],
+          description:
+            "PREMARKET_PREP لقائمة مراقبة تحضيرية غير تنفيذية قبل السوق. LIVE_EXECUTION للفحص اللحظي وشروط الدخول.",
+        },
         maxResults: {
           type: "number",
           description: "عدد النتائج بحد أقصى عقدين.",
@@ -1229,6 +1240,11 @@ export async function POST(req: NextRequest) {
     );
     const isSpxwOnlyRequest =
       /\bSPXW?\b/i.test(message) && nonSpxTickers.length === 0;
+    const isPremarketPreparationRequest =
+      isSpxwOnlyRequest &&
+      /قائمة\s*مراقبة|تحضير|تحضيرية|قبل\s*السوق|قبل\s*الافتتاح|بكرة|غد(?:اً|ا)?|premarket|watchlist/i.test(
+        message,
+      );
 
     for (let round = 0; round < maxRounds; round++) {
       const data = await callClaude(
@@ -1273,7 +1289,16 @@ export async function POST(req: NextRequest) {
               1,
               Math.min(2, Number(block.input?.maxResults) || 2),
             );
-            const scan = await scanSpxwOpportunitiesV3({ maxResults });
+            const requestedMode = String(block.input?.analysisMode ?? "");
+            const analysisMode: AnalysisMode = isPremarketPreparationRequest
+              ? "PREMARKET_PREP"
+              : requestedMode === "PREMARKET_PREP"
+                ? "PREMARKET_PREP"
+                : "LIVE_EXECUTION";
+            const scan = await scanSpxwOpportunitiesV3({
+              maxResults,
+              analysisMode,
+            });
             const decisionContext = await buildSpxwDecisionContext(scan, {
               finnhubKey,
               finnhubBase: FINNHUB_BASE,
@@ -1286,27 +1311,57 @@ export async function POST(req: NextRequest) {
                   : Promise.resolve([]),
               classifyFn: classifyDecisionHeadlines,
               buildTrigger: () =>
-                buildSpxwTriggerPlan({
-                    maxResults,
-                    precomputedScan: scan,
-                  }),
+                analysisMode === "PREMARKET_PREP"
+                  ? Promise.resolve(null)
+                  : buildSpxwTriggerPlan({
+                      maxResults,
+                      precomputedScan: scan,
+                    }),
             });
-            const output = {
-              source: "Fahd SPXW engines",
-              scan,
-              trigger: decisionContext.enforcement.executableTrigger,
-              monitoringPlans: decisionContext.monitoringPlans,
-              decisionContext,
-              userMessage: decisionContext.enforcement.userMessage,
-              strictRules: {
-                useExactContractSymbol: true,
-                useRealSpxPrice: true,
-                forbidApproximationFromSpy: true,
-                forbidInventedStrikeOrExpiration: true,
-                economicCalendarGateCannotBeOverridden: true,
-                finalTradeDecisionCannotBeOverridden: true,
-              },
+            const commonStrictRules = {
+              useExactContractSymbol: true,
+              useRealSpxPrice: true,
+              forbidApproximationFromSpy: true,
+              forbidInventedStrikeOrExpiration: true,
+              economicCalendarGateCannotBeOverridden: true,
+              finalTradeDecisionCannotBeOverridden: true,
             };
+            const output =
+              analysisMode === "PREMARKET_PREP"
+                ? (() => {
+                    const preparation = buildSpxwPremarketWatchlist({
+                      scan,
+                      economicGate: decisionContext.economicGate,
+                    });
+                    return {
+                    source: "Fahd SPXW engines",
+                    analysisMode,
+                    scan,
+                    preparation,
+                    userMessage: formatSpxwPremarketWatchlist({
+                      preparation,
+                      scan,
+                      economicGate: decisionContext.economicGate,
+                    }),
+                    economicCalendar: decisionContext.economicCalendar,
+                    economicGate: decisionContext.economicGate,
+                    strictRules: {
+                      ...commonStrictRules,
+                      preparationIsNeverExecutable: true,
+                      executableTriggerMustBeNull: true,
+                    },
+                  };
+                  })()
+                : {
+                    source: "Fahd SPXW engines",
+                    analysisMode,
+                    scan,
+                    trigger: decisionContext.enforcement.executableTrigger,
+                    monitoringPlans: decisionContext.monitoringPlans,
+                    decisionContext,
+                    userMessage: decisionContext.enforcement.userMessage,
+                    strictRules: commonStrictRules,
+                  };
             collectedToolResults.push({
               name: "get_spxw_trade_plan",
               input: block.input,
@@ -1882,6 +1937,12 @@ export async function POST(req: NextRequest) {
 
     function buildEnforcedSpxwReply(): string | null {
       if (!onlySpxwToolWasUsed || !lastSpxwResult) return null;
+      if (lastSpxwResult.output?.analysisMode === "PREMARKET_PREP") {
+        return String(
+          lastSpxwResult.output?.userMessage ??
+            "تعذر تجهيز تقرير قائمة المراقبة التحضيرية.",
+        );
+      }
       const enforcement = lastSpxwResult.output?.decisionContext?.enforcement;
       if (enforcement && enforcement.isExecutable === false) {
         return String(
