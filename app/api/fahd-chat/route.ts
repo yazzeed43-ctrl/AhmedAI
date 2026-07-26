@@ -23,6 +23,10 @@ import { scanSpxwOpportunitiesV3 } from "@/lib/trading/spxw-scanner-v3";
 import { buildSpxwTriggerPlan } from "@/lib/trading/spxw-trigger-engine";
 import { runFahdScannerV3 } from "@/lib/trading/fahd-scanner-v3";
 import { scanGoldenOpportunities } from "@/lib/trading/golden-scanner";
+import {
+  formatUnifiedPremarketWatchlist,
+  scanUnifiedPremarketUniverse,
+} from "@/lib/trading/unified-premarket-scanner";
 import { getStockDecision } from "@/lib/stock-decision-engine";
 import {
   runTradeEngine,
@@ -817,6 +821,19 @@ const TOOLS = [
       },
     },
   },
+  {
+    name: "get_premarket_universe",
+    description:
+      "يجهز قائمة مراقبة موحدة قبل السوق لـSPXW وSPY وQQQ وIWM والأسهم النشطة. يفحص CALL وPUT معًا بفلاتر فهد الحالية، ويعيد تحضيرًا غير تنفيذي دائمًا.",
+    input_schema: {
+      type: "object",
+      properties: {
+        symbols: { type: "array", items: { type: "string" } },
+        maxDte: { type: "number", minimum: 1, maximum: 14 },
+        resultsPerDirection: { type: "number", minimum: 1, maximum: 5 },
+      },
+    },
+  },
 ];
 
 function enrichTradierQuoteFreshness(quote: any) {
@@ -1123,6 +1140,7 @@ export async function POST(req: NextRequest) {
 
     let staticSystemPrompt = FAHD_SYSTEM_PROMPT;
     staticSystemPrompt += `\n\n# Exact option contract enforcement\nWhen the user requests a specific option contract by OCC symbol, expiration/type/strike, or an explicit strike, you MUST call get_exact_option_contract. Never use get_options_chain to claim that a contract is absent because it returns only a near-price sample. You may state that a requested contract is not listed only when get_exact_option_contract returns NOT_FOUND.`;
+    staticSystemPrompt += `\n\n# Unified premarket universe\nWhen the user asks for a premarket watchlist spanning SPXW plus stocks or ETFs, call get_premarket_universe. Its output is preparation-only: isExecutable is always false and executableTrigger is always null. Present CALL and PUT watchlists separately, and never convert a watchlist candidate into a live entry.`;
     staticSystemPrompt += `
 
 # قاعدة إلزامية لعقود SPXW
@@ -1406,6 +1424,54 @@ export async function POST(req: NextRequest) {
             const output = { error: e?.message || "فشل تشغيل محركات SPXW" };
             collectedToolResults.push({
               name: "get_spxw_trade_plan",
+              input: block.input,
+              output,
+            });
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+              is_error: true,
+            });
+          }
+        } else if (block.name === "get_premarket_universe") {
+          try {
+            const result = await scanUnifiedPremarketUniverse({
+              symbols: Array.isArray(block.input?.symbols)
+                ? block.input.symbols.filter(
+                    (value: unknown): value is string =>
+                      typeof value === "string",
+                  )
+                : undefined,
+              maxDte:
+                typeof block.input?.maxDte === "number"
+                  ? block.input.maxDte
+                  : undefined,
+              resultsPerDirection:
+                typeof block.input?.resultsPerDirection === "number"
+                  ? block.input.resultsPerDirection
+                  : undefined,
+            });
+            const output = {
+              ...result,
+              userMessage: formatUnifiedPremarketWatchlist(result),
+            };
+            collectedToolResults.push({
+              name: "get_premarket_universe",
+              input: block.input,
+              output,
+            });
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+            });
+          } catch (e: any) {
+            const output = {
+              error: e?.message || "فشل تجهيز قائمة ما قبل السوق",
+            };
+            collectedToolResults.push({
+              name: "get_premarket_universe",
               input: block.input,
               output,
             });
@@ -2029,6 +2095,9 @@ export async function POST(req: NextRequest) {
     const lastSpxwResult = [...collectedToolResults]
       .reverse()
       .find((result) => result.name === "get_spxw_trade_plan");
+    const lastUnifiedPremarketResult = [...collectedToolResults]
+      .reverse()
+      .find((result) => result.name === "get_premarket_universe");
 
     const onlySpxwToolWasUsed =
       collectedToolResults.length > 0 &&
@@ -2122,8 +2191,15 @@ export async function POST(req: NextRequest) {
     }
 
     const enforcedSpxwReply = buildEnforcedSpxwReply();
+    const enforcedUnifiedPremarketReply = lastUnifiedPremarketResult
+      ? String(
+          lastUnifiedPremarketResult.output?.userMessage ??
+            "تعذر تجهيز قائمة فهد الموحدة قبل السوق.",
+        )
+      : null;
 
     const finalReply =
+      enforcedUnifiedPremarketReply ??
       enforcedSpxwReply ??
       buildFahdResponse({
         userMessage: message,

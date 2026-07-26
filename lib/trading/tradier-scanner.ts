@@ -7,6 +7,7 @@ import {
 } from "./tradier-client";
 
 import { scoreOption } from "@/lib/fahd/option-brain";
+import { buildSpxPriceSnapshot } from "./spx-price-freshness";
 
 // الأنواع انتقلت لـ tradier-scanner-core/types.ts (خطوة 1 من خطة
 // التقسيم). يُعاد تصديرها هنا حرفيًا بنفس الأسماء حتى ما ينكسر أي
@@ -37,12 +38,14 @@ import {
   createShortlist,
   rankOpportunities,
 } from "./tradier-scanner-core/ranking";
+import { deriveTradierScanStatus } from "./tradier-scanner-core/completeness";
 
 function scoreContract(
   option: TradierOption,
   quote: TradierQuote,
 ): BaseOpportunity | null {
   const underlyingPrice = quotePrice(quote);
+  const priceSnapshot = buildSpxPriceSnapshot(quote);
 
   const bid = numberOr(option.bid);
 
@@ -113,6 +116,10 @@ function scoreContract(
     underlying: quote.symbol,
     underlyingPrice: Number(underlyingPrice.toFixed(2)),
     underlyingChangePercent: nullableNumber(quote.change_percentage),
+    priceSource: priceSnapshot?.priceSource ?? "unknown",
+    tradeDate: priceSnapshot?.tradeDate ?? null,
+    ageSeconds: priceSnapshot?.ageSeconds ?? null,
+    freshness: priceSnapshot?.freshness ?? "unknown",
     direction,
     contractSymbol: option.symbol,
     expiration: option.expiration_date,
@@ -165,27 +172,110 @@ export async function scanTradierOpportunities(config: TradierScannerConfig) {
 
   const maxDelta = config.maxDelta ?? 0.8;
 
-  const quotes = await getTradierQuotes(symbols);
+  let quotes: TradierQuote[] = [];
+  const providerErrors: Array<{
+    symbol: string;
+    expiration?: string;
+    code: string;
+    message: string;
+  }> = [];
+  try {
+    quotes = await getTradierQuotes(symbols);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      source: "Tradier Brokerage API",
+      engine: "Fahd Option Brain V2 + IV History",
+      generatedAt: new Date().toISOString(),
+      status: "DATA_PROVIDER_ERROR" as const,
+      symbolsScanned: symbols,
+      symbolsRequested: symbols.length,
+      symbolsSucceeded: 0,
+      symbolsFailed: symbols.length,
+      expirationsRequested: 0,
+      expirationsSucceeded: 0,
+      expirationsFailed: 0,
+      providerErrors: symbols.map((symbol) => ({
+        symbol,
+        code: /timeout|مهلة/i.test(message) ? "TIMEOUT" : "QUOTE_REQUEST_FAILED",
+        message: "Tradier quote request failed",
+      })),
+      contractsScanned: 0,
+      qualifiedContracts: 0,
+      ivHistoryEnriched: 0,
+      opportunities: [],
+      message: "Tradier quote data was unavailable; the scan was not completed.",
+    };
+  }
 
   const quoteMap = new Map(quotes.map((quote) => [quote.symbol, quote]));
 
   const opportunities: BaseOpportunity[] = [];
 
   let contractsScanned = 0;
+  let symbolsSucceeded = 0;
+  let symbolsFailed = 0;
+  let expirationsRequested = 0;
+  let expirationsSucceeded = 0;
+  let expirationsFailed = 0;
 
   for (const symbol of symbols) {
     const quote = quoteMap.get(symbol);
 
     if (!quote || quotePrice(quote) <= 0) {
+      symbolsFailed += 1;
+      providerErrors.push({
+        symbol,
+        code: "QUOTE_UNAVAILABLE",
+        message: "Tradier quote was unavailable",
+      });
       continue;
     }
 
-    const expirations = (await getTradierExpirations(symbol))
-      .filter((date) => daysToExpiration(date) <= maxDte)
-      .slice(0, expirationLimit);
+    let expirations: string[];
+    try {
+      expirations = (await getTradierExpirations(symbol))
+        .filter((date) => daysToExpiration(date) <= maxDte)
+        .slice(0, expirationLimit);
+    } catch {
+      symbolsFailed += 1;
+      providerErrors.push({
+        symbol,
+        code: "EXPIRATIONS_REQUEST_FAILED",
+        message: "Tradier options expirations request failed",
+      });
+      continue;
+    }
+
+    if (expirations.length === 0) {
+      symbolsFailed += 1;
+      providerErrors.push({
+        symbol,
+        code: "NO_EXPIRATIONS_AVAILABLE",
+        message: "No eligible option expirations were available",
+      });
+      continue;
+    }
+
+    let symbolComplete = true;
+    expirationsRequested += expirations.length;
 
     for (const expiration of expirations) {
-      const chain = await getTradierOptionChain(symbol, expiration);
+      let chain: TradierOption[];
+      try {
+        chain = await getTradierOptionChain(symbol, expiration);
+        expirationsSucceeded += 1;
+      } catch {
+        symbolComplete = false;
+        expirationsFailed += 1;
+        providerErrors.push({
+          symbol,
+          expiration,
+          code: "CHAIN_REQUEST_FAILED",
+          message: "Tradier options chain request failed",
+        });
+        continue;
+      }
 
       contractsScanned += chain.length;
 
@@ -213,19 +303,58 @@ export async function scanTradierOpportunities(config: TradierScannerConfig) {
         opportunities.push(item);
       }
     }
+
+    if (symbolComplete) symbolsSucceeded += 1;
+    else symbolsFailed += 1;
   }
 
   const shortlist = createShortlist(opportunities, resultLimit);
 
-  const enriched = await Promise.all(shortlist.map(enrichWithIVHistory));
+  const enriched = await Promise.all(
+    shortlist.map(async (item) => {
+      try {
+        return await enrichWithIVHistory(item);
+      } catch {
+        return {
+          ...item,
+          ivContext: {
+            ivRank: null,
+            ivPercentile: null,
+            samples: 0,
+            signal: "INSUFFICIENT_DATA" as const,
+            scoreAdjustment: 0,
+          },
+          warnings: [
+            ...item.warnings,
+            "تعذر جلب سجل IV؛ لم يؤثر ذلك على اكتمال بيانات العقد الأساسية.",
+          ],
+        };
+      }
+    }),
+  );
 
   const ranked = rankOpportunities(enriched, resultLimit);
+
+  const status = deriveTradierScanStatus({
+    symbolsRequested: symbols.length,
+    symbolsSucceeded,
+    symbolsFailed,
+    opportunityCount: ranked.length,
+  });
 
   return {
     source: "Tradier Brokerage API",
     engine: "Fahd Option Brain V2 + IV History",
     generatedAt: new Date().toISOString(),
+    status,
     symbolsScanned: symbols,
+    symbolsRequested: symbols.length,
+    symbolsSucceeded,
+    symbolsFailed,
+    expirationsRequested,
+    expirationsSucceeded,
+    expirationsFailed,
+    providerErrors,
     contractsScanned,
     qualifiedContracts: opportunities.length,
     ivHistoryEnriched: enriched.length,

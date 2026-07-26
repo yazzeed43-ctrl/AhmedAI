@@ -260,7 +260,7 @@ export async function scanSpxwOpportunitiesV3(
     minimumFinalScore,
   };
 
-  const opportunities = spxw
+  const rankedOpportunities = spxw
     .map((option) => scoreOption(option, underlyingPrice))
     .filter((item): item is NonNullable<typeof item> => Boolean(item))
     .filter(
@@ -292,12 +292,19 @@ export async function scanSpxwOpportunitiesV3(
         second.finalScore - first.finalScore ||
         second.volume - first.volume ||
         second.openInterest - first.openInterest,
-    )
-    .slice(0, Math.max(1, Math.min(2, config.maxResults ?? 2)))
-    .map((item, index) => ({
-      rank: index + 1,
-      ...item,
-    }));
+    );
+  const resultLimit = Math.max(1, Math.min(2, config.maxResults ?? 2));
+  const opportunities =
+    config.analysisMode === "PREMARKET_PREP"
+      ? directions.flatMap((direction) =>
+          rankedOpportunities
+            .filter((item) => item.direction === direction)
+            .slice(0, resultLimit)
+            .map((item, index) => ({ rank: index + 1, ...item })),
+        )
+      : rankedOpportunities
+          .slice(0, resultLimit)
+          .map((item, index) => ({ rank: index + 1, ...item }));
 
   const completeness = summarizeExpirationScans(
     expirationResults,
@@ -314,7 +321,9 @@ export async function scanSpxwOpportunitiesV3(
       : completeness.status === "PARTIAL_DATA"
         ? "اكتمل جزء فقط من مسح SPXW بسبب فشل بعض طلبات Tradier. النتائج جزئية وللتشخيص فقط، ولم يتم بناء خطة دخول."
         : opportunities.length
-          ? `وجد فهد ${opportunities.length} فرصة SPXW متوافقة مع السوق.`
+          ? config.analysisMode === "PREMARKET_PREP"
+            ? `وجد فهد ${opportunities.length} عقد SPXW مؤهلًا للمتابعة التحضيرية، مرتبًا داخل كل اتجاه.`
+            : `وجد فهد ${opportunities.length} فرصة SPXW متوافقة مع السوق.`
           : "تم العثور على عقود SPXW، لكن لا يوجد عقد يحقق شروط الجودة الآن.";
 
   return {

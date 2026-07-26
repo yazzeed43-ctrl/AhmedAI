@@ -28,6 +28,10 @@ export interface TradierOpportunity {
   underlying: string;
   underlyingPrice: number;
   underlyingChangePercent: number | null;
+  priceSource: "last" | "midpoint" | "close" | "unknown";
+  tradeDate: string | null;
+  ageSeconds: number | null;
+  freshness: "live" | "delayed" | "stale" | "unknown";
   direction: "CALL" | "PUT";
   contractSymbol: string;
   expiration: string;
