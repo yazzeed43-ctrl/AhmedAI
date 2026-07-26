@@ -8,7 +8,14 @@ import {
   getAccountBalance,
   getPositions,
   getTradierQuote,
+  getFullOptionsChain,
 } from "@/lib/tradier";
+import {
+  findExactOptionContract,
+  isValidIsoDate,
+  parseOccOptionSymbol,
+  type ExactOptionContractQuery,
+} from "@/lib/trading/exact-option-contract";
 import { getTechnicalIndicators } from "@/lib/market-indicators";
 import { getPreviousDayVolumeProfile } from "@/lib/massive";
 import { getMarketDecision } from "@/lib/market-decision-engine";
@@ -537,6 +544,27 @@ const TOOLS = [
         },
       },
       required: ["symbol", "expiration"],
+    },
+  },
+  {
+    name: "get_exact_option_contract",
+    description:
+      "يبحث عن عقد خيارات محدد داخل سلسلة Tradier الكاملة ولا يستبدله بعقد قريب. استخدم contractSymbol الكامل، أو underlying مع expiration وoptionType وstrike.",
+    input_schema: {
+      type: "object",
+      properties: {
+        contractSymbol: {
+          type: "string",
+          description: "رمز عقد OCC الكامل، مثل IBM260821C00300000",
+        },
+        underlying: { type: "string", description: "رمز الأصل مثل IBM" },
+        expiration: {
+          type: "string",
+          description: "تاريخ الاستحقاق بصيغة YYYY-MM-DD",
+        },
+        optionType: { type: "string", enum: ["call", "put"] },
+        strike: { type: "number" },
+      },
     },
   },
   {
@@ -1094,6 +1122,7 @@ export async function POST(req: NextRequest) {
     }
 
     let staticSystemPrompt = FAHD_SYSTEM_PROMPT;
+    staticSystemPrompt += `\n\n# Exact option contract enforcement\nWhen the user requests a specific option contract by OCC symbol, expiration/type/strike, or an explicit strike, you MUST call get_exact_option_contract. Never use get_options_chain to claim that a contract is absent because it returns only a near-price sample. You may state that a requested contract is not listed only when get_exact_option_contract returns NOT_FOUND.`;
     staticSystemPrompt += `
 
 # قاعدة إلزامية لعقود SPXW
@@ -1787,6 +1816,79 @@ export async function POST(req: NextRequest) {
             const output = { error: e.message || "فشل جلب سلسلة الخيارات" };
             collectedToolResults.push({
               name: "get_options_chain",
+              input: block.input,
+              output,
+            });
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+              is_error: true,
+            });
+          }
+        } else if (block.name === "get_exact_option_contract") {
+          try {
+            const input = block.input ?? {};
+            const contractSymbol = String(input.contractSymbol ?? "").trim();
+            const underlying = String(input.underlying ?? "")
+              .trim()
+              .toUpperCase();
+            const expiration = String(input.expiration ?? "").trim();
+            const optionType = input.optionType;
+            const strike = Number(input.strike);
+
+            let query: ExactOptionContractQuery;
+            let chainUnderlying = underlying;
+            let chainExpiration = expiration;
+
+            if (contractSymbol) {
+              const occ = parseOccOptionSymbol(contractSymbol);
+              if (!occ) {
+                throw new Error("رمز العقد الكامل غير صالح.");
+              }
+              chainUnderlying = occ.underlying;
+              chainExpiration = occ.expiration;
+              query = { contractSymbol };
+            } else {
+              if (
+                !/^[A-Z0-9.]{1,12}$/.test(underlying) ||
+                !isValidIsoDate(expiration) ||
+                (optionType !== "call" && optionType !== "put") ||
+                !Number.isFinite(strike) ||
+                strike <= 0
+              ) {
+                throw new Error(
+                  "أدخل contractSymbol، أو underlying وexpiration وoptionType وstrike كاملة.",
+                );
+              }
+              query = { underlying, expiration, optionType, strike };
+            }
+
+            const contracts = await getFullOptionsChain(
+              chainUnderlying,
+              chainExpiration,
+            );
+            const output = {
+              underlying: chainUnderlying,
+              expiration: chainExpiration,
+              ...findExactOptionContract(contracts, query),
+            };
+            collectedToolResults.push({
+              name: "get_exact_option_contract",
+              input: block.input,
+              output,
+            });
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: block.id,
+              content: JSON.stringify(output),
+            });
+          } catch (e: any) {
+            const output = {
+              error: e?.message || "فشل البحث عن عقد الخيارات المحدد",
+            };
+            collectedToolResults.push({
+              name: "get_exact_option_contract",
               input: block.input,
               output,
             });

@@ -1,3 +1,5 @@
+import { isValidIsoDate } from "./trading/exact-option-contract";
+
 // ============================================
 // تكامل Tradier
 // يدعم Production وSandbox حسب متغيرات Vercel
@@ -458,6 +460,40 @@ export async function getOptionsExpirations(symbol: string): Promise<string[]> {
 
 const MAX_RETURNED_CONTRACTS = 12;
 
+function mapOptionContract(option: any): OptionContract {
+  const bid = numberOrZero(option.bid);
+  const ask = numberOrZero(option.ask);
+  const openInterest = numberOrZero(option.open_interest);
+  const volume = numberOrZero(option.volume);
+
+  return {
+    symbol: String(option.symbol || ""),
+    strike: numberOrZero(option.strike),
+    option_type: option.option_type,
+    expiration_date: option.expiration_date,
+    bid,
+    ask,
+    last: nullableNumber(option.last),
+    volume,
+    open_interest: openInterest,
+    greeks: option.greeks
+      ? {
+          delta: nullableNumber(option.greeks.delta) ?? undefined,
+          theta: nullableNumber(option.greeks.theta) ?? undefined,
+          gamma: nullableNumber(option.greeks.gamma) ?? undefined,
+          vega: nullableNumber(option.greeks.vega) ?? undefined,
+          rho: nullableNumber(option.greeks.rho) ?? undefined,
+          phi: nullableNumber(option.greeks.phi) ?? undefined,
+          bid_iv: nullableNumber(option.greeks.bid_iv) ?? undefined,
+          mid_iv: nullableNumber(option.greeks.mid_iv) ?? undefined,
+          ask_iv: nullableNumber(option.greeks.ask_iv) ?? undefined,
+          smv_vol: nullableNumber(option.greeks.smv_vol) ?? undefined,
+        }
+      : undefined,
+    ...evaluateLiquidity(bid, ask, openInterest, volume),
+  };
+}
+
 export async function getOptionsChain(
   symbol: string,
   expiration: string,
@@ -493,41 +529,7 @@ export async function getOptionsChain(
       : [rawOptions]
     : [];
 
-  let contracts: OptionContract[] = optionList.map((option: any) => {
-    const bid = numberOrZero(option.bid);
-    const ask = numberOrZero(option.ask);
-    const openInterest = numberOrZero(option.open_interest);
-    const volume = numberOrZero(option.volume);
-
-    const liquidity = evaluateLiquidity(bid, ask, openInterest, volume);
-
-    return {
-      symbol: String(option.symbol || ""),
-      strike: numberOrZero(option.strike),
-      option_type: option.option_type,
-      expiration_date: option.expiration_date,
-      bid,
-      ask,
-      last: nullableNumber(option.last),
-      volume,
-      open_interest: openInterest,
-      greeks: option.greeks
-        ? {
-            delta: nullableNumber(option.greeks.delta) ?? undefined,
-            theta: nullableNumber(option.greeks.theta) ?? undefined,
-            gamma: nullableNumber(option.greeks.gamma) ?? undefined,
-            vega: nullableNumber(option.greeks.vega) ?? undefined,
-            rho: nullableNumber(option.greeks.rho) ?? undefined,
-            phi: nullableNumber(option.greeks.phi) ?? undefined,
-            bid_iv: nullableNumber(option.greeks.bid_iv) ?? undefined,
-            mid_iv: nullableNumber(option.greeks.mid_iv) ?? undefined,
-            ask_iv: nullableNumber(option.greeks.ask_iv) ?? undefined,
-            smv_vol: nullableNumber(option.greeks.smv_vol) ?? undefined,
-          }
-        : undefined,
-      ...liquidity,
-    };
-  });
+  let contracts: OptionContract[] = optionList.map(mapOptionContract);
 
   const totalContractsAvailable = contracts.length;
 
@@ -577,4 +579,33 @@ export async function getOptionsChain(
       ? "بيانات Sandbox متأخرة ومخصصة للتجربة والتداول الورقي."
       : "الاتصال ببيئة Production. بيانات السوق تعتمد على صلاحيات واشتراك حساب Tradier.",
   };
+}
+
+export async function getFullOptionsChain(
+  symbol: string,
+  expiration: string,
+): Promise<OptionContract[]> {
+  const normalizedSymbol = symbol.trim().toUpperCase();
+
+  if (!/^[A-Z0-9.]{1,12}$/.test(normalizedSymbol)) {
+    throw new Error("رمز الأصل غير صالح.");
+  }
+
+  if (!isValidIsoDate(expiration)) {
+    throw new Error("تاريخ الاستحقاق يجب أن يكون بصيغة YYYY-MM-DD.");
+  }
+
+  const data = await tradierGet(
+    `/markets/options/chains?symbol=${encodeURIComponent(
+      normalizedSymbol,
+    )}&expiration=${encodeURIComponent(expiration)}&greeks=true`,
+  );
+  const rawOptions = data?.options?.option;
+  const optionList = rawOptions
+    ? Array.isArray(rawOptions)
+      ? rawOptions
+      : [rawOptions]
+    : [];
+
+  return optionList.map(mapOptionContract);
 }
