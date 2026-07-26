@@ -88,6 +88,23 @@ test("scanStatus = NO_MATCH => NO_OPPORTUNITY (نتيجة شرعية، ليست 
   assert.equal(determineFinalTradeDecision(baseInput({ scanStatus: "NO_MATCH" })), "NO_OPPORTUNITY");
 });
 
+test("NO_MATCH remains a scan diagnostic but unavailable calendar makes the overall decision WAIT_DATA", () => {
+  const unavailableGate: EconomicGateDecision = {
+    level: "CAUTION",
+    blockNewTrades: true,
+    warnExistingPositions: false,
+    existingPositionAction: "NONE",
+    dataStatus: "UNAVAILABLE",
+    reason: "Economic calendar unavailable.",
+  };
+  assert.equal(
+    determineFinalTradeDecision(
+      baseInput({ scanStatus: "NO_MATCH", economicGate: unavailableGate }),
+    ),
+    "WAIT_DATA",
+  );
+});
+
 test("scanStatus = NO_OPPORTUNITY صراحة => NO_OPPORTUNITY", () => {
   assert.equal(determineFinalTradeDecision(baseInput({ scanStatus: "NO_OPPORTUNITY" })), "NO_OPPORTUNITY");
 });
@@ -131,7 +148,7 @@ test("economicGate.dataStatus = AVAILABLE مع level=NONE => يستمر طبيع
   assert.equal(result, "READY");
 });
 
-test("economicGate يمنع (BLOCK) رغم أن dataStatus=PARTIAL => BLOCKED_ECONOMIC_EVENT يسبق فحص dataStatus", () => {
+test("economicGate PARTIAL remains WAIT_DATA even when a known event also blocks", () => {
   const blockWithPartialData: EconomicGateDecision = {
     level: "BLOCK",
     blockNewTrades: true,
@@ -141,7 +158,7 @@ test("economicGate يمنع (BLOCK) رغم أن dataStatus=PARTIAL => BLOCKED_EC
     reason: "حدث عالي التأثير مؤكد رغم نقص بعض البيانات.",
   };
   const result = determineFinalTradeDecision(baseInput({ economicGate: blockWithPartialData }));
-  assert.equal(result, "BLOCKED_ECONOMIC_EVENT");
+  assert.equal(result, "WAIT_DATA");
 });
 
 // ============================================================

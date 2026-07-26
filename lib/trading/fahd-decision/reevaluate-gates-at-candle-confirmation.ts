@@ -54,7 +54,7 @@ function unavailableEconomicGate(
 ): FinalTradeDecisionInput["economicGate"] {
   return {
     level: "CAUTION",
-    blockNewTrades: false,
+    blockNewTrades: true,
     warnExistingPositions: false,
     existingPositionAction: "NONE",
     dataStatus: "UNAVAILABLE",

@@ -90,19 +90,22 @@ export function determineFinalTradeDecision(input: FinalTradeDecisionInput): Fin
   // 1) scan — نفرّق "لا توجد فرصة" (نتيجة شرعية) عن "بيانات غير جاهزة"
   if (input.scanStatus !== SCAN_OPPORTUNITIES_FOUND) {
     if (SCAN_NO_OPPORTUNITY_STATUSES.has(input.scanStatus)) {
+      if (input.economicGate.dataStatus !== "AVAILABLE") {
+        return "WAIT_DATA";
+      }
       return "NO_OPPORTUNITY";
     }
     return "WAIT_DATA";
   }
 
-  // 2) economicGate — يمنع قبل أي تعديل أخبار أو فحص إضافي، بلا استثناء
-  if (input.economicGate.blockNewTrades) {
-    return "BLOCKED_ECONOMIC_EVENT";
-  }
-
-  // 2.5) بيانات التقويم الاقتصادي نفسها غير مكتملة/متعذرة => WAIT_DATA
+  // غياب/نقص بيانات التقويم يعني WAIT_DATA، لا حدثًا اقتصاديًا مؤكدًا.
   if (input.economicGate.dataStatus !== "AVAILABLE") {
     return "WAIT_DATA";
+  }
+
+  // حدث مؤكد من تقويم مكتمل يمنع قبل الأخبار أو أي فحص إضافي.
+  if (input.economicGate.blockNewTrades) {
+    return "BLOCKED_ECONOMIC_EVENT";
   }
 
   // 3) حداثة البيانات

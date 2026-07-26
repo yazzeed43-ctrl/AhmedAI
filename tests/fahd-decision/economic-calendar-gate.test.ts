@@ -33,7 +33,7 @@ test("UNAVAILABLE => CAUTION دائماً، حتى مع وجود حدث BLOCK م
   ];
   const result = evaluateEconomicGate(events, NOW, { dataStatus: "UNAVAILABLE", hasOpenPosition: false });
   assert.equal(result.level, "CAUTION");
-  assert.equal(result.blockNewTrades, false);
+  assert.equal(result.blockNewTrades, true);
   assert.equal(result.dataStatus, "UNAVAILABLE");
 });
 
@@ -44,7 +44,7 @@ test("UNAVAILABLE => CAUTION دائماً، حتى مع وجود حدث BLOCK م
 test("PARTIAL بدون حدث نشط => CAUTION وليس NONE", () => {
   const result = evaluateEconomicGate([], NOW, { dataStatus: "PARTIAL", hasOpenPosition: false });
   assert.equal(result.level, "CAUTION");
-  assert.equal(result.blockNewTrades, false);
+  assert.equal(result.blockNewTrades, true);
   assert.equal(result.dataStatus, "PARTIAL");
 });
 

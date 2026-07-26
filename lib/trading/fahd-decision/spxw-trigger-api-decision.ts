@@ -57,7 +57,7 @@ export async function enforceSpxwTriggerApiDecision<T extends TriggerApiResult>(
     } catch (error) {
       economicGate = {
         level: "CAUTION",
-        blockNewTrades: false,
+        blockNewTrades: true,
         warnExistingPositions: false,
         existingPositionAction: "NONE",
         dataStatus: "UNAVAILABLE",

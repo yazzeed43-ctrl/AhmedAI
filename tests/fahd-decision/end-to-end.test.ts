@@ -379,7 +379,7 @@ test("السيناريو 9: بيانات التقويم الاقتصادي غي�
     dataStatus: "UNAVAILABLE",
     hasOpenPosition: false,
   });
-  assert.equal(economicGate.blockNewTrades, false);
+  assert.equal(economicGate.blockNewTrades, true);
   assert.equal(economicGate.level, "CAUTION");
 
   const finalDecision = determineFinalTradeDecision({

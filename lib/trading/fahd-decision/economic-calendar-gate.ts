@@ -239,7 +239,7 @@ export function evaluateEconomicGate(
   if (options.dataStatus === "UNAVAILABLE") {
     return {
       level: "CAUTION",
-      blockNewTrades: false,
+      blockNewTrades: true,
       warnExistingPositions: options.hasOpenPosition,
       existingPositionAction: options.hasOpenPosition ? "REVIEW_STOPS" : "NONE",
       dataStatus: "UNAVAILABLE",
@@ -262,7 +262,7 @@ export function evaluateEconomicGate(
       // القائمة قد تكون ناقصة — لا نستطيع الجزم بعدم وجود خطر، فلا نرجع NONE
       return {
         level: "CAUTION",
-        blockNewTrades: false,
+        blockNewTrades: true,
         warnExistingPositions: options.hasOpenPosition,
         existingPositionAction: options.hasOpenPosition ? "REVIEW_STOPS" : "NONE",
         dataStatus: "PARTIAL",
@@ -280,7 +280,8 @@ export function evaluateEconomicGate(
   }
 
   // 4) يوجد حدث ضمن النافذة (سواء كانت البيانات AVAILABLE أو PARTIAL)
-  const isBlock = worst.level === "BLOCK";
+  const isBlock =
+    worst.level === "BLOCK" || options.dataStatus === "PARTIAL";
   const timingText =
     worst.detail.minutesUntilEvent !== null
       ? `خلال ${worst.detail.minutesUntilEvent} دقيقة`
