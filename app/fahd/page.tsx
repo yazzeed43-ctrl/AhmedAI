@@ -1125,7 +1125,13 @@ export default function FahdPage() {
       } else {
         setMessages((prev) => [
           ...prev,
-          { role: "assistant", content: "صار خطأ، حاول مرة ثانية." },
+          {
+            role: "assistant",
+            content:
+              typeof data.error === "string" && data.error.trim()
+                ? data.error
+                : "صار خطأ، حاول مرة ثانية.",
+          },
         ]);
       }
     } catch {

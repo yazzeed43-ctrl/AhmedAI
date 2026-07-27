@@ -46,6 +46,8 @@ import {
   type AnalysisMode,
 } from "@/lib/trading/fahd-decision/spxw-analysis-mode";
 
+export const maxDuration = 60;
+
 const FINNHUB_BASE = "https://finnhub.io/api/v1";
 
 // Timeout موحد لكل استدعاءات fetch الخارجية بهذا الملف (Finnhub +
@@ -974,8 +976,6 @@ async function callClaude(
   staticSystemPrompt: string,
   dynamicSystemContext = "",
 ) {
-  let response: Response;
-
   const system: ClaudeSystemBlock[] = [
     {
       type: "text",
@@ -995,31 +995,51 @@ async function callClaude(
     });
   }
 
-  try {
-    response = await fetchWithTimeout(
-      "https://api.anthropic.com/v1/messages",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": process.env.ANTHROPIC_API_KEY!,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6",
-          max_tokens: 1500,
-          system,
-          tools: TOOLS,
-          messages,
-        }),
-      },
-      30_000,
-    );
-  } catch (e: any) {
-    if (e?.name === "TimeoutError" || e?.name === "AbortError") {
-      throw new Error("انتهت مهلة الاتصال بالنموذج، حاول مرة ثانية.");
+  const requestInit: RequestInit = {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_API_KEY!,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1500,
+      system,
+      tools: TOOLS,
+      messages,
+    }),
+  };
+
+  let response: Response | null = null;
+  const timeoutAttempts = [25_000, 20_000];
+
+  for (let attempt = 0; attempt < timeoutAttempts.length; attempt++) {
+    try {
+      response = await fetchWithTimeout(
+        "https://api.anthropic.com/v1/messages",
+        requestInit,
+        timeoutAttempts[attempt],
+      );
+      break;
+    } catch (e: any) {
+      const timedOut =
+        e?.name === "TimeoutError" || e?.name === "AbortError";
+
+      if (!timedOut) throw e;
+
+      if (attempt === timeoutAttempts.length - 1) {
+        throw new Error("انتهت مهلة الاتصال بالنموذج، حاول مرة ثانية.");
+      }
+
+      console.warn("Anthropic request timed out; retrying once.", {
+        attempt: attempt + 1,
+      });
     }
-    throw e;
+  }
+
+  if (!response) {
+    throw new Error("انتهت مهلة الاتصال بالنموذج، حاول مرة ثانية.");
   }
 
   if (!response.ok) {
@@ -2227,6 +2247,18 @@ export async function POST(req: NextRequest) {
     });
   } catch (error) {
     console.error("Fahd chat route error:", error);
-    return NextResponse.json({ error: "حدث خطأ غير متوقع" }, { status: 500 });
+    const message =
+      error instanceof Error ? error.message : "حدث خطأ غير متوقع";
+    const isModelTimeout = message.includes("مهلة الاتصال بالنموذج");
+
+    return NextResponse.json(
+      {
+        error: isModelTimeout
+          ? "تأخر نموذج فهد في الرد. أعد المحاولة؛ بيانات السوق لم تُفقد."
+          : "حدث خطأ غير متوقع",
+        retryable: isModelTimeout,
+      },
+      { status: isModelTimeout ? 503 : 500 },
+    );
   }
 }
