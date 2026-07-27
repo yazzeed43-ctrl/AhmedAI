@@ -7,7 +7,7 @@
     },
     {
       "path": "/api/cron/premarket-watchlist",
-      "schedule": "45 12,13 * * 1-5"
+      "schedule": "45 12 * * 1-5"
     }
   ]
 }
