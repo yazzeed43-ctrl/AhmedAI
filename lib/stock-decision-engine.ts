@@ -133,6 +133,15 @@ function scoreBollinger(positionPercent: number | null) {
     };
   }
 
+  if (positionPercent >= 100) {
+    return {
+      score: 1,
+      reasons: [
+        'السعر فوق الحد العلوي لبولينجر؛ يوجد تمدد سعري أو اختراق يحتاج تأكيدًا وليس مجرد اقتراب من الحد',
+      ],
+    };
+  }
+
   if (positionPercent >= 85) {
     return {
       score: 1,
@@ -144,6 +153,15 @@ function scoreBollinger(positionPercent: number | null) {
     return {
       score: 4,
       reasons: ['السعر في النصف العلوي من Bollinger'],
+    };
+  }
+
+  if (positionPercent <= 0) {
+    return {
+      score: -1,
+      reasons: [
+        'السعر تحت الحد السفلي لبولينجر؛ يوجد تمدد هابط أو كسر يحتاج تأكيدًا وليس مجرد اقتراب من الحد',
+      ],
     };
   }
 

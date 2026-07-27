@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": ".test-dist-fahd-compact",
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"]
+    },
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "types": ["node"],
+    "lib": ["ES2020", "DOM"]
+  },
+  "include": [
+    "lib/fahd/compact-response.ts",
+    "tests/fahd-compact-response.test.ts"
+  ]
+}

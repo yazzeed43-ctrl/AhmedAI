@@ -2,6 +2,7 @@
 /node_modules
 /.test-dist/
 /.test-dist-fahd-decision/
+/.test-dist-fahd-compact/
 /.test-dist-tradier-scanner/
 
 # next.js

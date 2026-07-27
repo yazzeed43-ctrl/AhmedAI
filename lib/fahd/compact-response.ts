@@ -1,16 +1,18 @@
-import type { TradeEngineInput } from '@/lib/trading/trade-engine';
-import type { SociallyAdjustedTradeReport } from '@/lib/social/social-decision-context';
+import type { TradeEngineInput } from '../trading/trade-engine';
+import type { SociallyAdjustedTradeReport } from '../social/social-decision-context';
 
 export type FahdCompactResponse = {
   symbol: string;
   decision: 'CALL' | 'PUT' | 'WAIT';
   confidence: number;
+  confidenceLabel: 'LOW' | 'MEDIUM' | 'HIGH';
   reasons: string[];
   technicalBias: string;
   socialBias: string;
   conflict: boolean;
   criticalLevels: string[];
   nextAction: string;
+  executionReadiness: string[];
 };
 
 type CollectedToolResult = {
@@ -361,6 +363,7 @@ function mapAnalyzeTrade(
     symbol: report.symbol,
     decision: TRADE_DECISION_TO_COMPACT[report.decision],
     confidence: Math.round(report.confidence),
+    confidenceLabel: confidenceLabel(report.confidence),
     reasons:
       report.reasons.length > 0
         ? report.reasons.slice(0, 4)
@@ -372,7 +375,35 @@ function mapAnalyzeTrade(
     conflict: report.socialIntelligence.conflict,
     criticalLevels: buildTradeCriticalLevels(input),
     nextAction: buildTradeNextAction(report),
+    executionReadiness: buildExecutionReadiness(
+      TRADE_DECISION_TO_COMPACT[report.decision]
+    ),
   };
+}
+
+function confidenceLabel(
+  confidence: number
+): FahdCompactResponse['confidenceLabel'] {
+  if (confidence < 55) return 'LOW';
+  if (confidence < 75) return 'MEDIUM';
+  return 'HIGH';
+}
+
+function buildExecutionReadiness(
+  decision: FahdCompactResponse['decision']
+): string[] {
+  if (decision !== 'WAIT') {
+    return [
+      'القرار التنفيذي اجتاز بوابات المحرك الحالية',
+      'التزم بالتفعيل والإبطال وإدارة المخاطر المحددة',
+    ];
+  }
+
+  return [
+    'لا يوجد Trigger تنفيذي مؤكد',
+    'لا يوجد تأكيد لآخر شمعة 5 دقائق مغلقة',
+    'يجب إعادة التحقق من السعر الحي والسوق والأخبار والتقويم',
+  ];
 }
 
 function stockReasons(stock: StockDecisionOutput): string[] {
@@ -450,11 +481,34 @@ function hasStockSocialConflict(
   );
 }
 
+function hasStockMarketConflict(
+  stock: StockDecisionOutput
+): boolean {
+  const marketBias = stock.marketContext?.marketBias;
+
+  if (stock.bias === 'CALL_BIAS') {
+    return marketBias === 'PUT_BIAS';
+  }
+
+  if (stock.bias === 'PUT_BIAS') {
+    return marketBias === 'CALL_BIAS';
+  }
+
+  const primaryPlan = stock.trigger[0]?.toUpperCase() ?? '';
+
+  return (
+    (primaryPlan.includes('CALL') && marketBias === 'PUT_BIAS') ||
+    (primaryPlan.includes('PUT') && marketBias === 'CALL_BIAS')
+  );
+}
+
 function mapStockDecision(
   stock: StockDecisionOutput,
   social: SocialSummaryOutput | undefined
 ): FahdCompactResponse {
-  const conflict = hasStockSocialConflict(stock, social);
+  const conflict =
+    hasStockSocialConflict(stock, social) ||
+    hasStockMarketConflict(stock);
   const highImpact = (social?.highImpactCount ?? 0) > 0;
 
   const socialReason = highImpact
@@ -477,12 +531,14 @@ function mapStockDecision(
     symbol: stock.symbol,
     decision: 'WAIT',
     confidence: Math.round(stock.confidence),
+    confidenceLabel: confidenceLabel(stock.confidence),
     reasons: reasons.slice(0, 4),
     technicalBias: stockTechnicalBias(stock),
     socialBias: socialBiasLabel(social),
     conflict,
     criticalLevels: stockCriticalLevels(stock),
     nextAction,
+    executionReadiness: buildExecutionReadiness('WAIT'),
   };
 }
 
@@ -560,11 +616,20 @@ export function formatCompactResponse(
       ? data.criticalLevels.join(' / ')
       : 'غير محدد';
 
+  const readiness = data.executionReadiness
+    .map((item) => `□ ${item}`)
+    .join('\n');
+
+  const isWaiting = data.decision === 'WAIT';
+
   const response = [
     `🚦 ${data.symbol} — القرار النهائي`,
     '',
     `القرار: ${data.decision}`,
-    `الثقة النهائية: ${data.confidence}%`,
+    `الثقة النهائية: ${data.confidenceLabel} — ${data.confidence}%`,
+    isWaiting
+      ? 'الملخص التنفيذي: لا يوجد سبب إحصائي لفتح صفقة الآن؛ للمراقبة فقط.'
+      : 'الملخص التنفيذي: القرار اجتاز شروط المحرك الحالية.',
     '',
     'الأسباب:',
     reasons,
@@ -572,8 +637,17 @@ export function formatCompactResponse(
     `الانحياز الفني: ${data.technicalBias}`,
     `الانحياز الاجتماعي: ${data.socialBias}`,
     `التعارض: ${data.conflict ? 'نعم' : 'لا'}`,
-    `المستوى الحاسم: ${levels}`,
-    `الخطة: ${data.nextAction}`,
+    `${isWaiting ? 'مستويات المراقبة المرجعية' : 'المستوى الحاسم'}: ${levels}`,
+    `${isWaiting ? 'خطة المراقبة' : 'الخطة'}: ${data.nextAction}`,
+    '',
+    `جاهزية التنفيذ: ${isWaiting ? 'WAIT' : 'READY'}`,
+    readiness,
+    ...(isWaiting
+      ? [
+          'isExecutable: false',
+          'executableTrigger: null',
+        ]
+      : []),
   ].join('\n');
 
   return enforceWordLimit(
