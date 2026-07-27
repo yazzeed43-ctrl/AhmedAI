@@ -6,6 +6,7 @@ import { isValidIsoDate } from "./trading/exact-option-contract";
 // ============================================
 
 const TRADIER_TOKEN =
+  process.env.TRADIER_ACCESS_TOKEN ||
   process.env.TRADIER_TOKEN ||
   process.env.TRADIER_PRODUCTION_TOKEN ||
   process.env.TRADIER_SANDBOX_TOKEN;
@@ -21,7 +22,7 @@ const IS_SANDBOX = TRADIER_BASE.includes("sandbox.tradier.com");
 function ensureTradierConfigured() {
   if (!TRADIER_TOKEN) {
     throw new Error(
-      "مفتاح Tradier غير موجود. أضف TRADIER_TOKEN في Environment Variables داخل Vercel.",
+      "مفتاح Tradier غير موجود. أضف TRADIER_ACCESS_TOKEN في Environment Variables داخل Vercel.",
     );
   }
 }
