@@ -5,6 +5,10 @@ import {
   type TradeEngineInput,
 } from "@/lib/trading/trade-engine";
 
+import {
+  applySocialIntelligenceToTradeReport,
+} from "@/lib/social/social-decision-context";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -91,7 +95,24 @@ export async function POST(request: Request) {
       );
     }
 
-    const report = runTradeEngine(body);
+    const baseReport = runTradeEngine(body);
+
+    let report = baseReport;
+
+    try {
+      report = await applySocialIntelligenceToTradeReport(
+        baseReport,
+        {
+          minutes: 1440,
+          limit: 50,
+        },
+      );
+    } catch (socialError) {
+      console.error(
+        "Social intelligence adjustment failed:",
+        socialError,
+      );
+    }
 
     return NextResponse.json(
       {
@@ -126,5 +147,6 @@ export async function GET() {
     endpoint: "/api/analyze-trade",
     method: "POST",
     status: "READY",
+    socialIntelligence: true,
   });
 }
