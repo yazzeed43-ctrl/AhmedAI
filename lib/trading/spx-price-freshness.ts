@@ -1,5 +1,9 @@
 export type SpxPriceFreshness = "live" | "delayed" | "stale" | "unknown";
 export type SpxPriceSource = "last" | "midpoint" | "close";
+export type SpxPriceTimestampSource =
+  | "trade_date"
+  | "bid_ask_dates"
+  | null;
 
 export interface SpxPriceSnapshot {
   price: number;
@@ -7,6 +11,7 @@ export interface SpxPriceSnapshot {
   tradeDate: string | null;
   ageSeconds: number | null;
   freshness: SpxPriceFreshness;
+  timestampSource: SpxPriceTimestampSource;
 }
 
 interface QuoteLike {
@@ -15,7 +20,13 @@ interface QuoteLike {
   ask?: number | null;
   close?: number | null;
   trade_date?: number | string | null;
+  bid_date?: number | string | null;
+  ask_date?: number | string | null;
 }
+
+const LIVE_MAX_AGE_SECONDS = 60;
+const DELAYED_MAX_AGE_SECONDS = 20 * 60;
+const MAX_FUTURE_CLOCK_SKEW_SECONDS = 5;
 
 function positiveNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value > 0
@@ -23,7 +34,9 @@ function positiveNumber(value: unknown): number | null {
     : null;
 }
 
-function parseTradeDate(value: QuoteLike["trade_date"]): Date | null {
+function parseMarketTimestamp(
+  value: number | string | null | undefined,
+): Date | null {
   if (value === null || value === undefined || value === "") return null;
 
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -31,9 +44,69 @@ function parseTradeDate(value: QuoteLike["trade_date"]): Date | null {
     const date = new Date(milliseconds);
     return Number.isNaN(date.getTime()) ? null : date;
   }
+  if (typeof value === "number") return null;
 
-  const date = new Date(value);
+  const normalized = value.trim();
+  if (!normalized || /^\d{4}-\d{2}-\d{2}$/.test(normalized)) return null;
+
+  if (/^\d{10,13}$/.test(normalized)) {
+    return parseMarketTimestamp(Number(normalized));
+  }
+
+  const date = new Date(normalized);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function resolveTimestamp(
+  quote: QuoteLike,
+  priceSource: SpxPriceSource,
+): { date: Date | null; source: SpxPriceTimestampSource } {
+  if (priceSource === "midpoint") {
+    const bidDate = parseMarketTimestamp(quote.bid_date);
+    const askDate = parseMarketTimestamp(quote.ask_date);
+
+    // A midpoint is only as fresh as its older side. Requiring both timestamps
+    // prevents an old bid (or ask) from being presented as a live midpoint.
+    if (!bidDate || !askDate) return { date: null, source: null };
+
+    return {
+      date: bidDate.getTime() <= askDate.getTime() ? bidDate : askDate,
+      source: "bid_ask_dates",
+    };
+  }
+
+  const tradeDate = parseMarketTimestamp(quote.trade_date);
+  return {
+    date: tradeDate,
+    source: tradeDate ? "trade_date" : null,
+  };
+}
+
+function classifyFreshness(
+  timestamp: Date | null,
+  now: Date,
+): { ageSeconds: number | null; freshness: SpxPriceFreshness } {
+  if (!timestamp || Number.isNaN(now.getTime())) {
+    return { ageSeconds: null, freshness: "unknown" };
+  }
+
+  const rawAgeSeconds = Math.floor(
+    (now.getTime() - timestamp.getTime()) / 1_000,
+  );
+
+  if (rawAgeSeconds < -MAX_FUTURE_CLOCK_SKEW_SECONDS) {
+    return { ageSeconds: null, freshness: "unknown" };
+  }
+
+  const ageSeconds = Math.max(0, rawAgeSeconds);
+  const freshness: SpxPriceFreshness =
+    ageSeconds <= LIVE_MAX_AGE_SECONDS
+      ? "live"
+      : ageSeconds <= DELAYED_MAX_AGE_SECONDS
+        ? "delayed"
+        : "stale";
+
+  return { ageSeconds, freshness };
 }
 
 export function buildSpxPriceSnapshot(
@@ -54,26 +127,16 @@ export function buildSpxPriceSnapshot(
       ? "midpoint"
       : "close";
 
-  const parsedTradeDate = parseTradeDate(quote.trade_date);
-  const ageSeconds = parsedTradeDate
-    ? Math.max(0, Math.floor((now.getTime() - parsedTradeDate.getTime()) / 1_000))
-    : null;
-
-  const freshness: SpxPriceFreshness =
-    ageSeconds === null
-      ? "unknown"
-      : ageSeconds <= 60
-        ? "live"
-        : ageSeconds <= 20 * 60
-          ? "delayed"
-          : "stale";
+  const timestamp = resolveTimestamp(quote, priceSource);
+  const { ageSeconds, freshness } = classifyFreshness(timestamp.date, now);
 
   return {
     price,
     priceSource,
-    tradeDate: parsedTradeDate?.toISOString() ?? null,
+    tradeDate: timestamp.date?.toISOString() ?? null,
     ageSeconds,
     freshness,
+    timestampSource: timestamp.source,
   };
 }
 

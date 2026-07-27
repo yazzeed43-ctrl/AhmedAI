@@ -69,6 +69,8 @@ export interface TradierQuote {
   volume?: number | null;
   average_volume?: number | null;
   trade_date?: number | string | null;
+  bid_date?: number | string | null;
+  ask_date?: number | string | null;
 }
 
 export interface TradierOption {
