@@ -135,6 +135,7 @@ export async function scanUnifiedPremarketUniverse(config: {
     },
     spxwScan: {
       status: spxwScan.status,
+      underlyingQuote: spxwScan.underlyingQuote ?? null,
       contractsScanned: spxwScan.contractsScanned ?? 0,
       expirationsRequested: spxwScan.expirationsRequested ?? 0,
       expirationsSucceeded: spxwScan.expirationsSucceeded ?? 0,
@@ -169,6 +170,12 @@ export function formatUnifiedPremarketWatchlist(
     `SPXW العقود المفحوصة: ${result.spxwScan.contractsScanned}`,
     "isExecutable: false | executableTrigger: null",
   ];
+
+  const spxReference = result.spxwScan.underlyingQuote;
+  lines.push(
+    `SPX reference: price ${String(spxReference?.price ?? "غير متاح")} | freshness ${String(spxReference?.freshness ?? "unknown")} | priceSource ${String(spxReference?.priceSource ?? "unknown")} | ageSeconds ${String(spxReference?.ageSeconds ?? "unknown")} | tradeDate ${String(spxReference?.tradeDate ?? "unknown")}`,
+  );
+
   const addList = <T extends {
     rank?: number;
     contractSymbol?: string;
@@ -178,20 +185,27 @@ export function formatUnifiedPremarketWatchlist(
     finalScore?: number;
     freshness?: string;
     priceSource?: string;
-  }>(title: string, values: T[]) => {
+  }>(
+    title: string,
+    values: T[],
+    includeItemPriceProvenance = true,
+  ) => {
     lines.push("", title);
     if (!values.length) {
       lines.push("- لا توجد عقود منشورة.");
       return;
     }
     for (const item of values) {
+      const provenance = includeItemPriceProvenance
+        ? ` | freshness ${String(item.freshness ?? "unknown")} | priceSource ${String(item.priceSource ?? "unknown")}`
+        : "";
       lines.push(
-        `- ${String(item.rank ?? "-")}. ${String(item.contractSymbol ?? "-")} | Strike ${String(item.strike ?? "-")} | Exp ${String(item.expiration ?? "-")} | Mid ${String(item.midpoint ?? "-")} | Score ${String(item.finalScore ?? "-")} | freshness ${String(item.freshness ?? "unknown")} | priceSource ${String(item.priceSource ?? "unknown")}`,
+        `- ${String(item.rank ?? "-")}. ${String(item.contractSymbol ?? "-")} | Strike ${String(item.strike ?? "-")} | Exp ${String(item.expiration ?? "-")} | Mid ${String(item.midpoint ?? "-")} | Score ${String(item.finalScore ?? "-")}${provenance}`,
       );
     }
   };
-  addList("SPXW CALL", result.spxwScan.callWatchlist);
-  addList("SPXW PUT", result.spxwScan.putWatchlist);
+  addList("SPXW CALL", result.spxwScan.callWatchlist, false);
+  addList("SPXW PUT", result.spxwScan.putWatchlist, false);
   addList("Stocks/ETF CALL", result.stockScan.callWatchlist);
   addList("Stocks/ETF PUT", result.stockScan.putWatchlist);
   if (result.stockScan.dataStatus === "PARTIAL_DATA") {

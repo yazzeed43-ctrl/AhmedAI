@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { scanTradierOpportunities } from "../lib/trading/tradier-scanner";
-import { scanUnifiedPremarketUniverse } from "../lib/trading/unified-premarket-scanner";
+import {
+  formatUnifiedPremarketWatchlist,
+  scanUnifiedPremarketUniverse,
+} from "../lib/trading/unified-premarket-scanner";
 import type { BaseOpportunity } from "../lib/trading/tradier-scanner-core/types";
 
 function futureDate(days: number): string {
@@ -202,4 +205,70 @@ test("the unified scanner publishes the new stockScan API contract", async () =>
   assert.deepEqual(result.stockScan.putWatchlist, []);
   assert.equal(result.isExecutable, false);
   assert.equal(result.executableTrigger, null);
+});
+
+test("SPXW premarket output preserves scan-level price provenance", async () => {
+  const result = await scanUnifiedPremarketUniverse(
+    { symbols: ["NVDA"] },
+    {
+      getMarketDecision: async () => ({
+        bias: "PUT_BIAS",
+        probabilities: { bullish: 20, bearish: 80 },
+      }),
+      scanStocks: async () => ({
+        dataStatus: "COMPLETE",
+        outcome: "NO_OPPORTUNITIES",
+        diagnostic: "NONE",
+        symbolsRequested: 1,
+        symbolsWithAnySuccess: 1,
+        symbolsFailedCompletely: 0,
+        expirationsRequested: 1,
+        expirationsSucceeded: 1,
+        expirationsFailed: 0,
+        providerErrors: [],
+        contractsScanned: 0,
+        qualifiedContracts: 0,
+        opportunities: [],
+      }),
+      scanSpxw: async () => ({
+        status: "OPPORTUNITIES_FOUND",
+        contractsScanned: 1,
+        expirationsRequested: 1,
+        expirationsSucceeded: 1,
+        expirationsFailed: 0,
+        providerErrors: [],
+        underlyingQuote: {
+          price: 7411.98,
+          freshness: "stale",
+          priceSource: "close",
+          ageSeconds: 119868,
+          tradeDate: "2026-07-24T21:26:00.000Z",
+        },
+        opportunities: [
+          {
+            direction: "PUT",
+            contractSymbol: "SPXW260727P07420000",
+            strike: 7420,
+            expiration: "2026-07-27",
+            midpoint: 2.58,
+            finalScore: 78,
+          },
+        ],
+      }),
+    },
+  );
+
+  assert.equal(result.spxwScan.underlyingQuote?.freshness, "stale");
+  assert.equal(result.spxwScan.underlyingQuote?.priceSource, "close");
+
+  const message = formatUnifiedPremarketWatchlist(result);
+
+  assert.match(
+    message,
+    /SPX reference: price 7411\.98 \| freshness stale \| priceSource close/,
+  );
+  assert.doesNotMatch(
+    message,
+    /SPXW260727P07420000[^\n]*freshness unknown/,
+  );
 });
