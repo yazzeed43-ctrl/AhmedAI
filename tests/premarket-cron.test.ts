@@ -38,27 +38,32 @@ function dependencies(overrides: Partial<PremarketCronDependencies> = {}) {
   return { calls, value };
 }
 
-test("accepts 08:45 New York during daylight saving time", () => {
-  const result = getNewYorkPremarketWindow(new Date("2026-07-27T12:45:00Z"));
+test("accepts the start of the 08:00 New York hour during daylight saving time", () => {
+  const result = getNewYorkPremarketWindow(new Date("2026-07-27T12:00:00Z"));
   assert.equal(result.shouldRun, true);
   assert.equal(result.sessionDate, "2026-07-27");
 });
 
-test("accepts 08:45 New York during standard time", () => {
-  const result = getNewYorkPremarketWindow(new Date("2026-12-07T13:45:00Z"));
+test("accepts the start of the 08:00 New York hour during standard time", () => {
+  const result = getNewYorkPremarketWindow(new Date("2026-12-07T13:00:00Z"));
   assert.equal(result.shouldRun, true);
   assert.equal(result.sessionDate, "2026-12-07");
 });
 
-test("accepts a delayed cron invocation inside the protected premarket window", () => {
-  const result = getNewYorkPremarketWindow(new Date("2026-07-27T12:52:00Z"));
+test("accepts the end of the protected premarket hour", () => {
+  const result = getNewYorkPremarketWindow(new Date("2026-07-27T12:59:59Z"));
   assert.equal(result.shouldRun, true);
 });
 
-test("rejects the second UTC slot when it is not 08:45 New York", async () => {
+test("rejects an invocation immediately before the protected premarket hour", () => {
+  const result = getNewYorkPremarketWindow(new Date("2026-07-27T11:59:59Z"));
+  assert.equal(result.shouldRun, false);
+});
+
+test("rejects an invocation immediately after the protected premarket hour", async () => {
   const setup = dependencies();
   const result = await executePremarketCron({
-    now: new Date("2026-07-27T13:45:00Z"),
+    now: new Date("2026-07-27T13:00:00Z"),
     dependencies: setup.value,
   });
   assert.equal(result.outcome, "SKIPPED_OUTSIDE_WINDOW");

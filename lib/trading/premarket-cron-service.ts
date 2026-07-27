@@ -71,7 +71,7 @@ export function getNewYorkPremarketWindow(now: Date): {
     weekday,
     hour,
     minute,
-    shouldRun: isWeekday && hour === 8 && minute >= 45 && minute <= 59,
+    shouldRun: isWeekday && hour === 8,
   };
 }
 
