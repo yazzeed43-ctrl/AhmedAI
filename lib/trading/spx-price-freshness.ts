@@ -117,13 +117,15 @@ export function buildSpxPriceSnapshot(
   const bid = positiveNumber(quote.bid);
   const ask = positiveNumber(quote.ask);
   const close = positiveNumber(quote.close);
+  const hasValidMidpoint =
+    bid !== null && ask !== null && ask >= bid;
 
-  const price = last ?? (bid !== null && ask !== null ? (bid + ask) / 2 : close);
+  const price = last ?? (hasValidMidpoint ? (bid + ask) / 2 : close);
   if (price === null) return null;
 
   const priceSource: SpxPriceSource = last
     ? "last"
-    : bid !== null && ask !== null
+    : hasValidMidpoint
       ? "midpoint"
       : "close";
 

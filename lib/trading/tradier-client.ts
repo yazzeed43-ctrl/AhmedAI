@@ -1,5 +1,8 @@
-const TRADIER_BASE_URL =
-  process.env.TRADIER_BASE_URL?.trim() || "https://api.tradier.com/v1";
+const TRADIER_BASE_URL = (
+  process.env.TRADIER_BASE_URL?.trim() || "https://api.tradier.com/v1"
+).replace(/\/+$/, "");
+
+const TRADIER_QUOTES_BATCH_SIZE = 50;
 
 function getToken(): string {
   const token = process.env.TRADIER_ACCESS_TOKEN?.trim();
@@ -53,7 +56,13 @@ async function tradierGet<T>(
   if (!response.ok) {
     throw new Error(`Tradier ${response.status}: ${text.slice(0, 500)}`);
   }
-  return JSON.parse(text) as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(
+      `Tradier ${response.status}: invalid JSON response`,
+    );
+  }
 }
 
 export interface TradierQuote {
@@ -102,13 +111,36 @@ function arrayify<T>(value: T | T[] | null | undefined): T[] {
 export async function getTradierQuotes(
   symbols: string[],
 ): Promise<TradierQuote[]> {
-  const data = await tradierGet<{
-    quotes?: { quote?: TradierQuote | TradierQuote[] };
-  }>("/markets/quotes", {
-    symbols: symbols.join(","),
-    greeks: false,
-  });
-  return arrayify(data.quotes?.quote);
+  const normalizedSymbols = [
+    ...new Set(
+      symbols
+        .map((symbol) => symbol.trim().toUpperCase())
+        .filter((symbol) => /^[A-Z][A-Z0-9.]{0,9}$/.test(symbol)),
+    ),
+  ];
+
+  if (normalizedSymbols.length === 0) return [];
+
+  const quotes: TradierQuote[] = [];
+  for (
+    let offset = 0;
+    offset < normalizedSymbols.length;
+    offset += TRADIER_QUOTES_BATCH_SIZE
+  ) {
+    const batch = normalizedSymbols.slice(
+      offset,
+      offset + TRADIER_QUOTES_BATCH_SIZE,
+    );
+    const data = await tradierGet<{
+      quotes?: { quote?: TradierQuote | TradierQuote[] };
+    }>("/markets/quotes", {
+      symbols: batch.join(","),
+      greeks: false,
+    });
+    quotes.push(...arrayify(data.quotes?.quote));
+  }
+
+  return quotes;
 }
 
 export async function getTradierExpirations(symbol: string): Promise<string[]> {

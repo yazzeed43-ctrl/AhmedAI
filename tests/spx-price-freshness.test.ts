@@ -158,3 +158,36 @@ test("numeric epoch strings are normalized", () => {
   assert.equal(snapshot?.ageSeconds, 45);
   assert.equal(snapshot?.freshness, "live");
 });
+
+test("a crossed bid ask market is rejected as a midpoint", () => {
+  const snapshot = buildSpxPriceSnapshot(
+    {
+      bid: 6378,
+      ask: 6374,
+      bid_date: now.getTime() - 10_000,
+      ask_date: now.getTime() - 10_000,
+      close: 6300,
+      trade_date: now.getTime() - 10_000,
+    },
+    now,
+  );
+
+  assert.equal(snapshot?.price, 6300);
+  assert.equal(snapshot?.priceSource, "close");
+  assert.equal(snapshot?.timestampSource, "trade_date");
+  assert.equal(canBuildSpxwTriggerFromQuote(snapshot), false);
+});
+
+test("a crossed bid ask market without a fallback price is rejected", () => {
+  const snapshot = buildSpxPriceSnapshot(
+    {
+      bid: 6378,
+      ask: 6374,
+      bid_date: now.getTime() - 10_000,
+      ask_date: now.getTime() - 10_000,
+    },
+    now,
+  );
+
+  assert.equal(snapshot, null);
+});
