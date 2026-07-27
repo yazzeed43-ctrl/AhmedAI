@@ -25,6 +25,7 @@ import { runFahdScannerV3 } from "@/lib/trading/fahd-scanner-v3";
 import { scanGoldenOpportunities } from "@/lib/trading/golden-scanner";
 import {
   formatUnifiedPremarketWatchlist,
+  isUnifiedPremarketPreparationRequest,
   scanUnifiedPremarketUniverse,
 } from "@/lib/trading/unified-premarket-scanner";
 import { getStockDecision } from "@/lib/stock-decision-engine";
@@ -47,6 +48,9 @@ import {
 } from "@/lib/trading/fahd-decision/spxw-analysis-mode";
 
 export const maxDuration = 60;
+
+const FAHD_REQUEST_BUDGET_MS = 52_000;
+const FAHD_MODEL_TIMEOUT_ATTEMPTS_MS = [18_000, 15_000] as const;
 
 const FINNHUB_BASE = "https://finnhub.io/api/v1";
 
@@ -307,6 +311,27 @@ async function getEconomicCalendar(apiKey: string) {
   } catch (e: any) {
     console.error(`Finnhub economic calendar fetch threw: ${e?.message || e}`);
     return null;
+  }
+}
+
+function isModelTimeoutError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.includes("مهلة الاتصال بالنموذج")
+  );
+}
+
+async function saveFahdConversation(
+  userMessage: string,
+  assistantMessage: string,
+): Promise<void> {
+  const { error } = await supabase.from("fahd_conversations").insert([
+    { role: "user", content: userMessage },
+    { role: "assistant", content: assistantMessage },
+  ]);
+
+  if (error) {
+    console.error("Failed to save Fahd conversation:", error);
   }
 }
 
@@ -975,6 +1000,7 @@ async function callClaude(
   messages: any[],
   staticSystemPrompt: string,
   dynamicSystemContext = "",
+  requestDeadlineAt = Date.now() + FAHD_REQUEST_BUDGET_MS,
 ) {
   const system: ClaudeSystemBlock[] = [
     {
@@ -1012,14 +1038,25 @@ async function callClaude(
   };
 
   let response: Response | null = null;
-  const timeoutAttempts = [25_000, 20_000];
+  for (
+    let attempt = 0;
+    attempt < FAHD_MODEL_TIMEOUT_ATTEMPTS_MS.length;
+    attempt++
+  ) {
+    const remainingRequestBudgetMs = requestDeadlineAt - Date.now() - 3_000;
+    if (remainingRequestBudgetMs < 1_000) {
+      throw new Error("انتهت مهلة الاتصال بالنموذج، حاول مرة ثانية.");
+    }
+    const attemptTimeoutMs = Math.min(
+      FAHD_MODEL_TIMEOUT_ATTEMPTS_MS[attempt],
+      remainingRequestBudgetMs,
+    );
 
-  for (let attempt = 0; attempt < timeoutAttempts.length; attempt++) {
     try {
       response = await fetchWithTimeout(
         "https://api.anthropic.com/v1/messages",
         requestInit,
-        timeoutAttempts[attempt],
+        attemptTimeoutMs,
       );
       break;
     } catch (e: any) {
@@ -1028,7 +1065,7 @@ async function callClaude(
 
       if (!timedOut) throw e;
 
-      if (attempt === timeoutAttempts.length - 1) {
+      if (attempt === FAHD_MODEL_TIMEOUT_ATTEMPTS_MS.length - 1) {
         throw new Error("انتهت مهلة الاتصال بالنموذج، حاول مرة ثانية.");
       }
 
@@ -1077,6 +1114,27 @@ export async function POST(req: NextRequest) {
         { error: "الرسالة طويلة جدًا، بحد أقصى 4000 حرف." },
         { status: 400 },
       );
+    }
+
+    const requestDeadlineAt = Date.now() + FAHD_REQUEST_BUDGET_MS;
+
+    if (isUnifiedPremarketPreparationRequest(message)) {
+      const result = await scanUnifiedPremarketUniverse();
+      const reply = formatUnifiedPremarketWatchlist(result);
+      const output = { ...result, userMessage: reply };
+
+      await saveFahdConversation(message, reply);
+
+      return NextResponse.json({
+        reply,
+        toolResults: [
+          {
+            name: "get_premarket_universe",
+            input: { direct: true },
+            output,
+          },
+        ],
+      });
     }
 
     const { data: memoryRows, error: memoryReadError } = await supabase
@@ -1315,11 +1373,26 @@ export async function POST(req: NextRequest) {
       );
 
     for (let round = 0; round < maxRounds; round++) {
-      const data = await callClaude(
-        workingMessages,
-        staticSystemPrompt,
-        dynamicSystemContext,
-      );
+      let data: any;
+      try {
+        data = await callClaude(
+          workingMessages,
+          staticSystemPrompt,
+          dynamicSystemContext,
+          requestDeadlineAt,
+        );
+      } catch (error) {
+        if (isModelTimeoutError(error) && collectedToolResults.length > 0) {
+          console.warn(
+            "Anthropic synthesis timed out; using deterministic Fahd output.",
+            { completedTools: collectedToolResults.map((item) => item.name) },
+          );
+          assistantText =
+            "اكتملت أدوات فهد، لكن تأخرت الصياغة النصية؛ عُرضت النتيجة البرمجية الموثوقة.";
+          break;
+        }
+        throw error;
+      }
       const toolUseBlocks = data.content.filter(
         (b: any) => b.type === "tool_use",
       );
@@ -2227,15 +2300,7 @@ export async function POST(req: NextRequest) {
         collectedToolResults,
       });
 
-    const { error: conversationSaveError } = await supabase
-      .from("fahd_conversations")
-      .insert([
-        { role: "user", content: message },
-        { role: "assistant", content: finalReply },
-      ]);
-    if (conversationSaveError) {
-      console.error("Failed to save Fahd conversation:", conversationSaveError);
-    }
+    await saveFahdConversation(message, finalReply);
 
     if (ENABLE_AUTO_MEMORY && mightContainSaveworthyInfo(message)) {
       await autoSaveMemory(message);
@@ -2249,7 +2314,7 @@ export async function POST(req: NextRequest) {
     console.error("Fahd chat route error:", error);
     const message =
       error instanceof Error ? error.message : "حدث خطأ غير متوقع";
-    const isModelTimeout = message.includes("مهلة الاتصال بالنموذج");
+    const isModelTimeout = isModelTimeoutError(error);
 
     return NextResponse.json(
       {

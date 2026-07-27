@@ -43,6 +43,19 @@ export const DEFAULT_PREMARKET_UNIVERSE = [
   "MSFT",
 ] as const;
 
+export function isUnifiedPremarketPreparationRequest(message: string): boolean {
+  const asksForPreparation =
+    /PREMARKET_PREP|premarket|watchlist|قبل\s*السوق|قبل\s*الافتتاح|قائمة\s*(?:فهد\s*)?(?:الموحدة|موحدة)|تحضير(?:ية)?/i.test(
+      message,
+    );
+  const asksForUnifiedUniverse =
+    /unified|موحد(?:ة)?/i.test(message) ||
+    (/\bSPXW?\b/i.test(message) &&
+      /أسهم|السهم|ETF|ETFs|stocks?|universe/i.test(message));
+
+  return asksForPreparation && asksForUnifiedUniverse;
+}
+
 export async function scanUnifiedPremarketUniverse(config: {
   symbols?: string[];
   maxDte?: number;

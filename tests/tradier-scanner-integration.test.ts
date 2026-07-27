@@ -3,6 +3,7 @@ import test from "node:test";
 import { scanTradierOpportunities } from "../lib/trading/tradier-scanner";
 import {
   formatUnifiedPremarketWatchlist,
+  isUnifiedPremarketPreparationRequest,
   scanUnifiedPremarketUniverse,
 } from "../lib/trading/unified-premarket-scanner";
 import type { BaseOpportunity } from "../lib/trading/tradier-scanner-core/types";
@@ -270,5 +271,25 @@ test("SPXW premarket output preserves scan-level price provenance", async () => 
   assert.doesNotMatch(
     message,
     /SPXW260727P07420000[^\n]*freshness unknown/,
+  );
+});
+
+test("unified premarket requests are routed without an extra model round", () => {
+  assert.equal(
+    isUnifiedPremarketPreparationRequest(
+      "شغّل وضع PREMARKET_PREP وجهّز قائمة فهد الموحدة للأسهم وSPXW الآن",
+    ),
+    true,
+  );
+  assert.equal(
+    isUnifiedPremarketPreparationRequest(
+      "جهّز قائمة مراقبة موحدة قبل السوق لأسهم NVDA وSPXW",
+    ),
+    true,
+  );
+  assert.equal(isUnifiedPremarketPreparationRequest("حلل TSLA الآن"), false);
+  assert.equal(
+    isUnifiedPremarketPreparationRequest("جهّز SPXW قبل السوق"),
+    false,
   );
 });
