@@ -6,6 +6,7 @@ import {
   getAverageReliability,
   getReliabilitySummary,
   normalizeReliability,
+  qualifiesForForcedWait,
   weightedAdjustment,
   type SocialSignal,
 } from "../lib/social/social-decision-context";
@@ -84,80 +85,82 @@ test("0.6 reliability alignment scales +5 down to +3", () => {
   assert.equal(weightedAdjustment(5, reliability), 3);
 });
 
-// 3. تعارض موثوقية 0.6 يعطي -6 مع بقاء forcedWait/conflict وقلب القرار
-// إلى WAIT فعليًا — اختبار تكامل حقيقي عبر حقن الإشارات، وليس حساب
-// دالة الوزن وحدها.
-test("0.6 reliability conflict scales -10 to -6 and still forces WAIT", async () => {
-  const report = buildFakeReport({
-    decision: "BUY_CALL",
-    confidence: 70,
-  });
+// 3. خبر BREAKING متعارض بموثوقية 0.6 يخفض الثقة فقط ولا يفرض WAIT.
+test(
+  "0.6 reliability BREAKING conflict lowers confidence without forcing WAIT",
+  async () => {
+    const report = buildFakeReport({
+      decision: "BUY_CALL",
+      confidence: 70,
+    });
 
-  const conflictingSignal = signal(0.6, {
-    market_impact: "HIGH",
-    content_type: "BREAKING",
-    sentiment: "bearish", // يعاكس اتجاه صفقة CALL
-  });
+    const conflictingSignal = signal(0.6, {
+      market_impact: "HIGH",
+      content_type: "BREAKING",
+      sentiment: "bearish",
+    });
 
-  const result = await applySocialIntelligenceToTradeReport(
-    report,
-    { minutes: 1440, limit: 50 },
-    { loadSignals: fakeSignalLoader([conflictingSignal]) }
-  );
+    const result = await applySocialIntelligenceToTradeReport(
+      report,
+      { minutes: 1440, limit: 50 },
+      { loadSignals: fakeSignalLoader([conflictingSignal]) }
+    );
 
-  assert.equal(result.socialIntelligence.confidenceAdjustment, -6);
-  assert.equal(result.confidence, 64); // 70 - 6
-  assert.equal(result.socialIntelligence.conflict, true);
-  assert.equal(result.socialIntelligence.forcedWait, true);
-  assert.equal(result.decision, "WAIT");
-  assert.ok(
-    result.reasons.some((reason) => reason.includes("6%")),
-    "reason text should reflect the actual weighted 6% adjustment"
-  );
-});
+    assert.equal(result.socialIntelligence.confidenceAdjustment, -6);
+    assert.equal(result.confidence, 64);
+    assert.equal(result.socialIntelligence.conflict, true);
+    assert.equal(result.socialIntelligence.forcedWait, false);
+    assert.equal(result.decision, "BUY_CALL");
+    assert.ok(
+      result.reasons.some((reason) => reason.includes("6%")),
+      "reason text should reflect the actual weighted 6% adjustment"
+    );
+  }
+);
 
-// 4. حدث معلق موثوقية منخفضة يظل يفرض WAIT — اختبار تكامل حقيقي:
-// forcedWait يبقى true بصرف النظر عن ضعف الموثوقية، والقرار يتحول
-// فعليًا إلى WAIT، حتى لو مقدار خفض الثقة صغير (موثوقية 0.05 → -1%).
-test("a low-reliability pending event still forces WAIT on the actual report", async () => {
-  const report = buildFakeReport({
-    decision: "BUY_CALL",
-    confidence: 70,
-  });
+// 4. حدث معلق منخفض الموثوقية يخفض الثقة فقط ولا يفرض WAIT.
+test(
+  "a low-reliability pending event lowers confidence without forcing WAIT",
+  async () => {
+    const report = buildFakeReport({
+      decision: "BUY_CALL",
+      confidence: 70,
+    });
 
-  const pendingSignal = signal(0.05, {
-    market_impact: "HIGH",
-    content_type: "EARNINGS",
-    sentiment: null, // بلا اتجاه بعد = حدث معلق
-  });
+    const pendingSignal = signal(0.05, {
+      market_impact: "HIGH",
+      content_type: "EARNINGS",
+      sentiment: null,
+    });
 
-  const result = await applySocialIntelligenceToTradeReport(
-    report,
-    { minutes: 1440, limit: 50 },
-    { loadSignals: fakeSignalLoader([pendingSignal]) }
-  );
+    const result = await applySocialIntelligenceToTradeReport(
+      report,
+      { minutes: 1440, limit: 50 },
+      { loadSignals: fakeSignalLoader([pendingSignal]) }
+    );
 
-  assert.equal(result.socialIntelligence.confidenceAdjustment, -1);
-  assert.equal(result.confidence, 69); // 70 - 1، الأثر غير معدوم رغم ضعف الموثوقية
-  assert.equal(result.socialIntelligence.forcedWait, true);
-  assert.equal(result.decision, "WAIT");
-});
+    assert.equal(result.socialIntelligence.confidenceAdjustment, -1);
+    assert.equal(result.confidence, 69);
+    assert.equal(result.socialIntelligence.forcedWait, false);
+    assert.equal(result.decision, "BUY_CALL");
+  }
+);
 
-// 5. غياب reliability_score يستخدم 0.5
+// 5. غياب reliability_score يستخدم 0.5 في حسابات الوزن فقط.
 test("missing reliability_score defaults to 0.5", () => {
   assert.equal(normalizeReliability(undefined), 0.5);
   assert.equal(normalizeReliability(null), 0.5);
   assert.equal(getAverageReliability([signal(undefined)]), 0.5);
 });
 
-// 6. القيم فوق 1 أو تحت 0 تُحصر داخل النطاق
+// 6. القيم فوق 1 أو تحت 0 تُحصر داخل النطاق.
 test("out-of-range reliability values are clamped to [0, 1]", () => {
   assert.equal(normalizeReliability(1.4), 1);
   assert.equal(normalizeReliability(-0.3), 0);
   assert.equal(normalizeReliability(Number.NaN), 0.5);
 });
 
-// 7. عدة مصادر تستخدم المتوسط
+// 7. عدة مصادر تستخدم المتوسط.
 test("multiple sources use the average reliability", () => {
   const reliability = getAverageReliability([
     signal(1.0),
@@ -177,53 +180,216 @@ test("multiple sources use the average reliability", () => {
   assert.equal(summary.weightedSignalsCount, 3);
 });
 
-// 8. لا إشارات تعطي تعديل 0 — اختبار تكامل: القرار والثقة لا يتغيران
-test("no signals produce a zero adjustment and leave the report unchanged", async () => {
-  assert.equal(getAverageReliability([]), 0);
+// 8. لا إشارات تعطي تعديل 0 والقرار والثقة لا يتغيران.
+test(
+  "no signals produce a zero adjustment and leave the report unchanged",
+  async () => {
+    assert.equal(getAverageReliability([]), 0);
 
-  const summary = getReliabilitySummary([]);
-  assert.deepEqual(summary, {
-    averageReliability: 0,
-    minimumReliability: 0,
-    maximumReliability: 0,
-    weightedSignalsCount: 0,
-  });
+    const summary = getReliabilitySummary([]);
+    assert.deepEqual(summary, {
+      averageReliability: 0,
+      minimumReliability: 0,
+      maximumReliability: 0,
+      weightedSignalsCount: 0,
+    });
 
-  const report = buildFakeReport({ decision: "BUY_CALL", confidence: 70 });
+    const report = buildFakeReport({
+      decision: "BUY_CALL",
+      confidence: 70,
+    });
 
-  const result = await applySocialIntelligenceToTradeReport(
-    report,
-    { minutes: 1440, limit: 50 },
-    { loadSignals: fakeSignalLoader([]) }
+    const result = await applySocialIntelligenceToTradeReport(
+      report,
+      { minutes: 1440, limit: 50 },
+      { loadSignals: fakeSignalLoader([]) }
+    );
+
+    assert.equal(result.socialIntelligence.confidenceAdjustment, 0);
+    assert.equal(result.confidence, 70);
+    assert.equal(result.decision, "BUY_CALL");
+    assert.equal(result.socialIntelligence.forcedWait, false);
+  }
+);
+
+// 9. توافق موثوقية جزئية يضيف المقدار الموزون فعليًا على الثقة.
+test(
+  "aligned high-impact event adds the weighted amount to confidence",
+  async () => {
+    const report = buildFakeReport({
+      decision: "BUY_CALL",
+      confidence: 70,
+    });
+
+    const alignedSignal = signal(0.6, {
+      market_impact: "HIGH",
+      content_type: "BREAKING",
+      sentiment: "bullish",
+    });
+
+    const result = await applySocialIntelligenceToTradeReport(
+      report,
+      { minutes: 1440, limit: 50 },
+      { loadSignals: fakeSignalLoader([alignedSignal]) }
+    );
+
+    assert.equal(result.socialIntelligence.confidenceAdjustment, 3);
+    assert.equal(result.confidence, 73);
+    assert.equal(result.socialIntelligence.forcedWait, false);
+    assert.ok(
+      result.reasons.some((reason) => reason.includes("3%")),
+      "reason text should reflect the actual weighted 3% adjustment"
+    );
+  }
+);
+
+// 10. الحد الأدنى: 0.79 لا يفرض WAIT.
+test("reliability 0.79 does not qualify for forced WAIT", () => {
+  assert.equal(
+    qualifiesForForcedWait(
+      signal(0.79, {
+        market_impact: "HIGH",
+        content_type: "FED",
+        sentiment: "neutral",
+      })
+    ),
+    false
   );
-
-  assert.equal(result.socialIntelligence.confidenceAdjustment, 0);
-  assert.equal(result.confidence, 70);
-  assert.equal(result.decision, "BUY_CALL");
-  assert.equal(result.socialIntelligence.forcedWait, false);
 });
 
-// 9. توافق موثوقية جزئية يضيف المقدار الموزون فعليًا على الثقة (تكامل)
-test("aligned high-impact event adds the weighted amount to confidence", async () => {
-  const report = buildFakeReport({ decision: "BUY_CALL", confidence: 70 });
+// 11. الحد الأدنى: 0.80 مع HIGH وFED يفرض WAIT.
+test(
+  "reliability 0.80 with HIGH critical event qualifies for forced WAIT",
+  async () => {
+    const criticalSignal = signal(0.8, {
+      market_impact: "HIGH",
+      content_type: "FED",
+      sentiment: "neutral",
+    });
 
-  const alignedSignal = signal(0.6, {
+    assert.equal(qualifiesForForcedWait(criticalSignal), true);
+
+    const result = await applySocialIntelligenceToTradeReport(
+      buildFakeReport({
+        decision: "BUY_CALL",
+        confidence: 70,
+      }),
+      { minutes: 1440, limit: 50 },
+      { loadSignals: fakeSignalLoader([criticalSignal]) }
+    );
+
+    assert.equal(result.socialIntelligence.forcedWait, true);
+    assert.equal(result.decision, "WAIT");
+  }
+);
+
+// 12. نوع حرج وموثوقية 0.80 لكن التأثير MEDIUM لا يفرض WAIT.
+test(
+  "reliability 0.80 critical type with MEDIUM impact does not force WAIT",
+  () => {
+    const mediumImpactSignal = signal(0.8, {
+      market_impact: "MEDIUM",
+      content_type: "EARNINGS",
+      sentiment: "neutral",
+    });
+
+    assert.equal(
+      qualifiesForForcedWait(mediumImpactSignal),
+      false
+    );
+  }
+);
+
+// 13. غياب reliability_score لا يسمح بالتجميد.
+test("missing reliability never qualifies for forced WAIT", async () => {
+  const missingReliabilitySignal = signal(undefined, {
+    market_impact: "HIGH",
+    content_type: "FED",
+    sentiment: "neutral",
+  });
+
+  assert.equal(
+    qualifiesForForcedWait(missingReliabilitySignal),
+    false
+  );
+
+  const result = await applySocialIntelligenceToTradeReport(
+    buildFakeReport({
+      decision: "BUY_CALL",
+      confidence: 70,
+    }),
+    { minutes: 1440, limit: 50 },
+    {
+      loadSignals: fakeSignalLoader([
+        missingReliabilitySignal,
+      ]),
+    }
+  );
+
+  assert.equal(result.socialIntelligence.forcedWait, false);
+  assert.equal(result.decision, "BUY_CALL");
+});
+
+// 14. WHALE وSIGNAL لا يفرضان WAIT حتى مع موثوقية كاملة.
+test(
+  "high-reliability WHALE or SIGNAL never qualifies for forced WAIT",
+  () => {
+    for (const contentType of ["WHALE", "SIGNAL"]) {
+      assert.equal(
+        qualifiesForForcedWait(
+          signal(1, {
+            market_impact: "HIGH",
+            content_type: contentType,
+            sentiment: "bearish",
+          })
+        ),
+        false
+      );
+    }
+  }
+);
+
+// 15. الذكاء الاجتماعي لا يحول WAIT الفني إلى READY.
+test("social intelligence cannot turn an existing WAIT into READY", async () => {
+  const supportiveSignal = signal(1, {
     market_impact: "HIGH",
     content_type: "BREAKING",
-    sentiment: "bullish", // يوافق اتجاه صفقة CALL
+    sentiment: "bullish",
   });
 
   const result = await applySocialIntelligenceToTradeReport(
-    report,
+    buildFakeReport({
+      decision: "WAIT",
+      confidence: 60,
+    }),
     { minutes: 1440, limit: 50 },
-    { loadSignals: fakeSignalLoader([alignedSignal]) }
+    { loadSignals: fakeSignalLoader([supportiveSignal]) }
   );
 
-  assert.equal(result.socialIntelligence.confidenceAdjustment, 3);
-  assert.equal(result.confidence, 73);
+  assert.equal(result.decision, "WAIT");
   assert.equal(result.socialIntelligence.forcedWait, false);
-  assert.ok(
-    result.reasons.some((reason) => reason.includes("3%")),
-    "reason text should reflect the actual weighted 3% adjustment"
-  );
 });
+
+// 16. رفض العقد لا يتحول إلى WAIT حتى عند حدث حرج مؤهل.
+test(
+  "REJECT_CONTRACT is preserved during a qualifying critical hold",
+  async () => {
+    const criticalSignal = signal(1, {
+      market_impact: "HIGH",
+      content_type: "FED",
+      sentiment: "neutral",
+    });
+
+    const result = await applySocialIntelligenceToTradeReport(
+      buildFakeReport({
+        decision: "REJECT_CONTRACT",
+        confidence: 40,
+      }),
+      { minutes: 1440, limit: 50 },
+      { loadSignals: fakeSignalLoader([criticalSignal]) }
+    );
+
+    assert.equal(result.socialIntelligence.forcedWait, true);
+    assert.equal(result.decision, "REJECT_CONTRACT");
+  }
+);

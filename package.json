@@ -12,7 +12,7 @@
     "test:social-reliability": "tsc -p tsconfig.social-reliability-tests.json && node --require ./tests/support/register-path-alias.cjs --test .test-dist-social-reliability/tests/social-reliability-weight.test.js",
     "test:auto-market-data": "tsc -p tsconfig.auto-market-data-tests.json && node --require ./tests/support/register-path-alias-auto-market.cjs --test .test-dist-auto-market-data/tests/auto-market-data.test.js",
     "test:auto-stock-data": "tsc -p tsconfig.auto-stock-data-tests.json && node --require ./tests/support/register-path-alias-auto-stock.cjs --test .test-dist-auto-stock-data/tests/auto-stock-data.test.js",
-    "test:select-option-contract": "tsc -p tsconfig.select-option-contract-tests.json && node --test .test-dist-select-option-contract/lib/trading/select-option-contract.test.js",
+    "test:select-option-contract": "tsc -p tsconfig.select-option-contract-tests.json && node --test .test-dist-select-option-contract/trading/select-option-contract.test.js",
     "test:build-trigger-data": "tsc -p tsconfig.build-trigger-data-tests.json && node --require ./tests/support/register-path-alias-build-trigger.cjs --test .test-dist-build-trigger-data/lib/trading/build-trigger-data.test.js",
     "test:auto-trade-input-adapter": "tsc -p tsconfig.auto-trade-input-adapter-tests.json && node --test .test-dist-auto-trade-input-adapter/trading/auto-trade-input-adapter.test.js",
     "test:auto-analyze-trade": "tsc -p tsconfig.auto-analyze-trade-tests.json && node --require ./tests/support/register-path-alias-auto-analyze.cjs --test .test-dist-auto-analyze-trade/lib/trading/auto-analyze-trade.test.js",
@@ -20,7 +20,7 @@
     "start": "next start"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.45.0",
+    "@Supabase/supabase-js": "^2.45.0",
     "next": "^14.2.35",
     "react": "^18",
     "react-dom": "^18"

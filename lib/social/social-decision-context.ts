@@ -84,6 +84,39 @@ function isPendingHighImpactEvent(
   );
 }
 
+
+const TEMPORARY_CRITICAL_RELIABILITY_THRESHOLD = 0.8;
+
+function hasExplicitReliability(
+  signal: SocialSignal
+): boolean {
+  return (
+    typeof signal.reliability_score === "number" &&
+    Number.isFinite(signal.reliability_score)
+  );
+}
+
+function isCriticalContentType(
+  signal: SocialSignal
+): boolean {
+  return (
+    includesContentType(signal, "EARNINGS") ||
+    includesContentType(signal, "FED")
+  );
+}
+
+export function qualifiesForForcedWait(
+  signal: SocialSignal
+): boolean {
+  return (
+    signal.market_impact === "HIGH" &&
+    isCriticalContentType(signal) &&
+    hasExplicitReliability(signal) &&
+    normalizeReliability(signal.reliability_score) >=
+      TEMPORARY_CRITICAL_RELIABILITY_THRESHOLD
+  );
+}
+
 function getDirectionLabel(
   decision: TradeEngineReport['decision']
 ): string {
@@ -472,7 +505,9 @@ export async function applySocialIntelligenceToTradeReport(
     );
 
     confidenceAdjustment += pendingAdjustment;
-    forcedWait = true;
+    forcedWait = pendingHighImpact.some(
+      qualifiesForForcedWait
+    );
 
     const pendingSymbols = [
       ...new Set(
@@ -525,7 +560,9 @@ export async function applySocialIntelligenceToTradeReport(
       );
 
       confidenceAdjustment += conflictingAdjustment;
-      forcedWait = true;
+      forcedWait = conflictingHighImpact.some(
+        qualifiesForForcedWait
+      );
 
       warnings.push(
         'يوجد خبر مرتفع التأثير يتعارض مع اتجاه الصفقة'
