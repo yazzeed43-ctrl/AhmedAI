@@ -1,0 +1,39 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": ".test-dist-auto-analyze-trade",
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"]
+    },
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "types": ["node"],
+    "lib": ["ES2020", "DOM"]
+  },
+  "include": [
+    "lib/trading/auto-analyze-trade.ts",
+    "lib/trading/auto-analyze-trade.test.ts",
+    "lib/trading/auto-market-data.ts",
+    "lib/trading/build-trigger-data.ts",
+    "lib/trading/select-option-contract.ts",
+    "lib/trading/auto-trade-input-adapter.ts",
+    "lib/trading/trade-engine.ts",
+    "lib/trading/signal-normalizer.ts",
+    "lib/trading/scoring-engine.ts",
+    "lib/trading/candle-confirmation-core.ts",
+    "lib/trading/stock-trigger-adapter.ts",
+    "lib/trading/auto-stock-data.ts",
+    "lib/trading/tradier-scanner.ts",
+    "lib/trading/tradier-scanner-core/**/*.ts",
+    "lib/trading/exact-option-contract.ts",
+    "lib/market-indicators.ts",
+    "lib/technical-indicators.ts",
+    "lib/massive.ts",
+    "lib/tradier.ts"
+  ]
+}
