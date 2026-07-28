@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"]
+    },
+    "outDir": ".test-dist-select-option-contract"
+  },
+  "include": [
+    "lib/trading/select-option-contract.ts",
+    "lib/trading/select-option-contract.test.ts",
+    "lib/trading/tradier-scanner.ts",
+    "lib/trading/exact-option-contract.ts",
+    "lib/trading/tradier-scanner-core/**/*.ts",
+    "lib/tradier.ts"
+  ]
+}
