@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"]
+    },
+    "outDir": ".test-dist-build-trigger-data"
+  },
+  "include": [
+    "lib/trading/build-trigger-data.ts",
+    "lib/trading/build-trigger-data.test.ts",
+    "lib/trading/auto-stock-data.ts",
+    "lib/trading/stock-trigger-adapter.ts",
+    "lib/trading/candle-confirmation-core.ts",
+    "lib/trading/signal-normalizer.ts",
+    "lib/market-indicators.ts",
+    "lib/tradier.ts"
+  ]
+}
