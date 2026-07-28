@@ -9,6 +9,12 @@ export type FahdCompactResponse = {
   reasons: string[];
   technicalBias: string;
   socialBias: string;
+  // true فقط لو الطريق الكامل (analyze_trade → runTradeEngine →
+  // applySocialIntelligenceToTradeReport) هو اللي أنتج هذا الرد.
+  // مسار get_stock_decision + get_recent_social_signals يعرض إشارات
+  // اجتماعية خام كسياق فقط، ولا يوزّنها في الثقة النهائية إطلاقًا —
+  // هذا الحقل يمنع الالتباس بين "ظهور انحياز اجتماعي" و"تأثيره الفعلي".
+  socialWeightingApplied: boolean;
   conflict: boolean;
   criticalLevels: string[];
   nextAction: string;
@@ -372,6 +378,7 @@ function mapAnalyzeTrade(
       `السهم ${DIRECTION_LABELS[report.directions.stock]} ` +
       `والسوق ${DIRECTION_LABELS[report.directions.market]}`,
     socialBias: buildTradeSocialBias(report.socialIntelligence),
+    socialWeightingApplied: true,
     conflict: report.socialIntelligence.conflict,
     criticalLevels: buildTradeCriticalLevels(input),
     nextAction: buildTradeNextAction(report),
@@ -535,6 +542,7 @@ function mapStockDecision(
     reasons: reasons.slice(0, 4),
     technicalBias: stockTechnicalBias(stock),
     socialBias: socialBiasLabel(social),
+    socialWeightingApplied: false,
     conflict,
     criticalLevels: stockCriticalLevels(stock),
     nextAction,
@@ -636,6 +644,11 @@ export function formatCompactResponse(
     '',
     `الانحياز الفني: ${data.technicalBias}`,
     `الانحياز الاجتماعي: ${data.socialBias}`,
+    `Social V3: ${
+      data.socialWeightingApplied
+        ? 'مُطبّق — الثقة معدّلة بموثوقية المصدر'
+        : 'لم يُطبّق لأن تحليل الصفقة الكامل (analyze_trade) لم يُشغّل'
+    }`,
     `التعارض: ${data.conflict ? 'نعم' : 'لا'}`,
     `${isWaiting ? 'مستويات المراقبة المرجعية' : 'المستوى الحاسم'}: ${levels}`,
     `${isWaiting ? 'خطة المراقبة' : 'الخطة'}: ${data.nextAction}`,

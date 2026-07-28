@@ -17,6 +17,7 @@ test('WAIT output exposes confidence band and non-executable readiness', () => {
     ],
     technicalBias: 'السهم محايد والسوق PUT_BIAS',
     socialBias: 'لا توجد إشارات اجتماعية حديثة',
+    socialWeightingApplied: true,
     conflict: true,
     criticalLevels: ['VAH 316.12'],
     nextAction: 'راقب الصمود فوق VAH 316.12',
@@ -31,6 +32,7 @@ test('WAIT output exposes confidence band and non-executable readiness', () => {
   assert.match(output, /جاهزية التنفيذ: WAIT/);
   assert.match(output, /isExecutable: false/);
   assert.match(output, /executableTrigger: null/);
+  assert.match(output, /Social V3: مُطبّق/);
 });
 
 test('stock plan conflicts with the opposite market bias', () => {
@@ -76,4 +78,52 @@ test('stock plan conflicts with the opposite market bias', () => {
   assert.equal(compact.conflict, true);
   assert.equal(compact.confidenceLabel, 'LOW');
   assert.equal(compact.decision, 'WAIT');
+});
+
+test('stock decision path explicitly declares Social V3 was not applied', () => {
+  const compact = extractCompactResponse([
+    {
+      name: 'get_stock_decision',
+      input: { symbol: 'TSLA' },
+      output: {
+        symbol: 'TSLA',
+        confidence: 41,
+        bias: 'WAIT',
+        decision: 'WAIT',
+        probabilities: { bullish: 35, bearish: 35, neutral: 30 },
+        reasons: { bullish: [], bearish: [], risks: [] },
+        levels: {
+          val: null,
+          poc: null,
+          vah: null,
+          support: null,
+          resistance: null,
+        },
+        trigger: [],
+        invalidation: [],
+        targets: [],
+      },
+    },
+    {
+      name: 'get_recent_social_signals',
+      input: { symbol: 'TSLA' },
+      output: {
+        total: 1,
+        bullish: 0,
+        bearish: 1,
+        neutral: 0,
+        highImpactCount: 0,
+        earningsCount: 0,
+        breakingCount: 0,
+        weightedScore: -1,
+        bias: 'BEARISH',
+      },
+    },
+  ]);
+
+  assert.ok(compact);
+  assert.equal(compact.socialWeightingApplied, false);
+
+  const output = formatCompactResponse(compact);
+  assert.match(output, /Social V3: لم يُطبّق/);
 });
