@@ -1,0 +1,43 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": ".test-dist-analyze-trade-handler",
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"]
+    },
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "types": ["node"],
+    "lib": ["ES2020", "DOM"]
+  },
+  "include": [
+    "app/api/analyze-trade/handler.ts",
+    "app/api/analyze-trade/handler.test.ts",
+    "lib/trading/auto-analyze-trade.ts",
+    "lib/trading/auto-market-data.ts",
+    "lib/trading/build-trigger-data.ts",
+    "lib/trading/select-option-contract.ts",
+    "lib/trading/auto-trade-input-adapter.ts",
+    "lib/trading/trade-engine.ts",
+    "lib/trading/signal-normalizer.ts",
+    "lib/trading/scoring-engine.ts",
+    "lib/trading/candle-confirmation-core.ts",
+    "lib/trading/stock-trigger-adapter.ts",
+    "lib/trading/auto-stock-data.ts",
+    "lib/trading/tradier-scanner.ts",
+    "lib/trading/tradier-scanner-core/**/*.ts",
+    "lib/trading/exact-option-contract.ts",
+    "lib/social/social-decision-context.ts",
+    "lib/social/social-reliability-weight.ts",
+    "lib/social/social-signal-store.ts",
+    "lib/market-indicators.ts",
+    "lib/technical-indicators.ts",
+    "lib/massive.ts",
+    "lib/tradier.ts"
+  ]
+}
