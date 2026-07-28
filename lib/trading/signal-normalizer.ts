@@ -99,6 +99,8 @@ export interface RawOptionData {
 export interface TriggerData {
   direction: Direction;
 
+  confirmationStatus?: TriggerStatus;
+
   candleClose: number;
   previousCandleClose?: number | null;
 
@@ -110,7 +112,6 @@ export interface TriggerData {
 
   relativeVolume?: number | null;
 }
-
 export interface NormalizedTradeSignals {
   market: MarketSignals;
   stock: StockSignals;
@@ -482,6 +483,9 @@ const scoreContractProximity = (
 const evaluateTrigger = (
   trigger: TriggerData,
 ): TriggerStatus => {
+  if (trigger.confirmationStatus) {
+    return trigger.confirmationStatus;
+  }
   const volumeConfirmed =
     trigger.relativeVolume === null ||
     trigger.relativeVolume === undefined
