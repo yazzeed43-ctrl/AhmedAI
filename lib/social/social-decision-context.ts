@@ -6,7 +6,7 @@ import {
   getRecentSocialSignals,
 } from '@/lib/social/social-signals';
 
-type SocialSignal = {
+export type SocialSignal = {
   id?: string | number | null;
   message_id?: string | null;
   symbol?: string | null;
@@ -19,6 +19,13 @@ type SocialSignal = {
   confidence?: number | null;
   reliability_score?: number | null;
   published_at?: string | null;
+};
+
+export type ReliabilityWeightSummary = {
+  averageReliability: number;
+  minimumReliability: number;
+  maximumReliability: number;
+  weightedSignalsCount: number;
 };
 
 export type SocialDecisionContext = {
@@ -38,6 +45,7 @@ export type SocialDecisionContext = {
   reasons: string[];
   warnings: string[];
   events: SocialSignal[];
+  reliability: ReliabilityWeightSummary;
 };
 
 export type SociallyAdjustedTradeReport =
@@ -262,6 +270,75 @@ function isSignalActive(
   );
 }
 
+export function normalizeReliability(
+  value: number | null | undefined
+): number {
+  if (!Number.isFinite(value)) {
+    return 0.5;
+  }
+
+  return Math.max(0, Math.min(1, Number(value)));
+}
+
+export function getAverageReliability(
+  signals: SocialSignal[]
+): number {
+  if (signals.length === 0) {
+    return 0;
+  }
+
+  const total = signals.reduce(
+    (sum, signal) =>
+      sum +
+      normalizeReliability(
+        signal.reliability_score
+      ),
+    0
+  );
+
+  return total / signals.length;
+}
+
+export function getReliabilitySummary(
+  signals: SocialSignal[]
+): ReliabilityWeightSummary {
+  if (signals.length === 0) {
+    return {
+      averageReliability: 0,
+      minimumReliability: 0,
+      maximumReliability: 0,
+      weightedSignalsCount: 0,
+    };
+  }
+
+  const normalized = signals.map((signal) =>
+    normalizeReliability(signal.reliability_score)
+  );
+
+  return {
+    averageReliability:
+      normalized.reduce((sum, value) => sum + value, 0) /
+      normalized.length,
+    minimumReliability: Math.min(...normalized),
+    maximumReliability: Math.max(...normalized),
+    weightedSignalsCount: signals.length,
+  };
+}
+
+// وزن مقدار التعديل حسب متوسط موثوقية مصادره، مع حد أدنى بمقدار 1
+// حتى لا يختفي أثر مصدر موثوقيته جزئية بالكامل (مثال: 0.2 يعطي ±1 بدل صفر).
+export function weightedAdjustment(
+  base: number,
+  reliability: number
+): number {
+  const magnitude = Math.max(
+    1,
+    Math.round(Math.abs(base) * reliability)
+  );
+
+  return base < 0 ? -magnitude : magnitude;
+}
+
 function updateSummary(
   report: TradeEngineReport,
   context: SocialDecisionContext
@@ -290,6 +367,9 @@ function updateSummary(
     `تعديل الثقة: ${
       context.confidenceAdjustment >= 0 ? '+' : ''
     }${context.confidenceAdjustment}%`,
+    `متوسط موثوقية المصادر: ${Math.round(
+      context.reliability.averageReliability * 100
+    )}%`,
   ];
 
   if (context.reasons.length > 0) {
@@ -307,21 +387,27 @@ function updateSummary(
   return `${summary}\n${socialLines.join('\n')}`;
 }
 
+type SignalLoader = typeof loadDecisionSignals;
+
 export async function applySocialIntelligenceToTradeReport(
   report: TradeEngineReport,
   params?: {
     minutes?: number;
     limit?: number;
+  },
+  deps?: {
+    loadSignals?: SignalLoader;
   }
 ): Promise<SociallyAdjustedTradeReport> {
   const minutes = params?.minutes ?? 1440;
   const limit = params?.limit ?? 50;
+  const loadSignals = deps?.loadSignals ?? loadDecisionSignals;
 
   const {
     symbolSignals,
     marketSignals,
     allSignals,
-  } = await loadDecisionSignals({
+  } = await loadSignals({
     symbol: report.symbol,
     minutes,
     limit,
@@ -377,7 +463,15 @@ export async function applySocialIntelligenceToTradeReport(
       : 'bearish';
 
   if (pendingHighImpact.length > 0) {
-    confidenceAdjustment -= 10;
+    const pendingReliability =
+      getAverageReliability(pendingHighImpact);
+
+    const pendingAdjustment = weightedAdjustment(
+      -10,
+      pendingReliability
+    );
+
+    confidenceAdjustment += pendingAdjustment;
     forcedWait = true;
 
     const pendingSymbols = [
@@ -402,7 +496,9 @@ export async function applySocialIntelligenceToTradeReport(
     );
 
     reasons.push(
-      'تم تخفيض الثقة 10% حتى اتضاح نتيجة الحدث أو التوجيهات'
+      `تم تخفيض الثقة ${Math.abs(
+        pendingAdjustment
+      )}% حسب موثوقية المصدر حتى اتضاح نتيجة الحدث أو التوجيهات`
     );
   } else {
     const alignedHighImpact = highImpact.filter(
@@ -419,7 +515,16 @@ export async function applySocialIntelligenceToTradeReport(
 
     if (conflictingHighImpact.length > 0) {
       conflict = true;
-      confidenceAdjustment -= 10;
+
+      const conflictingReliability =
+        getAverageReliability(conflictingHighImpact);
+
+      const conflictingAdjustment = weightedAdjustment(
+        -10,
+        conflictingReliability
+      );
+
+      confidenceAdjustment += conflictingAdjustment;
       forcedWait = true;
 
       warnings.push(
@@ -427,13 +532,23 @@ export async function applySocialIntelligenceToTradeReport(
       );
 
       reasons.push(
-        'تم تحويل القرار إلى انتظار بسبب تعارض الحدث مع اتجاه العقد'
+        `تم تحويل القرار إلى انتظار بسبب تعارض الحدث مع اتجاه العقد (خفض ${Math.abs(
+          conflictingAdjustment
+        )}% حسب موثوقية المصدر)`
       );
     } else if (alignedHighImpact.length > 0) {
-      confidenceAdjustment += 5;
+      const alignedReliability =
+        getAverageReliability(alignedHighImpact);
+
+      const alignedAdjustment = weightedAdjustment(
+        5,
+        alignedReliability
+      );
+
+      confidenceAdjustment += alignedAdjustment;
 
       reasons.push(
-        'حدث مرتفع التأثير يدعم اتجاه الصفقة'
+        `حدث مرتفع التأثير يدعم اتجاه الصفقة وأضاف ${alignedAdjustment}% حسب موثوقية المصدر`
       );
     } else {
       const breakingNeutral = highImpact.filter(
@@ -543,6 +658,7 @@ export async function applySocialIntelligenceToTradeReport(
     reasons,
     warnings,
     events: signals,
+    reliability: getReliabilitySummary(signals),
   };
 
   const adjustedReport: TradeEngineReport = {

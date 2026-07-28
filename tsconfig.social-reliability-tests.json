@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "target": "ES2020",
+    "outDir": ".test-dist-social-reliability",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": false
+  },
+  "include": [
+    "tests/social-reliability-weight.test.ts",
+    "lib/social/social-decision-context.ts",
+    "lib/social/social-signals.ts",
+    "lib/trading/trade-engine.ts"
+  ]
+}
