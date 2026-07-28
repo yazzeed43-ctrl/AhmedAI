@@ -1,0 +1,60 @@
+name: Premarket Watchlist Backup Trigger
+
+# احتياطي خارجي لكرون Vercel (خطة Hobby): التوثيق الرسمي يقول صراحة
+# إن التسليم "best effort" وبدون إعادة محاولة، وممكن يصير تخطي صامت
+# كامل بدون أي أثر باللوق. هذا الـWorkflow يستدعي نفس المسار عدة مرات
+# خلال نافذة موسّعة تغطي ما قبل الافتتاح، ويعتمد على قفل الجلسة
+# (session_date) الموجود أصلًا بالمسار نفسه لمنع أي تكرار — سواء تكرر
+# مع تنفيذ Vercel أو بين محاولات هذا الملف. لا يغيّر أو يكرر أي منطق
+# إرسال، فقط يضمن استدعاء المسار.
+#
+# ملاحظة توقيت: النطاق أدناه (12-13 UTC) مقصود واسع عمدًا ليغطي حالتين
+# معًا بدون تدخل يدوي:
+#   - EDT الصيفي (UTC-4): 12:00-13:59 UTC = 8:00-9:59 صباحًا نيويورك
+#   - EST الشتوي (UTC-5): 12:00-13:59 UTC = 7:00-8:59 صباحًا نيويورك
+# في الحالتين، الساعة 8 صباحًا بتوقيت نيويورك (شرط تفعيل المسار نفسه
+# `hour === 8`) داخل النطاق — يعني هذا الملف بالذات ما يحتاج تعديل
+# يدوي عند تحول EDT/EST. المسار نفسه يرجع SKIPPED_OUTSIDE_WINDOW خارج
+# الساعة المستهدفة فعليًا، فما فيه أي إرسال إضافي أو خطر تكرار.
+
+on:
+  schedule:
+    # كل 10 دقائق بين الساعتين 12:00-13:59 UTC، أيام الاثنين للجمعة —
+    # نافذة موسّعة (12 محاولة) تغطي احتمال تخطي Vercel الصامت + هامش
+    # أمان ضد تغيّر EDT/EST أو تأخر بسيط بالجدولة.
+    - cron: "*/10 12-13 * * 1-5"
+  workflow_dispatch: {} # يسمح بتشغيل يدوي فوري للاختبار من تبويب Actions
+
+jobs:
+  trigger-premarket-watchlist:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call premarket watchlist endpoint
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          TARGET_URL: "https://ahmed-ai-tawny.vercel.app/api/cron/premarket-watchlist"
+        run: |
+          set -euo pipefail
+
+          response=$(curl -sS -w "\n%{http_code}" \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${TARGET_URL}")
+
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          echo "HTTP status: ${http_code}"
+          echo "Response body: ${body}"
+
+          if [ "$http_code" -ge 400 ]; then
+            echo "::error::Premarket watchlist endpoint returned HTTP ${http_code}"
+            exit 1
+          fi
+
+          # outcome=SENT يعني التقرير فعليًا أُرسل الآن (فوّته Vercel).
+          # SKIPPED_ALREADY_SENT / SKIPPED_OUTSIDE_WINDOW طبيعيان تمامًا
+          # (يعني إما Vercel أو محاولة سابقة بنفس الصباح نجحت، أو خارج
+          # النافذة). لا نفشل الـjob على أي منهما.
+          if echo "$body" | grep -q '"outcome":"SENT"'; then
+            echo "::notice::Backup trigger delivered the report (Vercel's own cron likely missed today)."
+          fi
