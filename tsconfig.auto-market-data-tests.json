@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": ".test-dist-auto-market-data",
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"]
+    },
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "types": ["node"],
+    "lib": ["ES2020", "DOM"]
+  },
+  "include": [
+    "lib/trading/auto-market-data.ts",
+    "lib/trading/signal-normalizer.ts",
+    "lib/trading/scoring-engine.ts",
+    "lib/market-indicators.ts",
+    "lib/technical-indicators.ts",
+    "lib/massive.ts",
+    "lib/tradier.ts",
+    "lib/trading/exact-option-contract.ts",
+    "tests/auto-market-data.test.ts"
+  ]
+}
