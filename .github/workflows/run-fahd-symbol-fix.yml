@@ -1,0 +1,90 @@
+name: Run Fahd symbol fix
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/run-fahd-symbol-fix.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-fahd-symbols-spx
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Patch route and package
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          route_path = Path('app/api/fahd-chat/route.ts')
+          route = route_path.read_text(encoding='utf-8')
+          import_line = 'import { extractTickerCandidates, filterSymbolsForFinnhub } from "@/lib/fahd/symbol-market-data";\n'
+          anchor = 'import type { RawHeadline } from "@/lib/trading/fahd-decision/news-modifier-types";\n'
+          if import_line not in route:
+              if anchor not in route: raise SystemExit('Import anchor not found')
+              route = route.replace(anchor, anchor + import_line, 1)
+
+          route, count = re.subn(
+              r'function extractTickers\(text: string\): string\[\] \{.*?\n\}\n\nasync function getQuote',
+              'function extractTickers(text: string): string[] {\n  return extractTickerCandidates(text).slice(0, 2);\n}\n\nasync function getQuote',
+              route,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1 and 'return extractTickerCandidates(text).slice(0, 2);' not in route:
+              raise SystemExit('extractTickers replacement failed')
+
+          old = '''      const tickers = [...currentTickers, ...historyTickers].slice(0, 3);
+      const quoteSymbols = [...new Set(["SPY", "QQQ", ...tickers])];'''
+          new = '''      const candidateTickers = [...currentTickers, ...historyTickers]
+        .filter((symbol) => symbol !== "SPX" && symbol !== "SPXW")
+        .slice(0, 3);
+      const tickers = await filterSymbolsForFinnhub(
+        candidateTickers,
+        finnhubKey,
+        fetchWithTimeout,
+      );
+      const quoteSymbols = [...new Set(["SPY", "QQQ", ...tickers])];'''
+          if old in route:
+              route = route.replace(old, new, 1)
+          elif 'const candidateTickers = [...currentTickers, ...historyTickers]' not in route:
+              raise SystemExit('Ticker validation integration failed')
+          route_path.write_text(route, encoding='utf-8')
+
+          package_path = Path('package.json')
+          package = package_path.read_text(encoding='utf-8')
+          package = package.replace(
+            'tests/tradier-scan-completeness.test.ts lib/trading/spxw-scan-completeness.ts',
+            'tests/tradier-scan-completeness.test.ts tests/fahd-symbol-market-data.test.ts lib/fahd/symbol-market-data.ts lib/trading/spxw-scan-completeness.ts',
+            1,
+          )
+          package = package.replace(
+            '.test-dist/tests/tradier-scan-completeness.test.js && npm run test:fahd-compact',
+            '.test-dist/tests/tradier-scan-completeness.test.js .test-dist/tests/fahd-symbol-market-data.test.js && npm run test:fahd-compact',
+            1,
+          )
+          package_path.write_text(package, encoding='utf-8')
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+      - name: Commit to fix branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/api/fahd-chat/route.ts package.json
+          git commit -m "Integrate Fahd symbol validation"
+          git push origin HEAD:agent/fix-fahd-symbols-spx
