@@ -1,0 +1,52 @@
+name: Apply Fahd synthesis optimization
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/apply-fahd-synthesis-optimization.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply-test-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply route optimization
+        run: node scripts/apply-fahd-synthesis-optimization.mjs
+
+      - name: Run synthesis context tests
+        run: |
+          npx tsc -p tsconfig.fahd-synthesis-context-tests.json
+          node --test .test-dist-fahd-synthesis-context/tests/fahd-synthesis-context.test.js
+
+      - name: Run full test suite
+        run: npm test
+
+      - name: Commit tested route changes
+        run: |
+          if git diff --quiet; then
+            echo "No route changes to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/api/fahd-chat/route.ts
+          git commit -m "Optimize Fahd synthesis context and retry"
+          git push origin main
