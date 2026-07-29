@@ -1,9 +1,11 @@
 name: Run Fahd symbol fix
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
-    paths: [.github/workflows/run-fahd-symbol-fix.yml]
+    paths:
+      - .github/workflows/run-fahd-symbol-fix.yml
 
 permissions:
   contents: write
@@ -23,8 +25,8 @@ jobs:
           cache: npm
 
       - name: Patch route and package
-        shell: python
         run: |
+          python - <<'PY'
           from pathlib import Path
           import re
 
@@ -33,7 +35,8 @@ jobs:
           import_line = 'import { extractTickerCandidates, filterSymbolsForFinnhub } from "@/lib/fahd/symbol-market-data";\n'
           anchor = 'import type { RawHeadline } from "@/lib/trading/fahd-decision/news-modifier-types";\n'
           if import_line not in route:
-              if anchor not in route: raise SystemExit('Import anchor not found')
+              if anchor not in route:
+                  raise SystemExit('Import anchor not found')
               route = route.replace(anchor, anchor + import_line, 1)
 
           route, count = re.subn(
@@ -66,16 +69,17 @@ jobs:
           package_path = Path('package.json')
           package = package_path.read_text(encoding='utf-8')
           package = package.replace(
-            'tests/tradier-scan-completeness.test.ts lib/trading/spxw-scan-completeness.ts',
-            'tests/tradier-scan-completeness.test.ts tests/fahd-symbol-market-data.test.ts lib/fahd/symbol-market-data.ts lib/trading/spxw-scan-completeness.ts',
-            1,
+              'tests/tradier-scan-completeness.test.ts lib/trading/spxw-scan-completeness.ts',
+              'tests/tradier-scan-completeness.test.ts tests/fahd-symbol-market-data.test.ts lib/fahd/symbol-market-data.ts lib/trading/spxw-scan-completeness.ts',
+              1,
           )
           package = package.replace(
-            '.test-dist/tests/tradier-scan-completeness.test.js && npm run test:fahd-compact',
-            '.test-dist/tests/tradier-scan-completeness.test.js .test-dist/tests/fahd-symbol-market-data.test.js && npm run test:fahd-compact',
-            1,
+              '.test-dist/tests/tradier-scan-completeness.test.js && npm run test:fahd-compact',
+              '.test-dist/tests/tradier-scan-completeness.test.js .test-dist/tests/fahd-symbol-market-data.test.js && npm run test:fahd-compact',
+              1,
           )
           package_path.write_text(package, encoding='utf-8')
+          PY
 
       - run: npm ci
       - run: npm test
@@ -86,5 +90,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add app/api/fahd-chat/route.ts package.json
-          git commit -m "Integrate Fahd symbol validation"
-          git push origin HEAD:agent/fix-fahd-symbols-spx
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Integrate Fahd symbol validation"
+            git push origin HEAD:agent/fix-fahd-symbols-spx
+          fi
