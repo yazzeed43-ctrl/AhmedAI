@@ -1,0 +1,98 @@
+name: Apply Fahd symbol fix
+
+on:
+  push:
+    branches:
+      - agent/fix-fahd-symbols-spx
+    paths:
+      - lib/fahd/symbol-market-data.ts
+      - tests/fahd-symbol-market-data.test.ts
+      - .github/workflows/apply-fahd-symbol-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-fahd-symbols-spx
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Patch route and test command
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          route_path = Path('app/api/fahd-chat/route.ts')
+          route = route_path.read_text(encoding='utf-8')
+
+          import_line = 'import { extractTickerCandidates, filterSymbolsForFinnhub } from "@/lib/fahd/symbol-market-data";\n'
+          if import_line not in route:
+              anchor = 'import type { RawHeadline } from "@/lib/trading/fahd-decision/news-modifier-types";\n'
+              route = route.replace(anchor, anchor + import_line)
+
+          route, count = re.subn(
+              r'function extractTickers\(text: string\): string\[\] \{.*?\n\}\n\nasync function getQuote',
+              'function extractTickers(text: string): string[] {\n  return extractTickerCandidates(text).slice(0, 2);\n}\n\nasync function getQuote',
+              route,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1 and 'return extractTickerCandidates(text).slice(0, 2);' not in route:
+              raise SystemExit('Could not replace extractTickers')
+
+          old = '''      const tickers = [...currentTickers, ...historyTickers].slice(0, 3);
+      const quoteSymbols = [...new Set(["SPY", "QQQ", ...tickers])];'''
+          new = '''      const candidateTickers = [...currentTickers, ...historyTickers]
+        .filter((symbol) => symbol !== "SPX" && symbol !== "SPXW")
+        .slice(0, 3);
+      const tickers = await filterSymbolsForFinnhub(
+        candidateTickers,
+        finnhubKey,
+        fetchWithTimeout,
+      );
+      const quoteSymbols = [...new Set(["SPY", "QQQ", ...tickers])];'''
+          if old in route:
+              route = route.replace(old, new, 1)
+          elif 'const candidateTickers = [...currentTickers, ...historyTickers]' not in route:
+              raise SystemExit('Could not patch market-data ticker validation')
+
+          route_path.write_text(route, encoding='utf-8')
+
+          package_path = Path('package.json')
+          package = package_path.read_text(encoding='utf-8')
+          old_compile = 'tests/tradier-scan-completeness.test.ts lib/trading/spxw-scan-completeness.ts'
+          new_compile = 'tests/tradier-scan-completeness.test.ts tests/fahd-symbol-market-data.test.ts lib/fahd/symbol-market-data.ts lib/trading/spxw-scan-completeness.ts'
+          if old_compile in package:
+              package = package.replace(old_compile, new_compile, 1)
+
+          old_run = '.test-dist/tests/tradier-scan-completeness.test.js && npm run test:fahd-compact'
+          new_run = '.test-dist/tests/tradier-scan-completeness.test.js .test-dist/tests/fahd-symbol-market-data.test.js && npm run test:fahd-compact'
+          if old_run in package:
+              package = package.replace(old_run, new_run, 1)
+          package_path.write_text(package, encoding='utf-8')
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+      - name: Commit integration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/api/fahd-chat/route.ts package.json
+          if git diff --cached --quiet; then
+            echo "No integration changes to commit"
+          else
+            git commit -m "Integrate Fahd symbol validation"
+            git push origin HEAD:agent/fix-fahd-symbols-spx
+          fi
