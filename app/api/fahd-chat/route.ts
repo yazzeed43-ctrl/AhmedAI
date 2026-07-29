@@ -333,6 +333,13 @@ async function getEconomicCalendar(apiKey: string) {
   }
 }
 
+function needsMacroContext(message: string): boolean {
+  const macroKeywords =
+    /اقتصاد|تضخم|فايدة|فائدة|فيدرالي|FOMC|CPI|GDP|أخبار السوق|السوق العام|macro|economic|news/i;
+
+  return macroKeywords.test(message);
+}
+
 function isModelTimeoutError(error: unknown): boolean {
   return (
     error instanceof Error &&
@@ -1031,12 +1038,16 @@ async function callClaude(
       },
     },
   ];
-
-  // الذاكرة والأسعار والأخبار تتغير من طلب لآخر، لذلك تبقى خارج الكاش.
+  // هذا السياق يتغير بين الطلبات، لكنه ثابت داخل جولات الطلب الواحد.
+  // كاش 5 دقائق يمنع إعادة معالجته في كل جولة دون الاحتفاظ به طويلًا.
   if (dynamicSystemContext.trim()) {
     system.push({
       type: "text",
       text: dynamicSystemContext,
+      cache_control: {
+        type: "ephemeral",
+        ttl: "5m",
+      },
     });
   }
 
@@ -1248,12 +1259,15 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      const [generalNews, econCalendar] = await Promise.all([
-        getGeneralMarketNews(finnhubKey),
-        getEconomicCalendar(finnhubKey),
-      ]);
-      if (generalNews) marketData += `\n\n# ${generalNews}`;
-      if (econCalendar) marketData += `\n\n# ${econCalendar}`;
+      if (needsMacroContext(message)) {
+        const [generalNews, econCalendar] = await Promise.all([
+          getGeneralMarketNews(finnhubKey),
+          getEconomicCalendar(finnhubKey),
+        ]);
+
+        if (generalNews) marketData += `\n\n# ${generalNews}`;
+        if (econCalendar) marketData += `\n\n# ${econCalendar}`;
+      }
     } else {
       console.error("FINNHUB_API_KEY is missing from environment variables");
     }
