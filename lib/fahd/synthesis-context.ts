@@ -32,14 +32,40 @@ function compactJsonValue(value: unknown, maxChars: number): string {
         status: source.status,
         decision: source.decision,
         finalDecision: source.finalDecision,
+        recommendation: source.recommendation,
         userMessage: source.userMessage,
+
+        marketScore: source.marketScore,
+        stockScore: source.stockScore,
+        optionsScore: source.optionsScore,
+        tradeScore: source.tradeScore,
+        finalScore: source.finalScore,
+        confidence: source.confidence,
+        bias: source.bias,
+        probabilities: source.probabilities,
+
         scan: source.scan,
         trigger: source.trigger,
+        optionQuality: source.optionQuality,
+        economicGate: source.economicGate,
+        dataStatus: source.dataStatus,
+
+        opportunity: source.opportunity,
+        contract: source.contract,
+        selectedContract: source.selectedContract,
         opportunities: Array.isArray(source.opportunities)
-          ? source.opportunities.slice(0, 3)
+          ? source.opportunities.slice(0, 2)
           : undefined,
-        results: Array.isArray(source.results) ? source.results.slice(0, 3) : undefined,
+        results: Array.isArray(source.results) ? source.results.slice(0, 2) : undefined,
+        candidates: Array.isArray(source.candidates)
+          ? source.candidates.slice(0, 2)
+          : undefined,
+
         summary: source.summary,
+        reasons: Array.isArray(source.reasons) ? source.reasons.slice(0, 8) : source.reasons,
+        warnings: Array.isArray(source.warnings)
+          ? source.warnings.slice(0, 8)
+          : source.warnings,
         error: source.error,
       };
       const compactSerialized = JSON.stringify(compact);
