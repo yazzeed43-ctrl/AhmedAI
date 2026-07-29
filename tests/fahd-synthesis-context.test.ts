@@ -1,76 +1,81 @@
-import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  compactMessagesForSynthesis,
-  compactToolResultContent,
-  compactToolResultsForSynthesis,
-  estimateMessageChars,
-  SYNTHESIS_TIMEOUT_ATTEMPTS_MS,
-} from "../lib/fahd/synthesis-context";
+import test from "node:test";
 
-function buildLargeResult() {
-  return {
-    decision: "لا توجد فرصة الآن",
-    contractsScanned: 5100,
-    contractsAccepted: 0,
-    contracts: Array.from({ length: 5100 }, (_, index) => ({
-      symbol: `TEST${index}`,
-      passedFilter: false,
-      score: index % 100,
-      reason: `سبب رفض تفصيلي ${index}`,
-    })),
-    rejectionReasons: ["سيولة", "اتجاه", "جودة", "سعر"],
-    dataStatus: { freshness: "live", updatedAt: "2026-07-29T10:00:00Z" },
-  };
-}
+import { compactMessagesForSynthesis } from "../lib/fahd/synthesis-context";
 
-test("compacts large tool output to at most three array entries", () => {
-  const compacted = JSON.parse(compactToolResultContent(JSON.stringify(buildLargeResult())));
-  assert.equal(compacted.contractsScanned, 5100);
-  assert.equal(compacted.contracts.length, 3);
-  assert.equal(compacted.rejectionReasons.length, 3);
-});
-
-test("retry payload uses one array entry and drops rejection details", () => {
-  const compacted = JSON.parse(
-    compactToolResultContent(JSON.stringify(buildLargeResult()), { reduced: true }),
-  );
-  assert.equal(compacted.contracts.length, 1);
-  assert.equal("rejectionReasons" in compacted, false);
-});
-
-test("compacts tool_result blocks without mutating original results", () => {
-  const original = [
-    {
-      type: "tool_result",
-      tool_use_id: "tool-1",
-      content: JSON.stringify(buildLargeResult()),
-    },
-  ];
-  const before = original[0].content;
-  const compacted = compactToolResultsForSynthesis(original);
-  assert.equal(original[0].content, before);
-  assert.ok(compacted[0].content.length < before.length);
-});
-
-test("second synthesis attempt is smaller than first", () => {
+test("keeps tool_use paired with tool_result", () => {
   const messages = [
+    { role: "user", content: "ابحث عن فرص" },
+    {
+      role: "assistant",
+      content: [{ type: "tool_use", id: "tool-1", name: "scan", input: {} }],
+    },
     {
       role: "user",
       content: [
         {
           type: "tool_result",
           tool_use_id: "tool-1",
-          content: JSON.stringify(buildLargeResult()),
+          content: JSON.stringify({ status: "NO_MATCH", contractsScanned: 5100 }),
         },
       ],
     },
   ];
-  const first = compactMessagesForSynthesis(messages);
-  const retry = compactMessagesForSynthesis(messages, { reduced: true });
-  assert.ok(estimateMessageChars(retry) < estimateMessageChars(first));
+
+  const compacted = compactMessagesForSynthesis(messages, { maxMessages: 1 });
+  assert.equal(compacted.length, 2);
+  assert.equal(compacted[0].role, "assistant");
+  assert.equal(compacted[1].role, "user");
 });
 
-test("uses moderate timeouts after context reduction", () => {
-  assert.deepEqual([...SYNTHESIS_TIMEOUT_ATTEMPTS_MS], [25_000, 20_000]);
+test("compacts a very large tool result while retaining decision fields", () => {
+  const hugeContracts = Array.from({ length: 5100 }, (_, index) => ({
+    symbol: `SPXW-${index}`,
+    score: index % 100,
+  }));
+
+  const compacted = compactMessagesForSynthesis(
+    [
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "tool-1",
+            content: JSON.stringify({
+              status: "NO_MATCH",
+              decision: "WAIT",
+              userMessage: "لا توجد فرصة الآن",
+              contracts: hugeContracts,
+            }),
+          },
+        ],
+      },
+    ],
+    { maxToolResultChars: 1_000 },
+  );
+
+  const block = (compacted[0].content as Array<Record<string, unknown>>)[0];
+  const content = String(block.content);
+  assert.ok(content.length <= 1_000);
+  assert.match(content, /NO_MATCH/);
+  assert.match(content, /لا توجد فرصة الآن/);
+});
+
+test("uses a smaller payload for the retry profile", () => {
+  const messages = Array.from({ length: 20 }, (_, index) => ({
+    role: index % 2 === 0 ? "user" : "assistant",
+    content: "x".repeat(2_000),
+  }));
+
+  const firstAttempt = compactMessagesForSynthesis(messages, {
+    maxMessages: 12,
+    maxTextChars: 1_000,
+  });
+  const retry = compactMessagesForSynthesis(messages, {
+    maxMessages: 6,
+    maxTextChars: 400,
+  });
+
+  assert.ok(JSON.stringify(retry).length < JSON.stringify(firstAttempt).length);
 });

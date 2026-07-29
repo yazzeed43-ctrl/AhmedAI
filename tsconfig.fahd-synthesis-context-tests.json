@@ -6,11 +6,10 @@
     "outDir": ".test-dist-fahd-synthesis-context",
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "strict": true,
-    "types": ["node"]
+    "strict": true
   },
   "include": [
-    "tests/fahd-synthesis-context.test.ts",
-    "lib/fahd/synthesis-context.ts"
+    "lib/fahd/synthesis-context.ts",
+    "tests/fahd-synthesis-context.test.ts"
   ]
 }

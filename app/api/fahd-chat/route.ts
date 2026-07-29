@@ -39,6 +39,7 @@ import {
 } from "@/lib/social/social-signals";
 import { applySocialIntelligenceToTradeReport } from "@/lib/social/social-decision-context";
 import { buildFahdResponse } from "@/lib/fahd/compact-response";
+import { compactMessagesForSynthesis } from "@/lib/fahd/synthesis-context";
 import { buildSpxwDecisionContext } from "@/lib/trading/fahd-decision/spxw-decision-context";
 import type { RawHeadline } from "@/lib/trading/fahd-decision/news-modifier-types";
 import {
@@ -50,7 +51,7 @@ import {
 export const maxDuration = 60;
 
 const FAHD_REQUEST_BUDGET_MS = 52_000;
-const FAHD_MODEL_TIMEOUT_ATTEMPTS_MS = [18_000, 15_000] as const;
+const FAHD_MODEL_TIMEOUT_ATTEMPTS_MS = [20_000, 28_000] as const;
 
 const FINNHUB_BASE = "https://finnhub.io/api/v1";
 
@@ -157,12 +158,30 @@ function extractTickers(text: string): string[] {
     "SEE",
     "GET",
     "NEW",
+    "THE",
+    "AND",
+    "FOR",
+    "ARE",
+    "WITH",
+    "FROM",
+    "THIS",
+    "THAT",
+    "WAS",
+    "WERE",
+    "WILL",
     "FOMC",
     "CPI",
     "GDP",
     "USD",
   ];
   return [...new Set(matches.filter((t) => !ignore.includes(t)))].slice(0, 2);
+}
+
+function normalizeFinnhubQuoteSymbol(symbol: string): string | null {
+  const normalized = symbol.trim().toUpperCase();
+  if (["SPX", "^SPX", ".GSPC", "GSPC"].includes(normalized)) return "GSPC";
+  if (normalized === "SPXW") return null;
+  return normalized;
 }
 
 async function getQuote(symbol: string, apiKey: string) {
@@ -1028,13 +1047,6 @@ async function callClaude(
       "x-api-key": process.env.ANTHROPIC_API_KEY!,
       "anthropic-version": "2023-06-01",
     },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1500,
-      system,
-      tools: TOOLS,
-      messages,
-    }),
   };
 
   let response: Response | null = null;
@@ -1053,9 +1065,33 @@ async function callClaude(
     );
 
     try {
+      const synthesisMessages = compactMessagesForSynthesis(
+        messages,
+        attempt === 0
+          ? { maxMessages: 12, maxTextChars: 6_000, maxToolResultChars: 9_000 }
+          : { maxMessages: 6, maxTextChars: 2_500, maxToolResultChars: 4_500 },
+      );
+      const attemptRequestInit: RequestInit = {
+        ...requestInit,
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: attempt === 0 ? 1500 : 1000,
+          system,
+          tools: TOOLS,
+          messages: synthesisMessages,
+        }),
+      };
+
+      console.info("Anthropic synthesis request profile:", {
+        attempt: attempt + 1,
+        messageCount: synthesisMessages.length,
+        payloadChars: attemptRequestInit.body?.toString().length ?? 0,
+        timeoutMs: attemptTimeoutMs,
+      });
+
       response = await fetchWithTimeout(
         "https://api.anthropic.com/v1/messages",
-        requestInit,
+        attemptRequestInit,
         attemptTimeoutMs,
       );
       break;
@@ -1176,7 +1212,13 @@ export async function POST(req: NextRequest) {
         (t) => !currentTickers.includes(t),
       );
       const tickers = [...currentTickers, ...historyTickers].slice(0, 3);
-      const quoteSymbols = [...new Set(["SPY", "QQQ", ...tickers])];
+      const quoteSymbols = [
+        ...new Set(
+          ["SPY", "QQQ", ...tickers]
+            .map(normalizeFinnhubQuoteSymbol)
+            .filter((symbol): symbol is string => Boolean(symbol)),
+        ),
+      ];
       const quoteResults = await Promise.all(
         quoteSymbols.map((s) => getQuote(s, finnhubKey)),
       );

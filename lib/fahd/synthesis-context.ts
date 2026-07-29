@@ -1,98 +1,120 @@
-export const SYNTHESIS_TIMEOUT_ATTEMPTS_MS = [25_000, 20_000] as const;
-
-const DROP_ON_RETRY = new Set([
-  "rejectionReasons",
-  "rejectedContracts",
-  "providerErrors",
-  "diagnostics",
-  "raw",
-]);
-
-export type SynthesisCompactOptions = {
-  reduced?: boolean;
+type ClaudeMessage = {
+  role: string;
+  content: unknown;
 };
 
-function compactValue(
-  value: unknown,
-  options: SynthesisCompactOptions,
-  depth = 0,
-): unknown {
-  const reduced = options.reduced === true;
-  const maxArrayItems = reduced ? 1 : 3;
-  const maxStringLength = reduced ? 500 : 1_200;
+type CompactOptions = {
+  maxMessages?: number;
+  maxTextChars?: number;
+  maxToolResultChars?: number;
+};
 
-  if (value === null || value === undefined) return value;
-  if (typeof value === "string") {
-    return value.length > maxStringLength
-      ? `${value.slice(0, maxStringLength)}…`
-      : value;
-  }
-  if (typeof value !== "object") return value;
-  if (depth >= 6) return "[تم اختصار التفاصيل]";
+const DEFAULT_OPTIONS: Required<CompactOptions> = {
+  maxMessages: 12,
+  maxTextChars: 6_000,
+  maxToolResultChars: 9_000,
+};
 
-  if (Array.isArray(value)) {
-    return value
-      .slice(0, maxArrayItems)
-      .map((item) => compactValue(item, options, depth + 1));
-  }
-
-  const result: Record<string, unknown> = {};
-  const entries = Object.entries(value as Record<string, unknown>);
-  for (const [key, nested] of entries) {
-    if (reduced && DROP_ON_RETRY.has(key)) continue;
-    result[key] = compactValue(nested, options, depth + 1);
-  }
-  return result;
+function truncateText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, Math.max(0, maxChars - 80))}\n...[تم اختصار السياق لتسريع الصياغة]`;
 }
 
-export function compactToolResultContent(
-  content: unknown,
-  options: SynthesisCompactOptions = {},
-): string {
-  const text = typeof content === "string" ? content : JSON.stringify(content);
+function compactJsonValue(value: unknown, maxChars: number): string {
+  const serialized = typeof value === "string" ? value : JSON.stringify(value);
+  if (serialized.length <= maxChars) return serialized;
+
   try {
-    const parsed = JSON.parse(text);
-    return JSON.stringify(compactValue(parsed, options));
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    if (parsed && typeof parsed === "object") {
+      const source = parsed as Record<string, unknown>;
+      const compact = {
+        status: source.status,
+        decision: source.decision,
+        finalDecision: source.finalDecision,
+        userMessage: source.userMessage,
+        scan: source.scan,
+        trigger: source.trigger,
+        opportunities: Array.isArray(source.opportunities)
+          ? source.opportunities.slice(0, 3)
+          : undefined,
+        results: Array.isArray(source.results) ? source.results.slice(0, 3) : undefined,
+        summary: source.summary,
+        error: source.error,
+      };
+      const compactSerialized = JSON.stringify(compact);
+      if (compactSerialized.length <= maxChars) return compactSerialized;
+      return truncateText(compactSerialized, maxChars);
+    }
   } catch {
-    const limit = options.reduced ? 500 : 1_200;
-    return text.length > limit ? `${text.slice(0, limit)}…` : text;
+    // المحتوى ليس JSON صالحًا؛ نختصره كنص.
   }
+
+  return truncateText(serialized, maxChars);
 }
 
-export function compactToolResultsForSynthesis(
-  toolResults: any[],
-  options: SynthesisCompactOptions = {},
-): any[] {
-  return toolResults.map((result) => ({
-    ...result,
-    content: compactToolResultContent(result?.content, options),
-  }));
-}
+function compactContent(content: unknown, options: Required<CompactOptions>): unknown {
+  if (typeof content === "string") {
+    return truncateText(content, options.maxTextChars);
+  }
 
-export function compactMessagesForSynthesis(
-  messages: any[],
-  options: SynthesisCompactOptions = {},
-): any[] {
-  return messages.map((message) => {
-    if (!Array.isArray(message?.content)) return message;
-    return {
-      ...message,
-      content: message.content.map((block: any) =>
-        block?.type === "tool_result"
-          ? {
-              ...block,
-              content: compactToolResultContent(block.content, options),
-            }
-          : block,
-      ),
-    };
+  if (!Array.isArray(content)) return content;
+
+  return content.map((block) => {
+    if (!block || typeof block !== "object") return block;
+    const typedBlock = block as Record<string, unknown>;
+
+    if (typedBlock.type === "text" && typeof typedBlock.text === "string") {
+      return {
+        ...typedBlock,
+        text: truncateText(typedBlock.text, options.maxTextChars),
+      };
+    }
+
+    if (typedBlock.type === "tool_result") {
+      return {
+        ...typedBlock,
+        content: compactJsonValue(
+          typedBlock.content,
+          options.maxToolResultChars,
+        ),
+      };
+    }
+
+    return block;
   });
 }
 
-export function estimateMessageChars(messages: any[]): number {
-  try {
-    return JSON.stringify(messages).length;
-  } catch {
-    return 0;
+/**
+ * يقلل سياق Anthropic بدون حذف آخر تسلسل tool_use/tool_result، حتى تبقى
+ * صياغة النتيجة مبنية على المخرجات البرمجية الفعلية ولا تعيد تشغيل الأدوات.
+ */
+export function compactMessagesForSynthesis(
+  messages: ClaudeMessage[],
+  options: CompactOptions = {},
+): ClaudeMessage[] {
+  const resolved = { ...DEFAULT_OPTIONS, ...options };
+  const startIndex = Math.max(0, messages.length - resolved.maxMessages);
+
+  // لا نبدأ من tool_result منفصل عن رسالة assistant التي تحتوي tool_use.
+  let safeStartIndex = startIndex;
+  const candidate = messages[safeStartIndex];
+  if (
+    candidate?.role === "user" &&
+    Array.isArray(candidate.content) &&
+    candidate.content.some(
+      (block) =>
+        block &&
+        typeof block === "object" &&
+        (block as Record<string, unknown>).type === "tool_result",
+    ) &&
+    safeStartIndex > 0
+  ) {
+    safeStartIndex -= 1;
   }
+
+  return messages.slice(safeStartIndex).map((message) => ({
+    ...message,
+    content: compactContent(message.content, resolved),
+  }));
 }
