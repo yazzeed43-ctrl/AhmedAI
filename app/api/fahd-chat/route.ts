@@ -52,6 +52,9 @@ export const maxDuration = 60;
 
 const FAHD_REQUEST_BUDGET_MS = 52_000;
 const FAHD_MODEL_TIMEOUT_ATTEMPTS_MS = [20_000, 28_000] as const;
+// ميزانية مستقلة مضمونة لاستدعاء الصياغة الخفيفة (بدون tools)، تُحجز
+// من إجمالي FAHD_REQUEST_BUDGET_MS قبل ما تبدأ جولات الأدوات الثقيلة.
+const SYNTHESIS_RESERVED_MS = 18_000;
 
 const FINNHUB_BASE = "https://finnhub.io/api/v1";
 
@@ -345,6 +348,212 @@ function isModelTimeoutError(error: unknown): boolean {
     error instanceof Error &&
     error.message.includes("مهلة الاتصال بالنموذج")
   );
+}
+
+const ANTHROPIC_MODEL = "claude-sonnet-4-6";
+
+// تلخيص حقول-واعٍ لكل نتيجة أداة على حدة (بدل قص نصي على السلسلة
+// الكاملة بعد التجميع، اللي ممكن يكسر بنية JSON في المنتصف). نفس
+// مبدأ compactJsonValue في lib/fahd/synthesis-context.ts، مطبّق هنا
+// مباشرة على مخرجات collectedToolResults.
+function compactToolOutput(output: unknown): unknown {
+  if (!output || typeof output !== "object") return output;
+  const source = output as Record<string, unknown>;
+  const compact: Record<string, unknown> = {
+    status: source.status,
+    decision: source.decision,
+    finalDecision: source.finalDecision,
+    bias: source.bias,
+    confidence: source.confidence,
+    marketScore: source.marketScore,
+    stockScore: source.stockScore,
+    optionsScore: source.optionsScore,
+    tradeScore: source.tradeScore,
+    finalScore: source.finalScore,
+    trigger: source.trigger,
+    scan: source.scan,
+    summary: source.summary,
+    opportunity: source.opportunity,
+    opportunities: Array.isArray(source.opportunities)
+      ? source.opportunities.slice(0, 2)
+      : undefined,
+    results: Array.isArray(source.results)
+      ? source.results.slice(0, 2)
+      : undefined,
+    reasons: Array.isArray(source.reasons)
+      ? source.reasons.slice(0, 8)
+      : source.reasons,
+    warnings: Array.isArray(source.warnings)
+      ? source.warnings.slice(0, 8)
+      : source.warnings,
+    error: source.error,
+  };
+  // نحذف المفاتيح undefined حتى لا تتضخم السلسلة النهائية بلا فائدة.
+  for (const key of Object.keys(compact)) {
+    if (compact[key] === undefined) delete compact[key];
+  }
+  return compact;
+}
+
+// يبني نص نتيجة مضغوط من نتائج الأدوات المجمّعة فقط (اسم الأداة +
+// مخرجها بعد تلخيص حقول-واعٍ)، بدون سجل الرسائل أو بروتوكول
+// tool_use/tool_result كاملاً. هذا هو المدخل الوحيد لاستدعاء
+// الصياغة الخفيفة. لو تجاوزت النتيجة السقف حتى بعد التلخيص، نحذف
+// أقدم نتائج أداة كاملة واحدة تلو الأخرى بدل قص السلسلة من المنتصف
+// — يضمن JSON صالح دائمًا.
+const MAX_SYNTHESIS_RESULT_CHARS = 12_000;
+function buildCompactSynthesisResult(
+  toolResults: { name: string; input: any; output: any }[],
+): string {
+  const compactedItems = toolResults.map((r) => ({
+    name: r.name,
+    output: compactToolOutput(r.output),
+  }));
+
+  let serialized = JSON.stringify(compactedItems);
+  while (
+    serialized.length > MAX_SYNTHESIS_RESULT_CHARS &&
+    compactedItems.length > 1
+  ) {
+    compactedItems.shift(); // نحذف أقدم نتيجة أداة كاملة، لا نقص نصًا
+    serialized = JSON.stringify(compactedItems);
+  }
+  return serialized;
+}
+
+// استدعاء Anthropic مخصص للصياغة النهائية فقط — بدون tools ولا
+// tool_choice، وبدون سجل الجولات؛ فقط سؤال المستخدم + النتيجة
+// البرمجية المضغوطة + تعليمات صياغة قصيرة. هذا يزيل حمل مصفوفة
+// TOOLS (~20 ألف حرف) وبروتوكول tool_use/tool_result من مرحلة
+// الصياغة، ويبقيها استدعاءً خفيفًا مستقلاً عن جولات الأدوات.
+async function callClaudeForSynthesis(params: {
+  userMessage: string;
+  compactResult: string;
+  requestDeadlineAt: number;
+}): Promise<string> {
+  const { userMessage, compactResult, requestDeadlineAt } = params;
+
+  const remainingBudgetMs = requestDeadlineAt - Date.now() - 2_000;
+  if (remainingBudgetMs < 1_000) {
+    throw new Error("انتهت مهلة الاتصال بالنموذج، حاول مرة ثانية.");
+  }
+  const timeoutMs = Math.min(15_000, remainingBudgetMs);
+
+  const synthesisSystemPrompt =
+    "أنت فهد، مساعد يزيد للتداول. اكتب الرد النهائي بالعربية بالاعتماد فقط على النتيجة البرمجية المرفقة أدناه. لا تخترع أسعارًا أو مؤشرات أو قرارات غير موجودة فيها. وضّح بوضوح هل النتيجة دخول، انتظار تأكيد، أم عدم وجود فرصة، واذكر أهم الأرقام (السعر، الجودة، Final Score، أسباب الرفض إن وجدت) بإيجاز.";
+
+  const requestInit: RequestInit = {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_API_KEY!,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: ANTHROPIC_MODEL,
+      max_tokens: 1100,
+      temperature: 0.2,
+      system: [
+        {
+          type: "text",
+          text: synthesisSystemPrompt,
+          cache_control: {
+            type: "ephemeral",
+            ttl: "5m",
+          },
+        },
+      ],
+      messages: [
+        {
+          role: "user",
+          content: [
+            "سؤال المستخدم:",
+            userMessage,
+            "",
+            "النتيجة البرمجية الموثوقة:",
+            compactResult,
+            "",
+            "اكتب الرد النهائي بالعربية.",
+            "اعتمد فقط على النتيجة البرمجية أعلاه.",
+            "لا تستدعِ أي أداة.",
+            "لا تخترع أسعارًا أو مؤشرات أو قرارات غير موجودة.",
+            "وضّح هل النتيجة دخول أم انتظار تأكيد أم عدم وجود فرصة.",
+          ].join("\n"),
+        },
+      ],
+      // عمدًا: بدون tools ولا tool_choice — استدعاء صياغة فقط.
+    }),
+  };
+
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(
+      "https://api.anthropic.com/v1/messages",
+      requestInit,
+      timeoutMs,
+    );
+  } catch (e: any) {
+    const timedOut = e?.name === "TimeoutError" || e?.name === "AbortError";
+    if (timedOut) {
+      throw new Error("انتهت مهلة الاتصال بالنموذج، حاول مرة ثانية.");
+    }
+    throw e;
+  }
+
+  if (!response.ok) {
+    const errText = await response.text();
+    console.error("Anthropic light synthesis API error:", errText);
+    throw new Error("فشل الاتصال بالنموذج");
+  }
+
+  const data = await response.json();
+  if (data?.usage) {
+    console.info("Anthropic light synthesis usage:", {
+      input_tokens: data.usage.input_tokens,
+      cache_creation_input_tokens: data.usage.cache_creation_input_tokens ?? 0,
+      cache_read_input_tokens: data.usage.cache_read_input_tokens ?? 0,
+      output_tokens: data.usage.output_tokens,
+    });
+  }
+
+  const text = (data.content ?? [])
+    .filter((block: any) => block.type === "text")
+    .map((block: any) => block.text)
+    .join("\n")
+    .trim();
+
+  if (!text) {
+    throw new Error("رد الصياغة الخفيفة فارغ");
+  }
+
+  return text;
+}
+
+// نقطة الدخول الموحّدة لصياغة الرد النهائي: تستخدم الاستدعاء الخفيف
+// دائمًا متى ما فيه نتائج أدوات مجمّعة، ولا تعيد تشغيل أي أداة عند
+// الفشل — تسقط فقط للنص الاحتياطي الثابت الحالي كخط دفاع أخير.
+async function synthesizeFinalReply(
+  message: string,
+  collectedToolResults: { name: string; input: any; output: any }[],
+  requestDeadlineAt: number,
+): Promise<string> {
+  const compactResult = buildCompactSynthesisResult(collectedToolResults);
+  try {
+    return await callClaudeForSynthesis({
+      userMessage: message,
+      compactResult,
+      requestDeadlineAt,
+    });
+  } catch (error) {
+    console.warn(
+      "Light synthesis failed; using deterministic Fahd output.",
+      {
+        completedTools: collectedToolResults.map((item) => item.name),
+        error: (error as Error)?.message,
+      },
+    );
+    return "اكتملت أدوات فهد، لكن تأخرت الصياغة النصية؛ عُرضت النتيجة البرمجية الموثوقة.";
+  }
 }
 
 async function saveFahdConversation(
@@ -967,7 +1176,7 @@ async function autoSaveMemory(userMessage: string) {
           "anthropic-version": "2023-06-01",
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6",
+          model: ANTHROPIC_MODEL,
           max_tokens: 300,
           system: `أنت نظام فرز للذاكرة طويلة المدى لمساعد تداول. مهمتك: تحديد إذا كانت رسالة المستخدم تحتوي معلومة تستحق الحفظ الدائم.
 
@@ -1085,7 +1294,7 @@ async function callClaude(
       const attemptRequestInit: RequestInit = {
         ...requestInit,
         body: JSON.stringify({
-          model: "claude-sonnet-4-6",
+          model: ANTHROPIC_MODEL,
           max_tokens: attempt === 0 ? 1500 : 1000,
           system,
           tools: TOOLS,
@@ -1164,6 +1373,13 @@ export async function POST(req: NextRequest) {
     }
 
     const requestDeadlineAt = Date.now() + FAHD_REQUEST_BUDGET_MS;
+    // نحجز جزءًا مستقلاً من الميزانية للصياغة الخفيفة، حتى لا تصل
+    // الجولة الثقيلة الأخيرة (بمحاولتيها حتى 48 ثانية) لتستنزف كل
+    // الميزانية قبل ما توصل الصياغة الخفيفة أصلاً. جولات الأدوات تلتزم
+    // بـ toolRoundDeadlineAt الأضيق، وsynthesizeFinalReply يستخدم
+    // requestDeadlineAt الكامل فيحصل دائمًا على SYNTHESIS_RESERVED_MS
+    // تقريبًا كحد أدنى مضمون.
+    const toolRoundDeadlineAt = requestDeadlineAt - SYNTHESIS_RESERVED_MS;
 
     if (isUnifiedPremarketPreparationRequest(message)) {
       const result = await scanUnifiedPremarketUniverse();
@@ -1414,7 +1630,7 @@ export async function POST(req: NextRequest) {
     let assistantText = "";
     const collectedToolResults: { name: string; input: any; output: any }[] =
       [];
-    const maxRounds = 3;
+    const maxToolRounds = 3;
 
     const mentionedTickers = extractTickers(message);
     const nonSpxTickers = mentionedTickers.filter(
@@ -1428,23 +1644,26 @@ export async function POST(req: NextRequest) {
         message,
       );
 
-    for (let round = 0; round < maxRounds; round++) {
+    for (let round = 0; round < maxToolRounds; round++) {
       let data: any;
       try {
         data = await callClaude(
           workingMessages,
           staticSystemPrompt,
           dynamicSystemContext,
-          requestDeadlineAt,
+          toolRoundDeadlineAt,
         );
       } catch (error) {
         if (isModelTimeoutError(error) && collectedToolResults.length > 0) {
           console.warn(
-            "Anthropic synthesis timed out; using deterministic Fahd output.",
+            "Anthropic tool round timed out; trying light synthesis before fallback.",
             { completedTools: collectedToolResults.map((item) => item.name) },
           );
-          assistantText =
-            "اكتملت أدوات فهد، لكن تأخرت الصياغة النصية؛ عُرضت النتيجة البرمجية الموثوقة.";
+          assistantText = await synthesizeFinalReply(
+            message,
+            collectedToolResults,
+            requestDeadlineAt,
+          );
           break;
         }
         throw error;
@@ -1458,6 +1677,12 @@ export async function POST(req: NextRequest) {
         .join("\n");
 
       if (toolUseBlocks.length === 0) {
+        // الجولة الثقيلة نجحت فعلاً وأنتجت نصًا — لا داعي لاستدعاء
+        // الصياغة الخفيفة هنا؛ هذا مسار نجاح، مو مسار timeout. الصياغة
+        // الخفيفة مخصصة فقط لمسارات الفشل/الإيقاف القسري تحت
+        // (catch الخاص بـ isModelTimeoutError، وحالة round === maxToolRounds - 1
+        // بعد تنفيذ الأدوات)، حيث الجولة الثقيلة لم تُكمل أصلاً أو
+        // وصلنا لآخر جولة أدوات مسموحة.
         assistantText = textBlocks;
         break;
       }
@@ -2234,10 +2459,20 @@ export async function POST(req: NextRequest) {
       }
       workingMessages.push({ role: "user", content: toolResults });
 
-      if (round === maxRounds - 1) {
+      if (round === maxToolRounds - 1) {
+        // آخر جولة أدوات مسموحة ونفّذنا نتائجها الآن — الصياغة النهائية
+        // تصير هنا دائمًا عبر الاستدعاء الخفيف (بدون tools)، مو بجولة
+        // ثقيلة رابعة. هذا يحافظ على maxToolRounds جولة أدوات كاملة
+        // فعلية (0، 1، 2) قبل ما نصيغ الرد.
         assistantText =
-          textBlocks ||
-          "لم يكتمل التحليل ضمن الحد المسموح من جولات الأدوات. بعض النتائج قد تكون ناقصة؛ اعتمد فقط على البيانات الظاهرة.";
+          collectedToolResults.length > 0
+            ? await synthesizeFinalReply(
+                message,
+                collectedToolResults,
+                requestDeadlineAt,
+              )
+            : textBlocks ||
+              "لم يكتمل التحليل ضمن الحد المسموح من جولات الأدوات. بعض النتائج قد تكون ناقصة؛ اعتمد فقط على البيانات الظاهرة.";
       }
     }
 
