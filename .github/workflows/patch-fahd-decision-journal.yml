@@ -1,0 +1,70 @@
+name: Patch Fahd decision journal
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/patch-fahd-decision-journal.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch route
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('app/api/fahd-chat/route.ts')
+          text = path.read_text(encoding='utf-8')
+
+          import_line = 'import { saveMarketDecisionJournalEntry } from "@/lib/fahd/decision-journal";\n'
+          anchor = 'import { buildFahdResponse } from "@/lib/fahd/compact-response";\n'
+          if import_line not in text:
+              if anchor not in text:
+                  raise SystemExit('Import anchor not found')
+              text = text.replace(anchor, anchor + import_line, 1)
+
+          old = '''            const output = await getMarketDecision(
+              block.input?.timeframe || "15min",
+            );
+            collectedToolResults.push({'''
+          new = '''            const output = await getMarketDecision(
+              block.input?.timeframe || "15min",
+            );
+            await saveMarketDecisionJournalEntry({
+              requestMessage: message,
+              decision: output,
+              source: "fahd_chat",
+            });
+            collectedToolResults.push({'''
+
+          if 'await saveMarketDecisionJournalEntry({' not in text:
+              if old not in text:
+                  raise SystemExit('Market decision anchor not found')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Typecheck and build
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npm run build
+
+      - name: Commit patch and remove one-time workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/patch-fahd-decision-journal.yml
+          git add app/api/fahd-chat/route.ts
+          git commit -m "Record Fahd market decisions"
+          git push
