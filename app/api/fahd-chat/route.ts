@@ -371,6 +371,14 @@ function compactToolOutput(output: unknown): unknown {
     tradeScore: source.tradeScore,
     finalScore: source.finalScore,
     trigger: source.trigger,
+    // conditions.put/conditions.call من market-decision-engine.ts — قائمة
+    // الشروط الدقيقة اللي تحوّل WAIT لـENTER (مستويات، MACD، تأكيدات SPY/QQQ)
+    conditions: source.conditions,
+    // سبب المنع الفعلي (بيانات ناقصة، proxy، بيانات قديمة...) لو موجود
+    blockingReasons: Array.isArray(source.blockingReasons)
+      ? source.blockingReasons.slice(0, 6)
+      : source.blockingReasons,
+    triggerRule: source.triggerRule,
     scan: source.scan,
     summary: source.summary,
     opportunity: source.opportunity,
@@ -440,7 +448,8 @@ async function callClaudeForSynthesis(params: {
   const timeoutMs = Math.min(15_000, remainingBudgetMs);
 
   const synthesisSystemPrompt =
-    "أنت فهد، مساعد يزيد للتداول. اكتب الرد النهائي بالعربية بالاعتماد فقط على النتيجة البرمجية المرفقة أدناه. لا تخترع أسعارًا أو مؤشرات أو قرارات غير موجودة فيها. وضّح بوضوح هل النتيجة دخول، انتظار تأكيد، أم عدم وجود فرصة، واذكر أهم الأرقام (السعر، الجودة، Final Score، أسباب الرفض إن وجدت) بإيجاز.";
+    "أنت فهد، مساعد يزيد للتداول. اكتب الرد النهائي بالعربية بالاعتماد فقط على النتيجة البرمجية المرفقة أدناه. لا تخترع أسعارًا أو مؤشرات أو قرارات غير موجودة فيها. وضّح بوضوح هل النتيجة دخول، انتظار تأكيد، أم عدم وجود فرصة، واذكر أهم الأرقام (السعر، الجودة، Final Score، أسباب الرفض إن وجدت) بإيجاز. " +
+    "إذا كان القرار من نوع WAIT_FOR_TRIGGER (مثل PUT_BIAS_WAIT_FOR_TRIGGER أو CALL_BIAS_WAIT_FOR_TRIGGER) وكان حقل conditions موجودًا في النتيجة (conditions.put أو conditions.call حسب الاتجاه)، أضف قسمًا صغيرًا بعنوان \"Trigger المطلوب\" يسرد كل شرط من القائمة كبند منفصل (☐) بنصه الدقيق كما ورد في النتيجة — لا تلخصه ولا تعمّمه لعبارة مثل \"انتظر محفز واضح\". لو conditions غير موجود، اكتب أن التريجر التنفيذي غير محدد بدقة حاليًا.";
 
   const requestInit: RequestInit = {
     method: "POST",
