@@ -2,10 +2,6 @@ name: Patch Fahd decision journal
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/patch-fahd-decision-journal.yml
 
 permissions:
   contents: write
@@ -27,11 +23,11 @@ jobs:
           text = path.read_text(encoding='utf-8')
 
           import_line = 'import { saveMarketDecisionJournalEntry } from "@/lib/fahd/decision-journal";\n'
-          anchor = 'import { buildFahdResponse } from "@/lib/fahd/compact-response";\n'
+          import_anchor = 'import { buildFahdResponse } from "@/lib/fahd/compact-response";\n'
           if import_line not in text:
-              if anchor not in text:
+              if import_anchor not in text:
                   raise SystemExit('Import anchor not found')
-              text = text.replace(anchor, anchor + import_line, 1)
+              text = text.replace(import_anchor, import_anchor + import_line, 1)
 
           old = '''            const output = await getMarketDecision(
               block.input?.timeframe || "15min",
@@ -55,17 +51,14 @@ jobs:
           path.write_text(text, encoding='utf-8')
           PY
 
-      - name: Typecheck and build
-        run: |
-          npm ci
-          npx tsc --noEmit
-          npm run build
-
-      - name: Commit patch and remove one-time workflow
+      - name: Commit patch
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm .github/workflows/patch-fahd-decision-journal.yml
           git add app/api/fahd-chat/route.ts
+          if git diff --cached --quiet; then
+            echo "Route already patched; nothing to commit."
+            exit 0
+          fi
           git commit -m "Record Fahd market decisions"
           git push
