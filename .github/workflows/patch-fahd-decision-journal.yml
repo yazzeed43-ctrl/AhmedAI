@@ -18,7 +18,6 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import re
 
           path = Path('app/api/fahd-chat/route.ts')
           text = path.read_text(encoding='utf-8')
@@ -30,25 +29,47 @@ jobs:
                   raise SystemExit('Import anchor not found')
               text = text.replace(import_anchor, import_anchor + import_line, 1)
 
-          journal_call = '''await saveMarketDecisionJournalEntry({
-              requestMessage: message,
-              decision: output,
-              source: "fahd_chat",
-            });'''
-
-          if 'await saveMarketDecisionJournalEntry({' not in text:
-              pattern = re.compile(
-                  r'(?P<indent>^[ \t]*)const output = await getMarketDecision\([\s\S]*?^\s*\);',
-                  re.MULTILINE,
+          call_marker = 'await saveMarketDecisionJournalEntry({'
+          if call_marker not in text:
+              lines = text.splitlines(keepends=True)
+              block_index = next(
+                  (i for i, line in enumerate(lines)
+                   if 'block.name === "get_market_decision"' in line),
+                  None,
               )
-              matches = list(pattern.finditer(text))
-              if len(matches) != 1:
-                  raise SystemExit(f'Expected exactly one market decision call, found {len(matches)}')
+              if block_index is None:
+                  raise SystemExit('get_market_decision block not found')
 
-              match = matches[0]
-              indent = match.group('indent')
-              injected = match.group(0) + '\n' + indent + journal_call.replace('\n', '\n' + indent)
-              text = text[:match.start()] + injected + text[match.end():]
+              call_index = next(
+                  (i for i in range(block_index, min(len(lines), block_index + 30))
+                   if 'const output = await getMarketDecision(' in lines[i]),
+                  None,
+              )
+              if call_index is None:
+                  raise SystemExit('getMarketDecision call not found inside tool block')
+
+              end_index = next(
+                  (i for i in range(call_index + 1, min(len(lines), call_index + 10))
+                   if lines[i].strip() == ');'),
+                  None,
+              )
+              if end_index is None:
+                  raise SystemExit('getMarketDecision call terminator not found')
+
+              indent = lines[call_index][:len(lines[call_index]) - len(lines[call_index].lstrip())]
+              insertion = [
+                  f'{indent}try {{\n',
+                  f'{indent}  await saveMarketDecisionJournalEntry({{\n',
+                  f'{indent}    requestMessage: message,\n',
+                  f'{indent}    decision: output,\n',
+                  f'{indent}    source: "fahd_chat",\n',
+                  f'{indent}  }});\n',
+                  f'{indent}}} catch (journalError) {{\n',
+                  f'{indent}  console.error("Fahd decision journal write failed:", journalError);\n',
+                  f'{indent}}}\n',
+              ]
+              lines[end_index + 1:end_index + 1] = insertion
+              text = ''.join(lines)
 
           path.write_text(text, encoding='utf-8')
           PY
