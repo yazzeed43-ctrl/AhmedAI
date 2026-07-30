@@ -39,6 +39,7 @@ import {
 } from "@/lib/social/social-signals";
 import { applySocialIntelligenceToTradeReport } from "@/lib/social/social-decision-context";
 import { buildFahdResponse } from "@/lib/fahd/compact-response";
+import { saveMarketDecisionJournalEntry } from "@/lib/fahd/decision-journal";
 import { compactMessagesForSynthesis } from "@/lib/fahd/synthesis-context";
 import { buildSpxwDecisionContext } from "@/lib/trading/fahd-decision/spxw-decision-context";
 import type { RawHeadline } from "@/lib/trading/fahd-decision/news-modifier-types";
@@ -1962,6 +1963,15 @@ export async function POST(req: NextRequest) {
             const output = await getMarketDecision(
               block.input?.timeframe || "15min",
             );
+            try {
+              await saveMarketDecisionJournalEntry({
+                requestMessage: message,
+                decision: output,
+                source: "fahd_chat",
+              });
+            } catch (journalError) {
+              console.error("Fahd decision journal write failed:", journalError);
+            }
             collectedToolResults.push({
               name: "get_market_decision",
               input: block.input,
