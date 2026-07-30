@@ -1,0 +1,36 @@
+name: Emergency restore market engine
+
+on:
+  push:
+    paths:
+      - '.github/workflows/emergency-restore-market-engine.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore known-good engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show 4cf1c42217a1ceacbf18652cf28cad245c2b3c4a:lib/market-decision-engine.ts > lib/market-decision-engine.ts
+          test "$(wc -l < lib/market-decision-engine.ts)" -gt 600
+          grep -q "export async function getMarketDecision" lib/market-decision-engine.ts
+
+      - name: Commit restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/market-decision-engine.ts
+          git commit -m 'Restore market decision engine'
+          git push origin main
