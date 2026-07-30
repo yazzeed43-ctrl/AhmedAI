@@ -1,5 +1,6 @@
 name: Patch Fahd decision journal
 
+# This second commit triggers the workflow after it already exists on main.
 on:
   push:
     branches: [main]
