@@ -1,0 +1,25 @@
+name: Fahd decision outcomes
+
+on:
+  schedule:
+    - cron: "*/15 * * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate pending Fahd decisions
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          FAHD_BASE_URL: ${{ vars.FAHD_BASE_URL }}
+        run: |
+          set -euo pipefail
+          BASE_URL="${FAHD_BASE_URL:-https://ahmed-ai.vercel.app}"
+          curl --fail-with-body --silent --show-error \
+            --retry 2 --retry-delay 5 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${BASE_URL}/api/cron/fahd-decision-outcomes"
