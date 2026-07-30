@@ -18,6 +18,7 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path('app/api/fahd-chat/route.ts')
           text = path.read_text(encoding='utf-8')
@@ -29,24 +30,25 @@ jobs:
                   raise SystemExit('Import anchor not found')
               text = text.replace(import_anchor, import_anchor + import_line, 1)
 
-          old = '''            const output = await getMarketDecision(
-              block.input?.timeframe || "15min",
-            );
-            collectedToolResults.push({'''
-          new = '''            const output = await getMarketDecision(
-              block.input?.timeframe || "15min",
-            );
-            await saveMarketDecisionJournalEntry({
+          journal_call = '''await saveMarketDecisionJournalEntry({
               requestMessage: message,
               decision: output,
               source: "fahd_chat",
-            });
-            collectedToolResults.push({'''
+            });'''
 
           if 'await saveMarketDecisionJournalEntry({' not in text:
-              if old not in text:
-                  raise SystemExit('Market decision anchor not found')
-              text = text.replace(old, new, 1)
+              pattern = re.compile(
+                  r'(?P<indent>^[ \t]*)const output = await getMarketDecision\([\s\S]*?^\s*\);',
+                  re.MULTILINE,
+              )
+              matches = list(pattern.finditer(text))
+              if len(matches) != 1:
+                  raise SystemExit(f'Expected exactly one market decision call, found {len(matches)}')
+
+              match = matches[0]
+              indent = match.group('indent')
+              injected = match.group(0) + '\n' + indent + journal_call.replace('\n', '\n' + indent)
+              text = text[:match.start()] + injected + text[match.end():]
 
           path.write_text(text, encoding='utf-8')
           PY
