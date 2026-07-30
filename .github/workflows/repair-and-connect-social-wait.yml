@@ -1,0 +1,146 @@
+name: Repair and connect social forced wait
+
+on:
+  push:
+    paths:
+      - '.github/workflows/repair-and-connect-social-wait.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore engine and apply focused changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show 4cf1c42217a1ceacbf18652cf28cad245c2b3c4a:lib/market-decision-engine.ts > lib/market-decision-engine.ts
+
+          python <<'PY'
+          from pathlib import Path
+
+          engine = Path('lib/market-decision-engine.ts')
+          s = engine.read_text()
+
+          s = s.replace(
+              "import { getTradierQuote } from '@/lib/tradier';\n",
+              "import { getTradierQuote } from '@/lib/tradier';\n"
+              "import { getRecentSocialSignals } from '@/lib/social/social-signals';\n"
+              "import {\n"
+              "  qualifiesForForcedWait,\n"
+              "  normalizeReliability,\n"
+              "  type SocialSignal,\n"
+              "} from '@/lib/social/social-decision-context';\n",
+              1,
+          )
+
+          anchor = "export async function getMarketDecision(timeframe: Timeframe = '15min') {\n"
+          helper = r'''async function getSocialForcedWaitContext(windowMinutes = 60) {
+            try {
+              const rawSignals = await getRecentSocialSignals({
+                minutes: windowMinutes,
+                limit: 20,
+              });
+              const signals = rawSignals as unknown as SocialSignal[];
+
+              const forcingSignals = signals.filter((signal) => {
+                if (!qualifiesForForcedWait(signal)) {
+                  return false;
+                }
+
+                const contentTypes = new Set([
+                  signal.content_type,
+                  ...(signal.content_types ?? []),
+                ].filter((value): value is string => Boolean(value)));
+
+                if (contentTypes.has('FED')) {
+                  return true;
+                }
+
+                const symbols = new Set([
+                  signal.symbol,
+                  ...(signal.symbols ?? []),
+                ].filter((value): value is string => Boolean(value)));
+
+                return (
+                  contentTypes.has('EARNINGS') &&
+                  ['SPX', 'SPY', 'QQQ'].some((symbol) => symbols.has(symbol))
+                );
+              });
+
+              return {
+                available: true as const,
+                totalSignals: signals.length,
+                forcedWait: forcingSignals.length > 0,
+                forcingSignals,
+              };
+            } catch (error) {
+              console.warn('Social forced-wait context unavailable:', error);
+              return {
+                available: false as const,
+                error: error instanceof Error ? error.message : String(error),
+                totalSignals: 0,
+                forcedWait: false,
+                forcingSignals: [] as SocialSignal[],
+              };
+            }
+          }
+
+'''
+          if anchor not in s:
+              raise SystemExit('getMarketDecision anchor not found')
+          s = s.replace(anchor, helper + anchor, 1)
+
+          old_parallel = """  const [originalSpx, spy, qqq] = await Promise.all([\n    analyzeSymbol('SPX', timeframe),\n    analyzeSymbol('SPY', timeframe),\n    analyzeSymbol('QQQ', timeframe),\n  ]);\n"""
+          new_parallel = """  const [originalSpx, spy, qqq, socialContext] = await Promise.all([\n    analyzeSymbol('SPX', timeframe),\n    analyzeSymbol('SPY', timeframe),\n    analyzeSymbol('QQQ', timeframe),\n    getSocialForcedWaitContext(),\n  ]);\n"""
+          if old_parallel not in s:
+              raise SystemExit('parallel block not found')
+          s = s.replace(old_parallel, new_parallel, 1)
+
+          decision_anchor = """  const decision = !dataReadyForEntry\n    ? 'WAIT_TECHNICAL_DATA_UNAVAILABLE'\n    : bias === 'WAIT'\n"""
+          social_block = """  if (!socialContext.available) {\n    blockingReasons.push(\n      'تعذر جلب الإشارات الاجتماعية (تم تجاهلها بأمان، لا تمنع القرار الفني)'\n    );\n  } else if (socialContext.forcedWait) {\n    for (const signal of socialContext.forcingSignals) {\n      const label = signal.content_type ?? 'حدث';\n      const reliabilityPct = Math.round(\n        normalizeReliability(signal.reliability_score) * 100\n      );\n      blockingReasons.push(\n        `حدث اجتماعي عالي التأثير (${label}, موثوقية ${reliabilityPct}%) خلال آخر ساعة يفرض الانتظار بغض النظر عن الانحياز الفني`\n      );\n    }\n  }\n\n  const decision = !dataReadyForEntry\n    ? 'WAIT_TECHNICAL_DATA_UNAVAILABLE'\n    : socialContext.forcedWait\n    ? 'WAIT_HIGH_IMPACT_SOCIAL_EVENT'\n    : bias === 'WAIT'\n"""
+          if decision_anchor not in s:
+              raise SystemExit('decision anchor not found')
+          s = s.replace(decision_anchor, social_block, 1)
+
+          return_anchor = """    blockingReasons,\n\n    triggerRequired: true,\n"""
+          social_return = """    blockingReasons,\n\n    social: {\n      available: socialContext.available,\n      forcedWait: socialContext.forcedWait,\n      totalSignals: socialContext.totalSignals,\n      forcingEvents: socialContext.forcingSignals.map((signal) => ({\n        contentType: signal.content_type ?? null,\n        symbol: signal.symbol ?? null,\n        reliability: normalizeReliability(signal.reliability_score),\n        publishedAt: signal.published_at ?? null,\n      })),\n    },\n\n    triggerRequired: true,\n"""
+          if return_anchor not in s:
+              raise SystemExit('return anchor not found')
+          s = s.replace(return_anchor, social_return, 1)
+          engine.write_text(s)
+
+          route = Path('app/api/fahd-chat/route.ts')
+          r = route.read_text()
+          compact_anchor = """    triggerRule: source.triggerRule,\n    scan: source.scan,\n"""
+          compact_new = """    triggerRule: source.triggerRule,\n    social: source.social,\n    scan: source.scan,\n"""
+          if compact_anchor not in r:
+              raise SystemExit('compact output anchor not found')
+          route.write_text(r.replace(compact_anchor, compact_new, 1))
+          PY
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+      - name: Commit repaired implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib/market-decision-engine.ts app/api/fahd-chat/route.ts
+          git commit -m 'Connect social forced wait to SPX decision'
+          git push origin main
