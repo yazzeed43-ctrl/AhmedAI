@@ -1,11 +1,9 @@
 name: Patch Fahd decision journal
 
-# This second commit triggers the workflow after it already exists on main.
 on:
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/patch-fahd-decision-journal.yml
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
 
 permissions:
   contents: write
