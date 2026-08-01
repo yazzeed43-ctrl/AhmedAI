@@ -1,6 +1,7 @@
 export * from "./config";
 export * from "./direction-resolver";
 export * from "./engine";
+export * from "./integration";
 export * from "./mandatory-gates";
 export * from "./market-adapter";
 export * from "./score-coverage";
