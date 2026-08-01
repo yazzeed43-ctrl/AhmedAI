@@ -7,6 +7,8 @@ import {
   mapEconomicDataStatus,
   selectExplosionContract,
   contractPassedScannerLiquidity,
+  buildOptionQuoteSnapshot,
+  mapOptionQuoteDataStatus,
   type ExplosionIndicatorFrame,
 } from "../lib/trading/explosion";
 
@@ -43,6 +45,51 @@ test("builds six directional components without inventing optional metrics", () 
   assert.ok(components.momentum.missingMetrics.includes("ADX"));
   assert.equal(scores.requiredDataMissing, false);
   assert.ok((scores.bullScore ?? 0) > (scores.bearScore ?? 0));
+});
+
+test("option midpoint freshness uses the older bid/ask timestamp", () => {
+  const now = new Date("2026-08-03T14:00:00.000Z");
+  const snapshot = buildOptionQuoteSnapshot(
+    {
+      symbol: "SPXW260803C07500000",
+      bid: 2.4,
+      ask: 2.6,
+      bid_date: now.getTime() - 10_000,
+      ask_date: now.getTime() - 70_000,
+    },
+    now,
+  );
+  assert.equal(snapshot?.midpoint, 2.5);
+  assert.equal(snapshot?.ageSeconds, 70);
+  assert.equal(snapshot?.freshness, "delayed");
+  assert.equal(mapOptionQuoteDataStatus(snapshot), "STALE");
+});
+
+test("option quote fails closed on missing timestamps, crossed markets, and future data", () => {
+  const now = new Date("2026-08-03T14:00:00.000Z");
+  const missing = buildOptionQuoteSnapshot({ symbol: "X", bid: 2, ask: 2.2 }, now);
+  assert.equal(missing?.freshness, "unknown");
+  assert.equal(missing?.isExecutableQuote, false);
+  assert.equal(mapOptionQuoteDataStatus(missing), "MISSING");
+  assert.equal(buildOptionQuoteSnapshot({ symbol: "X", bid: 2.3, ask: 2.2 }, now), null);
+
+  const future = buildOptionQuoteSnapshot(
+    { symbol: "X", bid: 2, ask: 2.2, bid_date: now.getTime() + 10_000, ask_date: now.getTime() + 10_000 },
+    now,
+  );
+  assert.equal(future?.freshness, "unknown");
+  assert.equal(future?.quoteTime, null);
+});
+
+test("a live option midpoint is the only fresh contract quote", () => {
+  const now = new Date("2026-08-03T14:00:00.000Z");
+  const snapshot = buildOptionQuoteSnapshot(
+    { symbol: "X", bid: 2, ask: 2.2, bid_date: now.getTime() - 5_000, ask_date: now.getTime() - 8_000 },
+    now,
+  );
+  assert.equal(snapshot?.freshness, "live");
+  assert.equal(snapshot?.isExecutableQuote, true);
+  assert.equal(mapOptionQuoteDataStatus(snapshot), "FRESH");
 });
 
 test("contract selection never crosses the resolved direction", () => {
