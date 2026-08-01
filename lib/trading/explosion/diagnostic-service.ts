@@ -1,7 +1,5 @@
 import {
-  getLatestCompletedFiveMinuteCandle,
   getTechnicalIndicators,
-  type LatestCompletedCandle,
   type TechnicalIndicatorsResult,
 } from "@/lib/market-indicators";
 import { getRealSpxPriceSnapshot } from "@/lib/trading/spxw-scanner-v3";
@@ -12,7 +10,6 @@ import { buildExplosionComponents, mapIndicatorFreshness } from "./market-adapte
 export interface ExplosionDiagnosticDependencies {
   getIndicators(symbol: string, timeframe: string): Promise<TechnicalIndicatorsResult>;
   getSpxSnapshot(): Promise<SpxPriceSnapshot>;
-  getLatestCandle(symbol: string): Promise<LatestCompletedCandle>;
 }
 
 const DEFAULT_DEPENDENCIES: ExplosionDiagnosticDependencies = {
@@ -24,7 +21,6 @@ const DEFAULT_DEPENDENCIES: ExplosionDiagnosticDependencies = {
     return result;
   },
   getSpxSnapshot: getRealSpxPriceSnapshot,
-  getLatestCandle: getLatestCompletedFiveMinuteCandle,
 };
 
 export async function buildExplosionDiagnostic(
@@ -33,13 +29,22 @@ export async function buildExplosionDiagnostic(
   // Twelve Data does not consistently expose the cash SPX index on every plan.
   // Use SPY only as an explicitly disclosed technical/volume proxy while the
   // actual underlying price remains the real SPX quote from Tradier.
-  const [spyFiveMinute, spyFifteenMinute, spxPrice, candle] =
+  const [spyFiveMinute, spyFifteenMinute, spxPrice] =
     await Promise.all([
       dependencies.getIndicators("SPY", "5min"),
       dependencies.getIndicators("SPY", "15min"),
       dependencies.getSpxSnapshot(),
-      dependencies.getLatestCandle("SPY"),
     ]);
+
+  const candle = {
+    symbol: "SPY" as const,
+    timeframe: "5min" as const,
+    startTime:
+      spyFiveMinute.dataStatus.candleTimeUtc ??
+      spyFiveMinute.dataStatus.candleTime,
+    isClosed: true as const,
+    source: spyFiveMinute.dataStatus.source,
+  };
 
   const components = buildExplosionComponents({
     spxFiveMinute: spyFiveMinute,
