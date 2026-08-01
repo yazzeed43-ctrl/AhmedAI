@@ -48,6 +48,11 @@ import {
   formatSpxwPremarketWatchlist,
   type AnalysisMode,
 } from "@/lib/trading/fahd-decision/spxw-analysis-mode";
+import { buildExplosionDiagnostic } from "@/lib/trading/explosion/diagnostic-service";
+import {
+  formatExplosionDiagnostic,
+  isExplosionDiagnosticRequest,
+} from "@/lib/trading/explosion/fahd-response";
 
 export const maxDuration = 60;
 
@@ -1390,6 +1395,50 @@ export async function POST(req: NextRequest) {
     // requestDeadlineAt الكامل فيحصل دائمًا على SYNTHESIS_RESERVED_MS
     // تقريبًا كحد أدنى مضمون.
     const toolRoundDeadlineAt = requestDeadlineAt - SYNTHESIS_RESERVED_MS;
+
+    if (isExplosionDiagnosticRequest(message)) {
+      try {
+        const result = await buildExplosionDiagnostic();
+        const reply = formatExplosionDiagnostic(result);
+
+        await saveFahdConversation(message, reply);
+
+        return NextResponse.json({
+          reply,
+          toolResults: [],
+          diagnostic: {
+            mode: result.mode,
+            direction: result.engine.direction,
+            state: result.engine.state,
+            decision: result.engine.decision,
+            isExecutable: false,
+            executableTrigger: null,
+          },
+        });
+      } catch (error) {
+        const reason =
+          error instanceof Error ? error.message : "تعذر تشغيل محرك الانفجار";
+        const reply = [
+          "محرك زخم وسيولة وانفجار SPXW",
+          "القرار: WAIT_DATA",
+          "الحالة: البيانات غير مكتملة",
+          `السبب: ${reason}`,
+          "النتيجة: غير قابل للتنفيذ، ولم يتم إنشاء Trigger.",
+        ].join("\n");
+
+        await saveFahdConversation(message, reply);
+        return NextResponse.json({
+          reply,
+          toolResults: [],
+          diagnostic: {
+            mode: "DIAGNOSTIC_ONLY",
+            decision: "WAIT_DATA",
+            isExecutable: false,
+            executableTrigger: null,
+          },
+        });
+      }
+    }
 
     if (isUnifiedPremarketPreparationRequest(message)) {
       const result = await scanUnifiedPremarketUniverse();
