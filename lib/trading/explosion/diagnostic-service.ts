@@ -6,6 +6,7 @@ import { getRealSpxPriceSnapshot } from "@/lib/trading/spxw-scanner-v3";
 import { scanSpxwOpportunitiesV3 } from "@/lib/trading/spxw-scanner-v3";
 import type { SpxPriceSnapshot } from "@/lib/trading/spx-price-freshness";
 import { buildSpxwTriggerPlan } from "@/lib/trading/spxw-trigger-engine";
+import { getTradierQuotes } from "@/lib/trading/tradier-client";
 import {
   fetchEconomicCalendarForGate,
 } from "@/lib/trading/fahd-decision/fahd-economic-gate-integration";
@@ -16,6 +17,10 @@ import {
   mapEconomicDataStatus,
   selectExplosionContract,
 } from "./integration";
+import {
+  buildOptionQuoteSnapshot,
+  mapOptionQuoteDataStatus,
+} from "./option-quote-freshness";
 import { buildExplosionComponents, mapIndicatorFreshness } from "./market-adapter";
 
 export interface ExplosionDiagnosticDependencies {
@@ -136,7 +141,27 @@ export async function buildExplosionDiagnostic(
     engine.direction,
     scan?.opportunities ?? [],
   );
-  const contractLiquid = contractPassedScannerLiquidity(selectedContract);
+  let selectedContractQuote = null;
+  let contractQuoteError: string | null = null;
+  if (selectedContract) {
+    try {
+      const quotes = await getTradierQuotes([selectedContract.contractSymbol]);
+      const quote = quotes.find(
+        (item) =>
+          item.symbol.trim().toUpperCase() ===
+          selectedContract.contractSymbol.trim().toUpperCase(),
+      );
+      selectedContractQuote = quote ? buildOptionQuoteSnapshot(quote) : null;
+      if (!selectedContractQuote) contractQuoteError = "OPTION_QUOTE_INVALID_OR_MISSING";
+    } catch (error) {
+      contractQuoteError =
+        error instanceof Error ? error.message : "OPTION_QUOTE_FETCH_FAILED";
+    }
+  }
+  const contractLiquid =
+    contractPassedScannerLiquidity(selectedContract) &&
+    selectedContractQuote !== null;
+  const contractDataStatus = mapOptionQuoteDataStatus(selectedContractQuote);
 
   let triggerPlan: Awaited<ReturnType<typeof buildSpxwTriggerPlan>> | null = null;
   let triggerError: string | null = null;
@@ -164,8 +189,7 @@ export async function buildExplosionDiagnostic(
     contractQuality: selectedContract?.contractScore ?? null,
     breakoutVolumeConfirmed: false,
     underlyingDataStatus,
-    // Scanner candidates currently have no quote timestamp. Never infer freshness.
-    contractDataStatus: "MISSING",
+    contractDataStatus,
     contractLiquid,
     economicCalendarStatus: mapEconomicDataStatus(economicGate.dataStatus),
     economicGateAllowsEntry: !economicGate.blockNewTrades,
@@ -201,9 +225,13 @@ export async function buildExplosionDiagnostic(
           : null,
       selectedContract,
       contractQualitySource: selectedContract ? "optionBrain.contractScore" : null,
-      contractQuoteFreshness: "MISSING" as const,
+      selectedContractQuote,
+      contractQuoteFreshness: contractDataStatus,
+      contractQuoteError,
       contractFreshnessWarning:
-        "ماسح العقود لا يعرض توقيت Quote مستقلًا لكل عقد؛ التنفيذ مغلق حتى إضافته.",
+        contractDataStatus === "FRESH"
+          ? null
+          : "Quote العقد غير لحظي أو يفتقد توقيتي bid/ask؛ التنفيذ مغلق.",
       economicGate,
       triggerPlan,
       triggerError,
