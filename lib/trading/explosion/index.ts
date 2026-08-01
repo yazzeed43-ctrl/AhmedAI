@@ -4,6 +4,7 @@ export * from "./engine";
 export * from "./integration";
 export * from "./mandatory-gates";
 export * from "./market-adapter";
+export * from "./option-quote-freshness";
 export * from "./score-coverage";
 export * from "./state-machine";
 export * from "./types";
