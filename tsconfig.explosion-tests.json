@@ -11,6 +11,7 @@
   },
   "include": [
     "tests/explosion-engine.test.ts",
+    "tests/explosion-market-adapter.test.ts",
     "lib/trading/explosion/**/*.ts"
   ]
 }

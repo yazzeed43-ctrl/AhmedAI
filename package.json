@@ -17,7 +17,7 @@
     "test:auto-trade-input-adapter": "tsc -p tsconfig.auto-trade-input-adapter-tests.json && node --test .test-dist-auto-trade-input-adapter/trading/auto-trade-input-adapter.test.js",
     "test:auto-analyze-trade": "tsc -p tsconfig.auto-analyze-trade-tests.json && node --require ./tests/support/register-path-alias-auto-analyze.cjs --test .test-dist-auto-analyze-trade/lib/trading/auto-analyze-trade.test.js",
     "test:analyze-trade-handler": "tsc -p tsconfig.analyze-trade-handler-tests.json && node --require ./tests/support/register-path-alias-analyze-trade-handler.cjs --test .test-dist-analyze-trade-handler/app/api/analyze-trade/handler.test.js",
-    "test:explosion": "tsc -p tsconfig.explosion-tests.json && node --test .test-dist-explosion/tests/explosion-engine.test.js",
+    "test:explosion": "tsc -p tsconfig.explosion-tests.json && node --test .test-dist-explosion/tests/explosion-engine.test.js .test-dist-explosion/tests/explosion-market-adapter.test.js",
     "test:fahd-synthesis-context": "tsc -p tsconfig.fahd-synthesis-context-tests.json && node --test .test-dist-fahd-synthesis-context/tests/fahd-synthesis-context.test.js",
     "start": "next start"
   },
