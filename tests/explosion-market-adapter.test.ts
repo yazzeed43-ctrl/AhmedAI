@@ -4,6 +4,9 @@ import {
   buildExplosionComponents,
   evaluateExplosionScores,
   mapIndicatorFreshness,
+  mapEconomicDataStatus,
+  selectExplosionContract,
+  contractPassedScannerLiquidity,
   type ExplosionIndicatorFrame,
 } from "../lib/trading/explosion";
 
@@ -40,6 +43,23 @@ test("builds six directional components without inventing optional metrics", () 
   assert.ok(components.momentum.missingMetrics.includes("ADX"));
   assert.equal(scores.requiredDataMissing, false);
   assert.ok((scores.bullScore ?? 0) > (scores.bearScore ?? 0));
+});
+
+test("contract selection never crosses the resolved direction", () => {
+  const candidates = [
+    { contractSymbol: "PUT1", direction: "PUT" as const, contractScore: 99, finalScore: 99, midpoint: 2, spreadPercent: 5, volume: 100, openInterest: 200 },
+    { contractSymbol: "CALL1", direction: "CALL" as const, contractScore: 82, finalScore: 88, midpoint: 3, spreadPercent: 4, volume: 120, openInterest: 300 },
+  ];
+  assert.equal(selectExplosionContract("CALL", candidates)?.contractSymbol, "CALL1");
+  assert.equal(selectExplosionContract("NEUTRAL", candidates), null);
+});
+
+test("contract liquidity and economic status remain explicit gates", () => {
+  const contract = { contractSymbol: "CALL1", direction: "CALL" as const, contractScore: 82, finalScore: 88, midpoint: 3, spreadPercent: 4, volume: 120, openInterest: 300 };
+  assert.equal(contractPassedScannerLiquidity(contract), true);
+  assert.equal(contractPassedScannerLiquidity({ ...contract, volume: 0 }), false);
+  assert.equal(mapEconomicDataStatus("AVAILABLE"), "COMPLETE");
+  assert.equal(mapEconomicDataStatus("PARTIAL"), "PARTIAL");
 });
 
 test("missing SPY RVOL is required data missing", () => {
