@@ -3,8 +3,19 @@ import {
   type TechnicalIndicatorsResult,
 } from "@/lib/market-indicators";
 import { getRealSpxPriceSnapshot } from "@/lib/trading/spxw-scanner-v3";
+import { scanSpxwOpportunitiesV3 } from "@/lib/trading/spxw-scanner-v3";
 import type { SpxPriceSnapshot } from "@/lib/trading/spx-price-freshness";
+import { buildSpxwTriggerPlan } from "@/lib/trading/spxw-trigger-engine";
+import {
+  fetchEconomicCalendarForGate,
+} from "@/lib/trading/fahd-decision/fahd-economic-gate-integration";
+import { evaluateEconomicGate } from "@/lib/trading/fahd-decision/economic-calendar-gate";
 import { evaluateExplosionEngine } from "./engine";
+import {
+  contractPassedScannerLiquidity,
+  mapEconomicDataStatus,
+  selectExplosionContract,
+} from "./integration";
 import { buildExplosionComponents, mapIndicatorFreshness } from "./market-adapter";
 
 export interface ExplosionDiagnosticDependencies {
@@ -22,6 +33,23 @@ const DEFAULT_DEPENDENCIES: ExplosionDiagnosticDependencies = {
   },
   getSpxSnapshot: getRealSpxPriceSnapshot,
 };
+
+function formatDate(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+async function fetchEconomicCalendar() {
+  const apiKey = process.env.FINNHUB_API_KEY?.trim();
+  if (!apiKey) {
+    return { events: [], dataStatus: "UNAVAILABLE" as const, fetchedAt: new Date().toISOString() };
+  }
+  return fetchEconomicCalendarForGate(apiKey, {
+    fetchWithTimeout: (url, options, timeoutMs) =>
+      fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) }),
+    formatDate,
+    finnhubBase: "https://finnhub.io/api/v1",
+  });
+}
 
 export async function buildExplosionDiagnostic(
   dependencies: ExplosionDiagnosticDependencies = DEFAULT_DEPENDENCIES,
@@ -87,6 +115,65 @@ export async function buildExplosionDiagnostic(
     setupId: null,
   });
 
+  const [scanResult, calendarResult] = await Promise.allSettled([
+    scanSpxwOpportunitiesV3({
+      analysisMode: "PREMARKET_PREP",
+      maxResults: 2,
+    }),
+    fetchEconomicCalendar(),
+  ]);
+
+  const scan = scanResult.status === "fulfilled" ? scanResult.value : null;
+  const economicCalendar =
+    calendarResult.status === "fulfilled"
+      ? calendarResult.value
+      : { events: [], dataStatus: "UNAVAILABLE" as const, fetchedAt: new Date().toISOString() };
+  const economicGate = evaluateEconomicGate(economicCalendar.events, Date.now(), {
+    dataStatus: economicCalendar.dataStatus,
+    hasOpenPosition: false,
+  });
+  const selectedContract = selectExplosionContract(
+    engine.direction,
+    scan?.opportunities ?? [],
+  );
+  const contractLiquid = contractPassedScannerLiquidity(selectedContract);
+
+  let triggerPlan: Awaited<ReturnType<typeof buildSpxwTriggerPlan>> | null = null;
+  let triggerError: string | null = null;
+  if (scan) {
+    try {
+      triggerPlan = await buildSpxwTriggerPlan({ precomputedScan: scan, maxResults: 2 });
+    } catch (error) {
+      triggerError = error instanceof Error ? error.message : "TRIGGER_PLAN_FAILED";
+    }
+  }
+
+  const integratedEngine = evaluateExplosionEngine({
+    components,
+    preExecution: {
+      now: new Date().toISOString(),
+      candle: { openTime: candle.startTime, closed: true },
+      touchSnapshot: null,
+      requiredDataMissing: false,
+      invalidationHit: false,
+      triggerTouched: false,
+      candleClosedBeyondTrigger: false,
+      entryNotExtended: true,
+      breakoutAttemptWasValid: false,
+    },
+    contractQuality: selectedContract?.contractScore ?? null,
+    breakoutVolumeConfirmed: false,
+    underlyingDataStatus,
+    // Scanner candidates currently have no quote timestamp. Never infer freshness.
+    contractDataStatus: "MISSING",
+    contractLiquid,
+    economicCalendarStatus: mapEconomicDataStatus(economicGate.dataStatus),
+    economicGateAllowsEntry: !economicGate.blockNewTrades,
+    executableTrigger: null,
+    invalidationLevel: null,
+    setupId: null,
+  });
+
   return {
     mode: "DIAGNOSTIC_ONLY" as const,
     warning: "هذه قراءة للأصل فقط؛ لا تتضمن عقد SPXW أو التقويم الاقتصادي ولا تصلح للدخول.",
@@ -99,6 +186,27 @@ export async function buildExplosionDiagnostic(
     },
     spxPrice,
     candle,
-    engine: { ...engine, isExecutable: false as const, executableTrigger: null },
+    engine: {
+      ...integratedEngine,
+      isExecutable: false as const,
+      executableTrigger: null,
+    },
+    integration: {
+      scanStatus: scan?.status ?? "DATA_PROVIDER_ERROR",
+      scanError:
+        scanResult.status === "rejected"
+          ? scanResult.reason instanceof Error
+            ? scanResult.reason.message
+            : "SPXW_SCAN_FAILED"
+          : null,
+      selectedContract,
+      contractQualitySource: selectedContract ? "optionBrain.contractScore" : null,
+      contractQuoteFreshness: "MISSING" as const,
+      contractFreshnessWarning:
+        "ماسح العقود لا يعرض توقيت Quote مستقلًا لكل عقد؛ التنفيذ مغلق حتى إضافته.",
+      economicGate,
+      triggerPlan,
+      triggerError,
+    },
   };
 }
