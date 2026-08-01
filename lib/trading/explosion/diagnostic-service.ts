@@ -30,24 +30,25 @@ const DEFAULT_DEPENDENCIES: ExplosionDiagnosticDependencies = {
 export async function buildExplosionDiagnostic(
   dependencies: ExplosionDiagnosticDependencies = DEFAULT_DEPENDENCIES,
 ) {
-  const [spxFiveMinute, spxFifteenMinute, spyFiveMinute, spxPrice, candle] =
+  // Twelve Data does not consistently expose the cash SPX index on every plan.
+  // Use SPY only as an explicitly disclosed technical/volume proxy while the
+  // actual underlying price remains the real SPX quote from Tradier.
+  const [spyFiveMinute, spyFifteenMinute, spxPrice, candle] =
     await Promise.all([
-      dependencies.getIndicators("SPX", "5min"),
-      dependencies.getIndicators("SPX", "15min"),
       dependencies.getIndicators("SPY", "5min"),
+      dependencies.getIndicators("SPY", "15min"),
       dependencies.getSpxSnapshot(),
-      dependencies.getLatestCandle("SPX"),
+      dependencies.getLatestCandle("SPY"),
     ]);
 
   const components = buildExplosionComponents({
-    spxFiveMinute,
-    spxFifteenMinute,
+    spxFiveMinute: spyFiveMinute,
+    spxFifteenMinute: spyFifteenMinute,
     spyFiveMinute,
   });
   const indicatorFreshness = mapIndicatorFreshness([
-    spxFiveMinute,
-    spxFifteenMinute,
     spyFiveMinute,
+    spyFifteenMinute,
   ]);
   const underlyingDataStatus =
     spxPrice.freshness === "live" && spxPrice.priceSource !== "close"
@@ -86,6 +87,11 @@ export async function buildExplosionDiagnostic(
     warning: "هذه قراءة للأصل فقط؛ لا تتضمن عقد SPXW أو التقويم الاقتصادي ولا تصلح للدخول.",
     isExecutable: false as const,
     executableTrigger: null,
+    technicalProxy: {
+      symbol: "SPY" as const,
+      purpose: "SPX_TECHNICAL_AND_VOLUME_PROXY" as const,
+      timeframes: ["5min", "15min"] as const,
+    },
     spxPrice,
     candle,
     engine: { ...engine, isExecutable: false as const, executableTrigger: null },
