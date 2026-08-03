@@ -38,7 +38,10 @@ import {
   summarizeSocialSignals,
 } from "@/lib/social/social-signals";
 import { applySocialIntelligenceToTradeReport } from "@/lib/social/social-decision-context";
-import { buildFahdResponse } from "@/lib/fahd/compact-response";
+import {
+  buildFahdResponse,
+  formatDeterministicToolFallback,
+} from "@/lib/fahd/compact-response";
 import { saveMarketDecisionJournalEntry } from "@/lib/fahd/decision-journal";
 import { compactMessagesForSynthesis } from "@/lib/fahd/synthesis-context";
 import { buildSpxwDecisionContext } from "@/lib/trading/fahd-decision/spxw-decision-context";
@@ -567,7 +570,7 @@ async function synthesizeFinalReply(
         error: (error as Error)?.message,
       },
     );
-    return "اكتملت أدوات فهد، لكن تأخرت الصياغة النصية؛ عُرضت النتيجة البرمجية الموثوقة.";
+    return formatDeterministicToolFallback(collectedToolResults);
   }
 }
 

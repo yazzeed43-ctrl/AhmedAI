@@ -3,8 +3,40 @@ import test from 'node:test';
 
 import {
   extractCompactResponse,
+  formatDeterministicToolFallback,
   formatCompactResponse,
 } from '../lib/fahd/compact-response';
+
+test('market decision has a useful deterministic fallback when synthesis times out', () => {
+  const output = formatDeterministicToolFallback([
+    {
+      name: 'get_market_decision',
+      input: { timeframe: '15min' },
+      output: {
+        underlying: 'SPX',
+        timeframe: '15min',
+        marketScore: 58,
+        confidence: 90,
+        probabilities: { bullish: 61, bearish: 39, neutral: 39 },
+        bias: 'WAIT',
+        decision: 'WAIT',
+        dataReadyForEntry: true,
+        blockingReasons: ['بيانات SPX متأخرة'],
+        conditions: {
+          call: ['إغلاق SPX فوق VAH 7540'],
+          put: ['إغلاق SPX تحت VAL 7500'],
+        },
+      },
+    },
+  ]);
+
+  assert.match(output, /تحليل SPX — 15min/);
+  assert.match(output, /القرار: WAIT/);
+  assert.match(output, /درجة السوق: 58\/100/);
+  assert.match(output, /بيانات SPX متأخرة/);
+  assert.match(output, /isExecutable: false/);
+  assert.doesNotMatch(output, /تأخرت الصياغة النصية/);
+});
 
 test('WAIT output exposes confidence band and non-executable readiness', () => {
   const output = formatCompactResponse({

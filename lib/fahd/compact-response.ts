@@ -27,6 +27,26 @@ type CollectedToolResult = {
   output: unknown;
 };
 
+type MarketDecisionOutput = {
+  underlying: string;
+  timeframe: string;
+  marketScore: number;
+  confidence: number;
+  probabilities: {
+    bullish: number;
+    bearish: number;
+    neutral: number;
+  };
+  bias: 'CALL_BIAS' | 'PUT_BIAS' | 'WAIT';
+  decision: string;
+  dataReadyForEntry: boolean;
+  blockingReasons: string[];
+  conditions?: {
+    call?: string[];
+    put?: string[];
+  };
+};
+
 type StockBias = 'CALL_BIAS' | 'PUT_BIAS' | 'WAIT';
 
 type StockDecisionOutput = {
@@ -101,6 +121,110 @@ function isStringArray(value: unknown): value is string[] {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isMarketDecisionOutput(value: unknown): value is MarketDecisionOutput {
+  if (!isRecord(value)) return false;
+  if (typeof value.underlying !== 'string') return false;
+  if (typeof value.timeframe !== 'string') return false;
+  if (!isFiniteNumber(value.marketScore)) return false;
+  if (!isFiniteNumber(value.confidence)) return false;
+  if (value.bias !== 'CALL_BIAS' && value.bias !== 'PUT_BIAS' && value.bias !== 'WAIT') return false;
+  if (typeof value.decision !== 'string') return false;
+  if (typeof value.dataReadyForEntry !== 'boolean') return false;
+  if (!isStringArray(value.blockingReasons)) return false;
+  if (!isRecord(value.probabilities)) return false;
+
+  return (
+    isFiniteNumber(value.probabilities.bullish) &&
+    isFiniteNumber(value.probabilities.bearish) &&
+    isFiniteNumber(value.probabilities.neutral)
+  );
+}
+
+function formatMarketDecisionFallback(output: MarketDecisionOutput): string {
+  const direction =
+    output.bias === 'CALL_BIAS'
+      ? 'CALL_BIAS'
+      : output.bias === 'PUT_BIAS'
+        ? 'PUT_BIAS'
+        : 'محايد';
+  const blockers = output.blockingReasons.length > 0
+    ? output.blockingReasons.slice(0, 6).map((reason) => `- ${reason}`)
+    : ['- لا يوجد Trigger تنفيذي مؤكد حتى الآن.'];
+  const directionalConditions =
+    output.bias === 'CALL_BIAS'
+      ? output.conditions?.call
+      : output.bias === 'PUT_BIAS'
+        ? output.conditions?.put
+        : undefined;
+  const triggerLines = directionalConditions?.length
+    ? directionalConditions.slice(0, 5).map((condition) => `- ${condition}`)
+    : ['- لم يُحسم Trigger تنفيذي دقيق حاليًا.'];
+
+  return [
+    `تحليل ${output.underlying} — ${output.timeframe}`,
+    '',
+    `القرار: ${output.decision}`,
+    `الانحياز: ${direction}`,
+    `درجة السوق: ${Math.round(output.marketScore)}/100`,
+    `الثقة في البيانات: ${Math.round(output.confidence)}%`,
+    `الاحتمالات: CALL ${Math.round(output.probabilities.bullish)}% | PUT ${Math.round(output.probabilities.bearish)}% | محايد ${Math.round(output.probabilities.neutral)}%`,
+    '',
+    `جاهزية البيانات للدخول: ${output.dataReadyForEntry ? 'مكتملة' : 'غير مكتملة'}`,
+    'أسباب الانتظار أو المنع:',
+    ...blockers,
+    '',
+    'Trigger المطلوب:',
+    ...triggerLines,
+    '',
+    'النتيجة التنفيذية: مراقبة فقط؛ الانحياز وحده ليس أمر دخول.',
+    'isExecutable: false',
+    'executableTrigger: null',
+  ].join('\n');
+}
+
+/**
+ * Last-resort response built directly from trusted tool output. It must never
+ * replace a completed analysis with a generic "synthesis timed out" message.
+ */
+export function formatDeterministicToolFallback(
+  collectedToolResults: CollectedToolResult[]
+): string {
+  const marketResult = findLatestToolResult(
+    collectedToolResults,
+    'get_market_decision'
+  );
+
+  if (marketResult && isMarketDecisionOutput(marketResult.output)) {
+    return formatMarketDecisionFallback(marketResult.output);
+  }
+
+  const compact = extractCompactResponse(collectedToolResults);
+  if (compact) return formatCompactResponse(compact);
+
+  for (let index = collectedToolResults.length - 1; index >= 0; index -= 1) {
+    const result = collectedToolResults[index];
+    if (!isRecord(result.output)) continue;
+
+    const explicitMessage = result.output.userMessage ?? result.output.message ?? result.output.reason;
+    if (typeof explicitMessage === 'string' && explicitMessage.trim()) {
+      return [
+        explicitMessage.trim(),
+        '',
+        'النتيجة التنفيذية: لا يُعد هذا المسار أمر دخول دون Trigger مؤكد.',
+        'isExecutable: false',
+        'executableTrigger: null',
+      ].join('\n');
+    }
+  }
+
+  return [
+    'اكتملت أدوات فهد، لكن النتيجة المتاحة لا تحتوي حقولًا كافية لبناء تحليل موثوق.',
+    'القرار: WAIT_DATA',
+    'isExecutable: false',
+    'executableTrigger: null',
+  ].join('\n');
 }
 
 function findLatestToolResult(
